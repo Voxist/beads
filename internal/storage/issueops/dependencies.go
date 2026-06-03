@@ -42,12 +42,30 @@ func depTargetExpr(alias string) string {
 	return fmt.Sprintf("COALESCE(%s.depends_on_issue_id, %s.depends_on_wisp_id, %s.depends_on_external)", alias, alias, alias)
 }
 
-func depTargetEquals(alias string) string {
-	return depTargetExpr(alias) + " = ?"
+func depTargetColumn(alias, column string) string {
+	if alias == "" {
+		return column
+	}
+	return alias + "." + column
 }
 
-func depTargetIn(alias, placeholders string) string {
-	return depTargetExpr(alias) + " IN (" + placeholders + ")"
+func depTargetEquals(arg any) (string, []any) {
+	return depTargetMatches("", "= ?", []any{arg})
+}
+
+func depTargetIn(alias, placeholders string, args []any) (string, []any) {
+	return depTargetMatches(alias, "IN ("+placeholders+")", args)
+}
+
+func depTargetMatches(alias, op string, args []any) (string, []any) {
+	columns := []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"}
+	clauses := make([]string, 0, len(columns))
+	repeatedArgs := make([]any, 0, len(args)*len(columns))
+	for _, column := range columns {
+		clauses = append(clauses, depTargetColumn(alias, column)+" "+op)
+		repeatedArgs = append(repeatedArgs, args...)
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", repeatedArgs
 }
 
 func ClassifyDepTarget(ctx context.Context, tx *sql.Tx, dep *types.Dependency, isCrossPrefix bool) DepTargetKind {
@@ -187,15 +205,16 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 	// target expression defensively so stale/reclassified rows in another typed
 	// target column cannot bypass the idempotency/conflict check.
 	var existingType string
-	//nolint:gosec // G201: writeTable from WispTableRouting; depTargetEquals has no user input.
-	err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT type FROM %s WHERE issue_id = ? AND %s`, writeTable, depTargetEquals("")),
-		dep.IssueID, dep.DependsOnID).Scan(&existingType)
+	targetClause, targetArgs := depTargetEquals(dep.DependsOnID)
+	//nolint:gosec // G201: writeTable from WispTableRouting; targetClause has no user input.
+	err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT type FROM %s WHERE issue_id = ? AND %s`, writeTable, targetClause),
+		append([]any{dep.IssueID}, targetArgs...)...).Scan(&existingType)
 	if err == nil {
 		if existingType == string(dep.Type) {
 			// Same type — idempotent; update metadata.
-			//nolint:gosec // G201: writeTable from WispTableRouting; depTargetEquals has no user input.
-			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET metadata = ? WHERE issue_id = ? AND %s`, writeTable, depTargetEquals("")),
-				metadata, dep.IssueID, dep.DependsOnID); err != nil {
+			//nolint:gosec // G201: writeTable from WispTableRouting; targetClause has no user input.
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET metadata = ? WHERE issue_id = ? AND %s`, writeTable, targetClause),
+				append([]any{metadata, dep.IssueID}, targetArgs...)...); err != nil {
 				return fmt.Errorf("failed to update dependency metadata: %w", err)
 			}
 			return nil
@@ -624,9 +643,10 @@ func RemoveDependencyInTx(ctx context.Context, tx *sql.Tx, issueID, dependsOnID 
 	// Capture the row's type before deleting so we can dispatch the right
 	// affected-set helper. If no row matches, treat as a no-op.
 	var depType string
+	targetClause, targetArgs := depTargetEquals(dependsOnID)
 	row := tx.QueryRowContext(ctx, fmt.Sprintf(
-		`SELECT type FROM %s WHERE issue_id = ? AND %s = ?`, depTable, DepTargetExpr),
-		issueID, dependsOnID)
+		`SELECT type FROM %s WHERE issue_id = ? AND %s`, depTable, targetClause),
+		append([]any{issueID}, targetArgs...)...)
 	if err := row.Scan(&depType); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -635,8 +655,8 @@ func RemoveDependencyInTx(ctx context.Context, tx *sql.Tx, issueID, dependsOnID 
 	}
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-		`DELETE FROM %s WHERE issue_id = ? AND %s = ?`, depTable, DepTargetExpr),
-		issueID, dependsOnID); err != nil {
+		`DELETE FROM %s WHERE issue_id = ? AND %s`, depTable, targetClause),
+		append([]any{issueID}, targetArgs...)...); err != nil {
 		return fmt.Errorf("remove dependency: %w", err)
 	}
 
@@ -836,8 +856,9 @@ func GetDependentsWithMetadataInTx(ctx context.Context, tx *sql.Tx, issueID stri
 	// Query both dependency tables to find all dependents.
 	var deps []depMeta
 	for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
+		targetClause, targetArgs := depTargetEquals(issueID)
 		rows, err := tx.QueryContext(ctx, fmt.Sprintf(
-			`SELECT issue_id, type FROM %s WHERE %s = ?`, depTable, DepTargetExpr), issueID)
+			`SELECT issue_id, type FROM %s WHERE %s`, depTable, targetClause), targetArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("get dependents from %s: %w", depTable, err)
 		}
@@ -927,8 +948,9 @@ func GetDependenciesInTx(ctx context.Context, tx *sql.Tx, issueID string) ([]*ty
 func GetDependentsInTx(ctx context.Context, tx *sql.Tx, issueID string) ([]*types.Issue, error) {
 	var ids []string
 	for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
+		targetClause, targetArgs := depTargetEquals(issueID)
 		rows, err := tx.QueryContext(ctx, fmt.Sprintf(
-			`SELECT issue_id FROM %s WHERE %s = ?`, depTable, DepTargetExpr), issueID)
+			`SELECT issue_id FROM %s WHERE %s`, depTable, targetClause), targetArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("get dependents from %s: %w", depTable, err)
 		}

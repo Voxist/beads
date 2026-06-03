@@ -103,9 +103,10 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 
 			externalBySource := make(map[string][]string)
 			for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
+				targetClause, targetArgs := depTargetIn("", inClause, args)
 				rows, err := tx.QueryContext(ctx,
-					fmt.Sprintf(`SELECT %s AS depends_on_id, issue_id FROM %s WHERE %s`, DepTargetExpr, depTable, depTargetIn("", inClause)),
-					args...)
+					fmt.Sprintf(`SELECT %s AS depends_on_id, issue_id FROM %s WHERE %s`, DepTargetExpr, depTable, targetClause),
+					targetArgs...)
 				if err != nil {
 					if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 						continue
@@ -195,9 +196,10 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 		batchInClause, batchArgs := buildSQLInClause(batch)
 
 		for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
+			targetClause, targetArgs := depTargetIn("", batchInClause, batchArgs)
 			rows, err := tx.QueryContext(ctx,
-				fmt.Sprintf(`SELECT issue_id FROM %s WHERE %s`, depTable, depTargetIn("", batchInClause)),
-				batchArgs...)
+				fmt.Sprintf(`SELECT issue_id FROM %s WHERE %s`, depTable, targetClause),
+				targetArgs...)
 			if err != nil {
 				if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 					continue
@@ -295,9 +297,10 @@ func findAllDependentsRecursiveInTx(ctx context.Context, tx *sql.Tx, ids []strin
 
 		inClause, args := buildSQLInClause(batch)
 		for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
+			targetClause, targetArgs := depTargetIn("", inClause, args)
 			rows, err := tx.QueryContext(ctx,
-				fmt.Sprintf(`SELECT issue_id FROM %s WHERE %s`, depTable, depTargetIn("", inClause)),
-				args...)
+				fmt.Sprintf(`SELECT issue_id FROM %s WHERE %s`, depTable, targetClause),
+				targetArgs...)
 			if err != nil {
 				if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 					continue
@@ -341,9 +344,10 @@ func findExternalDependentsBatchedInTx(ctx context.Context, tx *sql.Tx, ids []st
 		inClause, args := buildSQLInClause(batch)
 
 		for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
+			targetClause, targetArgs := depTargetIn("", inClause, args)
 			rows, err := tx.QueryContext(ctx,
-				fmt.Sprintf(`SELECT issue_id FROM %s WHERE %s`, depTable, depTargetIn("", inClause)),
-				args...)
+				fmt.Sprintf(`SELECT issue_id FROM %s WHERE %s`, depTable, targetClause),
+				targetArgs...)
 			if err != nil {
 				if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 					continue

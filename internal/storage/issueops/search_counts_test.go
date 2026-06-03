@@ -14,11 +14,11 @@ func TestSearchIssuesWithCountsAppliesLimitToEachSourceQuery(t *testing.T) {
 	_, mock, tx := beginMockTx(t)
 	mock.ExpectQuery(`SELECT 1 FROM wisp_dependencies LIMIT 1`).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-	mock.ExpectQuery(`(?s)FROM issues i.*ORDER BY i\.priority ASC, i\.created_at DESC, i\.id ASC\s+LIMIT 3`).
+	mock.ExpectQuery(`SELECT issues\.id FROM issues ORDER BY issues\.priority ASC, issues\.created_at DESC, issues\.id ASC LIMIT 3`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectQuery(`SELECT 1 FROM wisps LIMIT 1`).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-	mock.ExpectQuery(`(?s)FROM wisps i.*ORDER BY i\.priority ASC, i\.created_at DESC, i\.id ASC\s+LIMIT 3`).
+	mock.ExpectQuery(`SELECT wisps\.id FROM wisps ORDER BY wisps\.priority ASC, wisps\.created_at DESC, wisps\.id ASC LIMIT 3`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	got, err := SearchIssuesWithCountsInTx(context.Background(), tx, "", types.IssueFilter{Limit: 3})

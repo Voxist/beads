@@ -282,59 +282,78 @@ func (r *issueSQLRepositoryImpl) getReadyWorkWithCounts(ctx context.Context, fil
 	if err != nil {
 		return nil, fmt.Errorf("get ready work with counts: wisp dependency probe: %w", err)
 	}
-
-	issuePreds, err := r.buildReadyWorkPredicates(ctx, filter, issuesFilterTables)
+	issues, err := r.getReadyWork(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
-	out, err := r.runSearchQuery(ctx, issuesFilterTables, issuePreds.whereSQL, issuePreds.orderBySQL, issuePreds.limitSQL, issuePreds.args, wispDepsExist, false)
+	out, err := r.hydrateMixedIssueCounts(ctx, issues, wispDepsExist)
 	if err != nil {
 		return nil, err
-	}
-
-	empty, probeErr := r.wispsTableEmptyOrMissing(ctx)
-	if probeErr != nil {
-		return nil, fmt.Errorf("get ready work with counts: wisp probe: %w", probeErr)
-	}
-	if empty || !wispDepsExist {
-		return out, nil
-	}
-
-	wispPreds, err := r.buildReadyWorkPredicates(ctx, filter, wispsFilterTables)
-	if err != nil {
-		return nil, err
-	}
-	wisps, err := r.runSearchQuery(ctx, wispsFilterTables, wispPreds.whereSQL, wispPreds.orderBySQL, wispPreds.limitSQL, wispPreds.args, true, false)
-	if err != nil {
-		if dberrors.IsTableNotExist(err) {
-			return out, nil
-		}
-		return nil, err
-	}
-	if len(wisps) == 0 {
-		return out, nil
-	}
-
-	seen := make(map[string]struct{}, len(out))
-	for _, iwc := range out {
-		if iwc != nil && iwc.Issue != nil {
-			seen[iwc.Issue.ID] = struct{}{}
-		}
-	}
-	for _, w := range wisps {
-		if w == nil || w.Issue == nil {
-			continue
-		}
-		if _, dup := seen[w.Issue.ID]; dup {
-			return nil, fmt.Errorf("get ready work with counts: id %q exists in both issues and wisps", w.Issue.ID)
-		}
-		out = append(out, w)
 	}
 	sortIssuesWithCountsByPolicy(out, filter.SortPolicy)
 	if filter.Limit > 0 && len(out) > filter.Limit {
 		out = out[:filter.Limit]
 	}
 	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) hydrateMixedIssueCounts(ctx context.Context, issues []*types.Issue, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	perm := make([]*types.Issue, 0, len(issues))
+	wisps := make([]*types.Issue, 0)
+	for _, issue := range issues {
+		if issue == nil {
+			continue
+		}
+		if issueLooksWispBacked(issue) {
+			wisps = append(wisps, issue)
+		} else {
+			perm = append(perm, issue)
+		}
+	}
+	if err := r.hydrateIssues(ctx, perm, issuesFilterTables, true, false); err != nil {
+		return nil, fmt.Errorf("hydrate ready issue details: %w", err)
+	}
+	if err := r.hydrateIssues(ctx, wisps, wispsFilterTables, true, false); err != nil {
+		return nil, fmt.Errorf("hydrate ready wisp details: %w", err)
+	}
+
+	outByID := make(map[string]*types.IssueWithCounts, len(issues))
+	permCounts, err := r.hydrateIssueCounts(ctx, perm, issuesFilterTables, includeWispReverseDeps)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range permCounts {
+		if item != nil && item.Issue != nil {
+			outByID[item.Issue.ID] = item
+		}
+	}
+	wispCounts, err := r.hydrateIssueCounts(ctx, wisps, wispsFilterTables, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range wispCounts {
+		if item != nil && item.Issue != nil {
+			outByID[item.Issue.ID] = item
+		}
+	}
+
+	out := make([]*types.IssueWithCounts, 0, len(issues))
+	for _, issue := range issues {
+		if issue == nil {
+			continue
+		}
+		if item, ok := outByID[issue.ID]; ok {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func issueLooksWispBacked(issue *types.Issue) bool {
+	return issue.Ephemeral || issue.NoHistory || issue.WispType != ""
 }
 
 func sortIssuesWithCountsByPolicy(items []*types.IssueWithCounts, policy types.SortPolicy) {

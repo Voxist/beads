@@ -1,11 +1,14 @@
 package db
 
 import (
+	"reflect"
+
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
 
 func (s *testSuite) TestDependencySQLRepository() {
+	s.Run("TargetPredicateUsesIndexedColumns", s.depTargetPredicateUsesIndexedColumns)
 	s.Run("Insert", func() {
 		s.Run("RoundTripVisibleViaList", s.depInsertRoundTrip)
 		s.Run("RejectsSelfDependency", s.depInsertSelfDep)
@@ -58,6 +61,19 @@ func (s *testSuite) TestDependencySQLRepository() {
 		s.Run("HasCycleSpansBothTables", s.depWispHasCycleCrossTable)
 		s.Run("WispDirectBackEdgeDetected", s.depWispDirectBackEdge)
 	})
+}
+
+func (s *testSuite) depTargetPredicateUsesIndexedColumns() {
+	clause, args := depTargetIn("?,?", []any{"a", "b"})
+	for _, want := range []string{
+		"depends_on_issue_id IN (?,?)",
+		"depends_on_wisp_id IN (?,?)",
+		"depends_on_external IN (?,?)",
+	} {
+		s.Contains(clause, want)
+	}
+	s.NotContains(clause, "COALESCE")
+	s.True(reflect.DeepEqual([]any{"a", "b", "a", "b", "a", "b"}, args), "args = %#v", args)
 }
 
 func (s *testSuite) depRepo() domain.DependencySQLRepository {

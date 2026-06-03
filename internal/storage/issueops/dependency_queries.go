@@ -193,13 +193,14 @@ func GetDependencyCountsInTx(ctx context.Context, tx *sql.Tx, issueIDs []string)
 				return nil, fmt.Errorf("get dependency counts: blocker rows: %w", err)
 			}
 
-			//nolint:gosec // G201: depTable is hardcoded and inClause contains only ? placeholders.
+			targetClause, targetArgs := depTargetIn("", inClause, args)
+			//nolint:gosec // G201: depTable is hardcoded and targetClause contains only physical target columns.
 			blockingRows, err := tx.QueryContext(ctx, fmt.Sprintf(`
-				SELECT %s AS depends_on_id, COUNT(*) as cnt
-				FROM %s
-				WHERE %s AND type = 'blocks'
-				GROUP BY %s
-			`, DepTargetExpr, depTable, depTargetIn("", inClause), DepTargetExpr), args...)
+					SELECT %s AS depends_on_id, COUNT(*) as cnt
+					FROM %s
+					WHERE %s AND type = 'blocks'
+					GROUP BY %s
+				`, DepTargetExpr, depTable, targetClause, DepTargetExpr), targetArgs...)
 			if err != nil {
 				if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 					continue
@@ -385,14 +386,15 @@ func queryBlocksInfo(
 
 		for _, depTable := range depTables {
 			// Query: "blocks" — deps where depends_on_id is in our set.
-			//nolint:gosec // G201: depTable is a caller-controlled constant.
+			targetClause, targetArgs := depTargetIn("d", inClause, args)
+			//nolint:gosec // G201: depTable is a caller-controlled constant and targetClause has no user input.
 			blocksQuery := fmt.Sprintf(`
-				SELECT %s AS depends_on_id, d.issue_id, d.type
-				FROM %s d
-				WHERE %s AND d.type IN ('blocks', 'parent-child')
-			`, depTargetExpr("d"), depTable, depTargetIn("d", inClause))
+					SELECT %s AS depends_on_id, d.issue_id, d.type
+					FROM %s d
+					WHERE %s AND d.type IN ('blocks', 'parent-child')
+				`, depTargetExpr("d"), depTable, targetClause)
 
-			rows, err := tx.QueryContext(ctx, blocksQuery, args...)
+			rows, err := tx.QueryContext(ctx, blocksQuery, targetArgs...)
 			if err != nil {
 				if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 					continue
@@ -477,10 +479,11 @@ func loadStatusByIDInTx(ctx context.Context, tx *sql.Tx, ids []string) (map[stri
 func GetNewlyUnblockedByCloseInTx(ctx context.Context, tx *sql.Tx, closedIssueID string) ([]*types.Issue, error) {
 	candidateSet := make(map[string]bool)
 	for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
+		targetClause, targetArgs := depTargetEquals(closedIssueID)
 		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
 			SELECT issue_id FROM %s
 			WHERE %s AND type = 'blocks'
-		`, depTable, depTargetEquals("")), closedIssueID)
+		`, depTable, targetClause), targetArgs...)
 		if err != nil {
 			if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 				continue

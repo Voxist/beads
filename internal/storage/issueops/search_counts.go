@@ -78,131 +78,211 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 }
 
 func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter, tables FilterTables, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
-	whereClauses, args, err := BuildIssueFilterClauses(query, filter, tables)
+	searchFilter := filter
+	searchFilter.IncludeDependencies = true
+	issues, err := searchTableInTx(ctx, tx, query, searchFilter, tables)
 	if err != nil {
 		return nil, err
 	}
-	whereSQL := ""
-	if len(whereClauses) > 0 {
-		whereSQL = "WHERE " + joinAnd(whereClauses)
-	}
-	limitSQL := ""
-	if filter.Limit > 0 {
-		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
-	}
-	const orderBy = "ORDER BY i.priority ASC, i.created_at DESC, i.id ASC"
-	return runSearchQueryInTx(ctx, tx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, filter.SkipLabels)
+	return hydrateIssueCountsInTx(ctx, tx, issues, tables, includeWispReverseDeps)
 }
 
-//nolint:gosec // G201: SQL fragments are caller-built from hardcoded shapes
-func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, whereSQL, orderBySQL, limitSQL string, args []interface{}, includeWispReverseDeps bool, skipLabels bool) ([]*types.IssueWithCounts, error) {
-	reverseBlockerSelect := `
-				SELECT COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS dep_id
-				FROM dependencies WHERE type = 'blocks'
-	`
-	if includeWispReverseDeps {
-		reverseBlockerSelect += `
-				UNION ALL
-				SELECT COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS dep_id
-				FROM wisp_dependencies WHERE type = 'blocks'
-		`
+func hydrateIssueCountsInTx(ctx context.Context, tx *sql.Tx, issues []*types.Issue, tables FilterTables, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(issues))
+	out := make([]*types.IssueWithCounts, 0, len(issues))
+	byID := make(map[string]*types.IssueWithCounts, len(issues))
+	for _, issue := range issues {
+		if issue == nil {
+			continue
+		}
+		item := &types.IssueWithCounts{Issue: issue}
+		out = append(out, item)
+		ids = append(ids, issue.ID)
+		byID[issue.ID] = item
+	}
+	if len(ids) == 0 {
+		return out, nil
 	}
 
-	labelsSelect := "l.labels_json AS labels_json"
-	labelsJoin := fmt.Sprintf(`
-		LEFT JOIN (
-			SELECT issue_id, JSON_ARRAYAGG(label) AS labels_json
-			FROM %s
-			GROUP BY issue_id
-		) l ON l.issue_id = i.id`, tables.Labels)
-	if skipLabels {
-		labelsSelect = "NULL AS labels_json"
-		labelsJoin = ""
-	}
-
-	searchSQL := fmt.Sprintf(`
-		SELECT %s,
-			%s,
-			COALESCE(dc.cnt, 0) AS dep_count,
-			COALESCE(rc.cnt, 0) AS rdep_count,
-			COALESCE(cc.cnt, 0) AS comment_count,
-			pc.parent_id     AS parent_id,
-			d.deps_json      AS deps_json
-		FROM %s i
-		%s
-		LEFT JOIN (
-			SELECT issue_id, COUNT(*) AS cnt
-			FROM %s
-			WHERE type = 'blocks'
-			GROUP BY issue_id
-		) dc ON dc.issue_id = i.id
-		LEFT JOIN (
-			SELECT dep_id, COUNT(*) AS cnt FROM (
-				%s
-			) all_blockers GROUP BY dep_id
-		) rc ON rc.dep_id = i.id
-		LEFT JOIN (
-			SELECT issue_id, COUNT(*) AS cnt
-			FROM %s
-			GROUP BY issue_id
-		) cc ON cc.issue_id = i.id
-		LEFT JOIN (
-			SELECT issue_id,
-			       MIN(COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)) AS parent_id
-			FROM %s
-			WHERE type = 'parent-child'
-			GROUP BY issue_id
-		) pc ON pc.issue_id = i.id
-		LEFT JOIN (
-			SELECT issue_id, JSON_ARRAYAGG(%s) AS deps_json
-			FROM %s
-			GROUP BY issue_id
-		) d ON d.issue_id = i.id
-		%s
-		%s
-		%s
-	`,
-		readyWorkIssueColumns,
-		labelsSelect,
-		tables.Main,
-		labelsJoin,
-		tables.Dependencies,
-		reverseBlockerSelect,
-		tables.Comments,
-		tables.Dependencies,
-		readyWorkDepJSONObject,
-		tables.Dependencies,
-		whereSQL,
-		orderBySQL,
-		limitSQL,
-	)
-
-	rows, err := tx.QueryContext(ctx, searchSQL, args...)
+	depCounts, err := countOutgoingBlocksInTx(ctx, tx, tables.Dependencies, ids)
 	if err != nil {
-		return nil, fmt.Errorf("search count %s: %w", tables.Main, err)
+		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	for id, count := range depCounts {
+		if item, ok := byID[id]; ok {
+			item.DependencyCount = count
+		}
+	}
 
-	var out []*types.IssueWithCounts
-	seen := make(map[string]bool)
-	for rows.Next() {
-		iwc, scanErr := scanReadyWorkRowWithCounts(rows)
-		if scanErr != nil {
-			return nil, scanErr
+	for _, depTable := range reverseDependencyTablesInTx(includeWispReverseDeps) {
+		dependentCounts, err := countIncomingBlocksInTx(ctx, tx, depTable, ids)
+		if err != nil {
+			return nil, err
 		}
-		if iwc == nil || iwc.Issue == nil {
-			continue
+		for id, count := range dependentCounts {
+			if item, ok := byID[id]; ok {
+				item.DependentCount += count
+			}
 		}
-		if seen[iwc.Issue.ID] {
-			continue
-		}
-		seen[iwc.Issue.ID] = true
-		out = append(out, iwc)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("search count %s: rows: %w", tables.Main, err)
+
+	commentCounts, err := countCommentsInTx(ctx, tx, tables.Comments, ids)
+	if err != nil {
+		return nil, err
+	}
+	for id, count := range commentCounts {
+		if item, ok := byID[id]; ok {
+			item.CommentCount = count
+		}
+	}
+
+	parents, err := parentIDsInTx(ctx, tx, tables.Dependencies, ids)
+	if err != nil {
+		return nil, err
+	}
+	for id, parent := range parents {
+		if item, ok := byID[id]; ok {
+			p := parent
+			item.Parent = &p
+		}
+	}
+
+	return out, nil
+}
+
+func reverseDependencyTablesInTx(includeWispReverseDeps bool) []string {
+	if includeWispReverseDeps {
+		return []string{"dependencies", "wisp_dependencies"}
+	}
+	return []string{"dependencies"}
+}
+
+func countOutgoingBlocksInTx(ctx context.Context, tx *sql.Tx, depTable string, ids []string) (map[string]int, error) {
+	out := make(map[string]int)
+	for start := 0; start < len(ids); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		placeholders, args := buildSQLInClause(ids[start:end])
+		//nolint:gosec // G201: depTable is a hardcoded table name selected by caller.
+		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+			SELECT issue_id, COUNT(*) FROM %s
+			WHERE issue_id IN (%s) AND type = 'blocks'
+			GROUP BY issue_id
+		`, depTable, placeholders), args...)
+		if err != nil {
+			return nil, fmt.Errorf("count outgoing blocks from %s: %w", depTable, err)
+		}
+		if err := scanIntCountsInTx(rows, out); err != nil {
+			return nil, fmt.Errorf("count outgoing blocks from %s: %w", depTable, err)
+		}
 	}
 	return out, nil
+}
+
+func countIncomingBlocksInTx(ctx context.Context, tx *sql.Tx, depTable string, ids []string) (map[string]int, error) {
+	out := make(map[string]int)
+	for start := 0; start < len(ids); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		placeholders, args := buildSQLInClause(ids[start:end])
+		targetClause, targetArgs := depTargetIn("", placeholders, args)
+		//nolint:gosec // G201: depTable and targetClause are hardcoded fragments.
+		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+			SELECT %s AS depends_on_id, COUNT(*) FROM %s
+			WHERE %s AND type = 'blocks'
+			GROUP BY %s
+		`, DepTargetExpr, depTable, targetClause, DepTargetExpr), targetArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("count incoming blocks from %s: %w", depTable, err)
+		}
+		if err := scanIntCountsInTx(rows, out); err != nil {
+			return nil, fmt.Errorf("count incoming blocks from %s: %w", depTable, err)
+		}
+	}
+	return out, nil
+}
+
+func countCommentsInTx(ctx context.Context, tx *sql.Tx, commentTable string, ids []string) (map[string]int, error) {
+	out := make(map[string]int)
+	for start := 0; start < len(ids); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		placeholders, args := buildSQLInClause(ids[start:end])
+		//nolint:gosec // G201: commentTable is a hardcoded table name selected by caller.
+		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+			SELECT issue_id, COUNT(*) FROM %s
+			WHERE issue_id IN (%s)
+			GROUP BY issue_id
+		`, commentTable, placeholders), args...)
+		if err != nil {
+			return nil, fmt.Errorf("count comments from %s: %w", commentTable, err)
+		}
+		if err := scanIntCountsInTx(rows, out); err != nil {
+			return nil, fmt.Errorf("count comments from %s: %w", commentTable, err)
+		}
+	}
+	return out, nil
+}
+
+func parentIDsInTx(ctx context.Context, tx *sql.Tx, depTable string, ids []string) (map[string]string, error) {
+	out := make(map[string]string)
+	for start := 0; start < len(ids); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		placeholders, args := buildSQLInClause(ids[start:end])
+		//nolint:gosec // G201: depTable is a hardcoded table name selected by caller.
+		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+			SELECT issue_id, MIN(%s) FROM %s
+			WHERE issue_id IN (%s) AND type = 'parent-child'
+			GROUP BY issue_id
+		`, DepTargetExpr, depTable, placeholders), args...)
+		if err != nil {
+			return nil, fmt.Errorf("load parent ids from %s: %w", depTable, err)
+		}
+		for rows.Next() {
+			var issueID string
+			var parent sql.NullString
+			if err := rows.Scan(&issueID, &parent); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan parent id: %w", err)
+			}
+			if parent.Valid {
+				out[issueID] = parent.String
+			}
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("parent id rows: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func scanIntCountsInTx(rows *sql.Rows, out map[string]int) error {
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id string
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			return fmt.Errorf("scan count: %w", err)
+		}
+		out[id] += count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("count rows: %w", err)
+	}
+	return nil
 }
 
 func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, limit int) []*types.IssueWithCounts {

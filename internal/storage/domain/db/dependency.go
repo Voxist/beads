@@ -27,6 +27,25 @@ const depTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends
 
 const depSelectColumns = "issue_id, " + depTargetExpr + " AS depends_on_id, type, created_at, created_by, metadata, thread_id"
 
+func depTargetEquals(arg any) (string, []any) {
+	return depTargetMatches("= ?", []any{arg})
+}
+
+func depTargetIn(placeholders string, args []any) (string, []any) {
+	return depTargetMatches("IN ("+placeholders+")", args)
+}
+
+func depTargetMatches(op string, args []any) (string, []any) {
+	columns := []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"}
+	clauses := make([]string, 0, len(columns))
+	repeatedArgs := make([]any, 0, len(args)*len(columns))
+	for _, column := range columns {
+		clauses = append(clauses, column+" "+op)
+		repeatedArgs = append(repeatedArgs, args...)
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", repeatedArgs
+}
+
 func pickDepTable(useWisps bool) string {
 	if useWisps {
 		return "wisp_dependencies"
@@ -74,18 +93,19 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 	table := pickDepTable(opts.UseWispsTable)
 
 	var existingType string
+	targetClause, targetArgs := depTargetEquals(dep.DependsOnID)
 	err := r.runner.QueryRowContext(ctx,
-		//nolint:gosec // G201: table and depTargetExpr are hardcoded constants
-		fmt.Sprintf("SELECT type FROM %s WHERE issue_id = ? AND %s = ?", table, depTargetExpr),
-		dep.IssueID, dep.DependsOnID,
+		//nolint:gosec // G201: table and targetClause are hardcoded constants
+		fmt.Sprintf("SELECT type FROM %s WHERE issue_id = ? AND %s", table, targetClause),
+		append([]any{dep.IssueID}, targetArgs...)...,
 	).Scan(&existingType)
 	switch {
 	case err == nil:
 		if existingType == string(dep.Type) {
-			//nolint:gosec // G201: table and depTargetExpr are hardcoded constants
+			//nolint:gosec // G201: table and targetClause are hardcoded constants
 			if _, err := r.runner.ExecContext(ctx,
-				fmt.Sprintf("UPDATE %s SET metadata = ? WHERE issue_id = ? AND %s = ?", table, depTargetExpr),
-				metadata, dep.IssueID, dep.DependsOnID,
+				fmt.Sprintf("UPDATE %s SET metadata = ? WHERE issue_id = ? AND %s", table, targetClause),
+				append([]any{metadata, dep.IssueID}, targetArgs...)...,
 			); err != nil {
 				return fmt.Errorf("db: DependencySQLRepository.Insert: refresh metadata: %w", err)
 			}
@@ -195,12 +215,13 @@ func (r *dependencySQLRepositoryImpl) ListByIssueIDs(ctx context.Context, issueI
 	}
 
 	if opts.Direction == domain.DepDirectionBoth || opts.Direction == domain.DepDirectionIn {
-		//nolint:gosec // G201: table, depSelectColumns, depTargetExpr are hardcoded
+		targetClause, targetArgs := depTargetIn(idPlaceholders, idArgs)
+		//nolint:gosec // G201: table, depSelectColumns, targetClause are hardcoded
 		q := fmt.Sprintf(
-			`SELECT %s FROM %s WHERE %s IN (%s)%s ORDER BY issue_id`,
-			depSelectColumns, table, depTargetExpr, idPlaceholders, typeWhere,
+			`SELECT %s FROM %s WHERE %s%s ORDER BY issue_id`,
+			depSelectColumns, table, targetClause, typeWhere,
 		)
-		args := combineArgs(idArgs, typeArgs)
+		args := combineArgs(targetArgs, typeArgs)
 		if err := r.queryDeps(ctx, q, args, result.Incoming, false); err != nil {
 			return domain.DepBulkResult{}, fmt.Errorf("db: DependencySQLRepository.ListByIssueIDs (in): %w", err)
 		}
@@ -230,12 +251,13 @@ func (r *dependencySQLRepositoryImpl) CountsByIssueIDs(ctx context.Context, issu
 		return nil, fmt.Errorf("db: DependencySQLRepository.CountsByIssueIDs (out): %w", err)
 	}
 
-	//nolint:gosec // G201: table and depTargetExpr are hardcoded
+	targetClause, targetArgs := depTargetIn(idPlaceholders, idArgs)
+	//nolint:gosec // G201: table and targetClause are hardcoded
 	inQ := fmt.Sprintf(
-		`SELECT %s AS depends_on_id, COUNT(*) FROM %s WHERE %s IN (%s) AND type = 'blocks' GROUP BY %s`,
-		depTargetExpr, table, depTargetExpr, idPlaceholders, depTargetExpr,
+		`SELECT %s AS depends_on_id, COUNT(*) FROM %s WHERE %s AND type = 'blocks' GROUP BY %s`,
+		depTargetExpr, table, targetClause, depTargetExpr,
 	)
-	if err := scanCounts(ctx, r.runner, inQ, idArgs, result, func(c *types.DependencyCounts, n int) { c.DependentCount = n }); err != nil {
+	if err := scanCounts(ctx, r.runner, inQ, targetArgs, result, func(c *types.DependencyCounts, n int) { c.DependentCount = n }); err != nil {
 		return nil, fmt.Errorf("db: DependencySQLRepository.CountsByIssueIDs (in): %w", err)
 	}
 
@@ -283,12 +305,13 @@ func (r *dependencySQLRepositoryImpl) GetBlockingInfo(ctx context.Context, issue
 		return domain.BlockingInfo{}, fmt.Errorf("db: DependencySQLRepository.GetBlockingInfo: outbound: %w", err)
 	}
 
-	//nolint:gosec // G201: table and depTargetExpr are hardcoded constants
+	targetClause, targetArgs := depTargetIn(idPlaceholders, idArgs)
+	//nolint:gosec // G201: table and targetClause are hardcoded constants
 	inQ := fmt.Sprintf(
-		"SELECT issue_id, %s AS depends_on_id, type FROM %s WHERE %s IN (%s) AND type = 'blocks'",
-		depTargetExpr, table, depTargetExpr, idPlaceholders,
+		"SELECT issue_id, %s AS depends_on_id, type FROM %s WHERE %s AND type = 'blocks'",
+		depTargetExpr, table, targetClause,
 	)
-	inRows, err := r.scanBlockingRows(ctx, inQ, idArgs)
+	inRows, err := r.scanBlockingRows(ctx, inQ, targetArgs)
 	if err != nil {
 		return domain.BlockingInfo{}, fmt.Errorf("db: DependencySQLRepository.GetBlockingInfo: inbound: %w", err)
 	}

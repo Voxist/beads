@@ -3,11 +3,9 @@ package db
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/types"
@@ -83,131 +81,211 @@ func (r *issueSQLRepositoryImpl) searchAcrossIssuesAndWispsWithCounts(ctx contex
 }
 
 func (r *issueSQLRepositoryImpl) runFilterSearchQuery(ctx context.Context, query string, filter types.IssueFilter, tables filterTables, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
-	whereClauses, args, err := buildIssueFilterClauses(query, filter, tables)
+	searchFilter := filter
+	searchFilter.IncludeDependencies = true
+	issues, err := r.searchTable(ctx, query, searchFilter, tables)
 	if err != nil {
 		return nil, err
 	}
-	whereSQL := ""
-	if len(whereClauses) > 0 {
-		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
-	}
-	limitSQL := ""
-	if filter.Limit > 0 {
-		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
-	}
-	const orderBy = "ORDER BY i.priority ASC, i.created_at DESC, i.id ASC"
-	return r.runSearchQuery(ctx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, filter.SkipLabels)
+	return r.hydrateIssueCounts(ctx, issues, tables, includeWispReverseDeps)
 }
 
-//nolint:gosec // G201: SQL fragments are built from hardcoded table names and parameterized filters.
-func (r *issueSQLRepositoryImpl) runSearchQuery(ctx context.Context, tables filterTables, whereSQL, orderBySQL, limitSQL string, args []any, includeWispReverseDeps bool, skipLabels bool) ([]*types.IssueWithCounts, error) {
-	reverseBlockerSelect := `
-			SELECT COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS dep_id
-			FROM dependencies WHERE type = 'blocks'
-	`
-	if includeWispReverseDeps {
-		reverseBlockerSelect += `
-			UNION ALL
-			SELECT COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS dep_id
-			FROM wisp_dependencies WHERE type = 'blocks'
-		`
+func (r *issueSQLRepositoryImpl) hydrateIssueCounts(ctx context.Context, issues []*types.Issue, tables filterTables, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(issues))
+	out := make([]*types.IssueWithCounts, 0, len(issues))
+	byID := make(map[string]*types.IssueWithCounts, len(issues))
+	for _, issue := range issues {
+		if issue == nil {
+			continue
+		}
+		item := &types.IssueWithCounts{Issue: issue}
+		out = append(out, item)
+		ids = append(ids, issue.ID)
+		byID[issue.ID] = item
+	}
+	if len(ids) == 0 {
+		return out, nil
 	}
 
-	labelsSelect := "l.labels_json AS labels_json"
-	labelsJoin := fmt.Sprintf(`
-		LEFT JOIN (
-			SELECT issue_id, JSON_ARRAYAGG(label) AS labels_json
-			FROM %s
-			GROUP BY issue_id
-		) l ON l.issue_id = i.id`, tables.Labels)
-	if skipLabels {
-		labelsSelect = "NULL AS labels_json"
-		labelsJoin = ""
-	}
-
-	searchSQL := fmt.Sprintf(`
-		SELECT %s,
-			%s,
-			COALESCE(dc.cnt, 0) AS dep_count,
-			COALESCE(rc.cnt, 0) AS rdep_count,
-			COALESCE(cc.cnt, 0) AS comment_count,
-			pc.parent_id     AS parent_id,
-			d.deps_json      AS deps_json
-		FROM %s i
-		%s
-		LEFT JOIN (
-			SELECT issue_id, COUNT(*) AS cnt
-			FROM %s
-			WHERE type = 'blocks'
-			GROUP BY issue_id
-		) dc ON dc.issue_id = i.id
-		LEFT JOIN (
-			SELECT dep_id, COUNT(*) AS cnt FROM (
-				%s
-			) all_blockers GROUP BY dep_id
-		) rc ON rc.dep_id = i.id
-		LEFT JOIN (
-			SELECT issue_id, COUNT(*) AS cnt
-			FROM %s
-			GROUP BY issue_id
-		) cc ON cc.issue_id = i.id
-		LEFT JOIN (
-			SELECT issue_id,
-			       MIN(COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)) AS parent_id
-			FROM %s
-			WHERE type = 'parent-child'
-			GROUP BY issue_id
-		) pc ON pc.issue_id = i.id
-		LEFT JOIN (
-			SELECT issue_id, JSON_ARRAYAGG(%s) AS deps_json
-			FROM %s
-			GROUP BY issue_id
-		) d ON d.issue_id = i.id
-		%s
-		%s
-		%s
-	`,
-		readyWorkIssueColumns,
-		labelsSelect,
-		tables.Main,
-		labelsJoin,
-		tables.Dependencies,
-		reverseBlockerSelect,
-		tables.Comments,
-		tables.Dependencies,
-		readyWorkDepJSONObject,
-		tables.Dependencies,
-		whereSQL,
-		orderBySQL,
-		limitSQL,
-	)
-
-	rows, err := r.runner.QueryContext(ctx, searchSQL, args...)
+	depCounts, err := r.countOutgoingBlocks(ctx, tables.Dependencies, ids)
 	if err != nil {
-		return nil, fmt.Errorf("search count %s: %w", tables.Main, err)
+		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	for id, count := range depCounts {
+		if item, ok := byID[id]; ok {
+			item.DependencyCount = count
+		}
+	}
 
-	var out []*types.IssueWithCounts
-	seen := make(map[string]bool)
-	for rows.Next() {
-		iwc, scanErr := scanReadyWorkRowWithCounts(rows)
-		if scanErr != nil {
-			return nil, scanErr
+	for _, depTable := range reverseDependencyTables(includeWispReverseDeps) {
+		dependentCounts, err := r.countIncomingBlocks(ctx, depTable, ids)
+		if err != nil {
+			return nil, err
 		}
-		if iwc == nil || iwc.Issue == nil {
-			continue
+		for id, count := range dependentCounts {
+			if item, ok := byID[id]; ok {
+				item.DependentCount += count
+			}
 		}
-		if seen[iwc.Issue.ID] {
-			continue
-		}
-		seen[iwc.Issue.ID] = true
-		out = append(out, iwc)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("search count %s: rows: %w", tables.Main, err)
+
+	commentCounts, err := r.countComments(ctx, tables.Comments, ids)
+	if err != nil {
+		return nil, err
+	}
+	for id, count := range commentCounts {
+		if item, ok := byID[id]; ok {
+			item.CommentCount = count
+		}
+	}
+
+	parents, err := r.parentIDs(ctx, tables.Dependencies, ids)
+	if err != nil {
+		return nil, err
+	}
+	for id, parent := range parents {
+		if item, ok := byID[id]; ok {
+			p := parent
+			item.Parent = &p
+		}
+	}
+
+	return out, nil
+}
+
+func reverseDependencyTables(includeWispReverseDeps bool) []string {
+	if includeWispReverseDeps {
+		return []string{"dependencies", "wisp_dependencies"}
+	}
+	return []string{"dependencies"}
+}
+
+func (r *issueSQLRepositoryImpl) countOutgoingBlocks(ctx context.Context, depTable string, ids []string) (map[string]int, error) {
+	out := make(map[string]int)
+	for start := 0; start < len(ids); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		placeholders, args := buildInPlaceholders(ids[start:end])
+		//nolint:gosec // G201: depTable is a hardcoded table name selected by caller.
+		rows, err := r.runner.QueryContext(ctx, fmt.Sprintf(`
+			SELECT issue_id, COUNT(*) FROM %s
+			WHERE issue_id IN (%s) AND type = 'blocks'
+			GROUP BY issue_id
+		`, depTable, placeholders), args...)
+		if err != nil {
+			return nil, fmt.Errorf("count outgoing blocks from %s: %w", depTable, err)
+		}
+		if err := scanIntCounts(rows, out); err != nil {
+			return nil, fmt.Errorf("count outgoing blocks from %s: %w", depTable, err)
+		}
 	}
 	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) countIncomingBlocks(ctx context.Context, depTable string, ids []string) (map[string]int, error) {
+	out := make(map[string]int)
+	for start := 0; start < len(ids); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		placeholders, args := buildInPlaceholders(ids[start:end])
+		targetClause, targetArgs := depTargetIn(placeholders, args)
+		//nolint:gosec // G201: depTable and targetClause are hardcoded fragments.
+		rows, err := r.runner.QueryContext(ctx, fmt.Sprintf(`
+			SELECT %s AS depends_on_id, COUNT(*) FROM %s
+			WHERE %s AND type = 'blocks'
+			GROUP BY %s
+		`, depTargetExpr, depTable, targetClause, depTargetExpr), targetArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("count incoming blocks from %s: %w", depTable, err)
+		}
+		if err := scanIntCounts(rows, out); err != nil {
+			return nil, fmt.Errorf("count incoming blocks from %s: %w", depTable, err)
+		}
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) countComments(ctx context.Context, commentTable string, ids []string) (map[string]int, error) {
+	out := make(map[string]int)
+	for start := 0; start < len(ids); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		placeholders, args := buildInPlaceholders(ids[start:end])
+		//nolint:gosec // G201: commentTable is a hardcoded table name selected by caller.
+		rows, err := r.runner.QueryContext(ctx, fmt.Sprintf(`
+			SELECT issue_id, COUNT(*) FROM %s
+			WHERE issue_id IN (%s)
+			GROUP BY issue_id
+		`, commentTable, placeholders), args...)
+		if err != nil {
+			return nil, fmt.Errorf("count comments from %s: %w", commentTable, err)
+		}
+		if err := scanIntCounts(rows, out); err != nil {
+			return nil, fmt.Errorf("count comments from %s: %w", commentTable, err)
+		}
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) parentIDs(ctx context.Context, depTable string, ids []string) (map[string]string, error) {
+	out := make(map[string]string)
+	for start := 0; start < len(ids); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		placeholders, args := buildInPlaceholders(ids[start:end])
+		//nolint:gosec // G201: depTable is a hardcoded table name selected by caller.
+		rows, err := r.runner.QueryContext(ctx, fmt.Sprintf(`
+			SELECT issue_id, MIN(%s) FROM %s
+			WHERE issue_id IN (%s) AND type = 'parent-child'
+			GROUP BY issue_id
+		`, depTargetExpr, depTable, placeholders), args...)
+		if err != nil {
+			return nil, fmt.Errorf("load parent ids from %s: %w", depTable, err)
+		}
+		for rows.Next() {
+			var issueID string
+			var parent sql.NullString
+			if err := rows.Scan(&issueID, &parent); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan parent id: %w", err)
+			}
+			if parent.Valid {
+				out[issueID] = parent.String
+			}
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("parent id rows: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func scanIntCounts(rows *sql.Rows, out map[string]int) error {
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id string
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			return fmt.Errorf("scan count: %w", err)
+		}
+		out[id] += count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("count rows: %w", err)
+	}
+	return nil
 }
 
 func (r *issueSQLRepositoryImpl) optionalTableExists(ctx context.Context, table string) (bool, error) {
@@ -224,89 +302,6 @@ func (r *issueSQLRepositoryImpl) optionalTableExists(ctx context.Context, table 
 	default:
 		return false, err
 	}
-}
-
-var readyWorkIssueColumns = func() string {
-	raw := strings.ReplaceAll(issueSelectColumns, "\n", " ")
-	raw = strings.ReplaceAll(raw, "\t", " ")
-	parts := strings.Split(raw, ",")
-	for i, p := range parts {
-		parts[i] = "i." + strings.TrimSpace(p)
-	}
-	return strings.Join(parts, ", ")
-}()
-
-const readyWorkDepJSONObject = `JSON_OBJECT(
-	'issue_id', issue_id,
-	'depends_on_id', COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external),
-	'type', type,
-	'created_at', DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ'),
-	'created_by', created_by,
-	'metadata', CAST(metadata AS CHAR),
-	'thread_id', thread_id
-)`
-
-func scanReadyWorkRowWithCounts(rows *sql.Rows) (*types.IssueWithCounts, error) {
-	var labelsJSON, depsJSON sql.NullString
-	var parentID sql.NullString
-	var depCount, rdepCount, commentCount sql.NullInt64
-
-	composite := &compositeReadyRow{
-		row: rows,
-		extra: []any{
-			&labelsJSON,
-			&depCount,
-			&rdepCount,
-			&commentCount,
-			&parentID,
-			&depsJSON,
-		},
-	}
-	issue, err := scanIssue(composite)
-	if err != nil {
-		return nil, fmt.Errorf("scan issue with counts: %w", err)
-	}
-
-	if labelsJSON.Valid && labelsJSON.String != "" {
-		var labels []string
-		if err := json.Unmarshal([]byte(labelsJSON.String), &labels); err != nil {
-			return nil, fmt.Errorf("scan issue with counts: parse labels_json: %w", err)
-		}
-		sort.Strings(labels)
-		issue.Labels = labels
-	}
-
-	if depsJSON.Valid && depsJSON.String != "" {
-		var deps []*types.Dependency
-		if err := json.Unmarshal([]byte(depsJSON.String), &deps); err != nil {
-			return nil, fmt.Errorf("scan issue with counts: parse deps_json: %w", err)
-		}
-		issue.Dependencies = deps
-	}
-
-	iwc := &types.IssueWithCounts{
-		Issue:           issue,
-		DependencyCount: int(depCount.Int64),
-		DependentCount:  int(rdepCount.Int64),
-		CommentCount:    int(commentCount.Int64),
-	}
-	if parentID.Valid {
-		s := parentID.String
-		iwc.Parent = &s
-	}
-	return iwc, nil
-}
-
-type compositeReadyRow struct {
-	row   *sql.Rows
-	extra []any
-}
-
-func (c *compositeReadyRow) Scan(dest ...any) error {
-	combined := make([]any, 0, len(dest)+len(c.extra))
-	combined = append(combined, dest...)
-	combined = append(combined, c.extra...)
-	return c.row.Scan(combined...)
 }
 
 func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, limit int) []*types.IssueWithCounts {

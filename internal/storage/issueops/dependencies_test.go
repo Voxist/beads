@@ -95,6 +95,28 @@ func TestReplaceDependencyTargetNormalizesTargetColumns(t *testing.T) {
 	}
 }
 
+func TestDepTargetInUsesIndexedColumns(t *testing.T) {
+	t.Parallel()
+
+	clause, args := depTargetIn("d", "?,?", []any{"a", "b"})
+	for _, want := range []string{
+		"d.depends_on_issue_id IN (?,?)",
+		"d.depends_on_wisp_id IN (?,?)",
+		"d.depends_on_external IN (?,?)",
+	} {
+		if !strings.Contains(clause, want) {
+			t.Fatalf("clause %q missing %q", clause, want)
+		}
+	}
+	if strings.Contains(clause, "COALESCE") {
+		t.Fatalf("clause should use physical target columns, got %q", clause)
+	}
+	wantArgs := []any{"a", "b", "a", "b", "a", "b"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
+	}
+}
+
 func TestCycleDetectionTablesUseBothTablesByDefault(t *testing.T) {
 	got := cycleDetectionTables()
 	want := []string{"dependencies", "wisp_dependencies"}
