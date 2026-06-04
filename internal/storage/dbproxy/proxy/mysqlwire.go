@@ -183,10 +183,10 @@ func serverGreeting(connID uint32, salt []byte) []byte {
 	p = append(p, serverCharsetUTF8MB4)
 	p = append(p, byte(statusAutocommit), byte(statusAutocommit>>8))
 	p = append(p, byte(caps>>16), byte(caps>>24))
-	p = append(p, 21)             // auth-plugin-data len (20 salt + NUL)
+	p = append(p, 21)                  // auth-plugin-data len (20 salt + NUL)
 	p = append(p, make([]byte, 10)...) // reserved
-	p = append(p, salt[8:20]...)  // auth-plugin-data-part-2 (12 bytes)
-	p = append(p, 0)              // NUL terminator for part-2
+	p = append(p, salt[8:20]...)       // auth-plugin-data-part-2 (12 bytes)
+	p = append(p, 0)                   // NUL terminator for part-2
 	p = append(p, mysqlNativePassword...)
 	p = append(p, 0)
 	return p
@@ -257,9 +257,9 @@ func indexByte(p []byte, from int, b byte) int {
 // okPacket builds a minimal OK packet for the negotiated capabilities.
 func okPacket(caps uint32) []byte {
 	p := make([]byte, 0, 16)
-	p = append(p, 0x00)             // OK header
-	p = appendLenencInt(p, 0)       // affected rows
-	p = appendLenencInt(p, 0)       // last insert id
+	p = append(p, 0x00)       // OK header
+	p = appendLenencInt(p, 0) // affected rows
+	p = appendLenencInt(p, 0) // last insert id
 	if caps&capProtocol41 != 0 {
 		p = append(p, byte(statusAutocommit), byte(statusAutocommit>>8))
 		p = append(p, 0, 0) // warnings
@@ -371,7 +371,7 @@ func parseServerGreeting(p []byte) (salt []byte, plugin string, err error) {
 		// Pre-4.1 server: only lower caps present. Not expected from dolt.
 		return salt, mysqlNativePassword, nil
 	}
-	off++ // charset
+	off++    // charset
 	off += 2 // status flags
 	capHigh := uint32(p[off]) | uint32(p[off+1])<<8
 	off += 2

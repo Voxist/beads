@@ -72,10 +72,10 @@ func (s *Stats) AddBytesClientToBackend(n int64) {
 func (s *Stats) AddBytesBackendToClient(n int64) {
 	s.update(func(c *Counters) { c.BytesBackendToClient += n })
 }
-func (s *Stats) IncPoolHit()       { s.update(func(c *Counters) { c.PoolHits++ }) }
-func (s *Stats) IncPoolMiss()      { s.update(func(c *Counters) { c.PoolMisses++ }) }
-func (s *Stats) IncPoolDialError() { s.update(func(c *Counters) { c.PoolDialErrors++ }) }
-func (s *Stats) IncPoolReset()     { s.update(func(c *Counters) { c.PoolResets++ }) }
+func (s *Stats) IncPoolHit()        { s.update(func(c *Counters) { c.PoolHits++ }) }
+func (s *Stats) IncPoolMiss()       { s.update(func(c *Counters) { c.PoolMisses++ }) }
+func (s *Stats) IncPoolDialError()  { s.update(func(c *Counters) { c.PoolDialErrors++ }) }
+func (s *Stats) IncPoolReset()      { s.update(func(c *Counters) { c.PoolResets++ }) }
 func (s *Stats) IncPoolResetError() { s.update(func(c *Counters) { c.PoolResetErrors++ }) }
-func (s *Stats) IncPoolDead()      { s.update(func(c *Counters) { c.PoolDead++ }) }
-func (s *Stats) IncPoolRetire()    { s.update(func(c *Counters) { c.PoolRetires++ }) }
+func (s *Stats) IncPoolDead()       { s.update(func(c *Counters) { c.PoolDead++ }) }
+func (s *Stats) IncPoolRetire()     { s.update(func(c *Counters) { c.PoolRetires++ }) }
