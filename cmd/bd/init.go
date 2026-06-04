@@ -199,6 +199,17 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 			externalConfig = &cfg
 		}
+		if initProxiedServer && externalConfig == nil {
+			// Managed (local dolt sql-server) proxied mode still lacks a local
+			// Dolt init lifecycle — that path must mark any local .dolt/ it
+			// creates or acknowledges with doltserver.MarkDoltDirCompatible
+			// before it can be enabled. External proxied mode fronts an
+			// already-running sql-server and creates no local Dolt, so it is
+			// supported.
+			FatalError("--proxied-server currently supports external mode only; " +
+				"specify the backend with --proxied-server-external-host and --proxied-server-external-port " +
+				"(or --proxied-server-external-socket-path)")
+		}
 
 		// Handle --backend flag: "dolt" is the only supported backend.
 		// "sqlite" is accepted for backward compatibility but prints a
