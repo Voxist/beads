@@ -107,6 +107,31 @@ func PoolSizeFromEnv() int {
 	return n
 }
 
+// IdleTimeoutEnvVar overrides how long a pooling proxy stays alive with no
+// active client connections before it shuts down. The default (30s) is tuned
+// for a single busy workspace; an orchestrator that touches many scopes
+// sparsely (e.g. gascity probing dozens of rigs once per patrol) starves each
+// proxy below that window, so it spawns, serves one op, idle-dies, and respawns
+// on the next touch — pure churn that never reaches the warm-pool steady state
+// pooling exists to provide. Raising the timeout (e.g. "10m") keeps proxies warm
+// across sparse bursts. Accepts a Go duration string.
+const IdleTimeoutEnvVar = "BEADS_PROXY_IDLE_TIMEOUT"
+
+// IdleTimeoutFromEnv reads IdleTimeoutEnvVar, returning fallback when unset,
+// empty, or unparseable. A parsed non-positive value (e.g. "0") is returned
+// verbatim, which disables the idle timeout (proxy stays up until stopped).
+func IdleTimeoutFromEnv(fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(IdleTimeoutEnvVar))
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
+
 func PickFreePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

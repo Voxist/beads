@@ -55,7 +55,7 @@ func NewDoltServerUOWProvider(
 		ConfigFilePath: serverConfigFilePath,
 		LogFilePath:    serverLogFilePath,
 		DoltBinPath:    absDoltBinExec,
-		IdleTimeout:    defaultProxyIdleTimeout,
+		IdleTimeout:    proxy.IdleTimeoutFromEnv(defaultProxyIdleTimeout),
 		PoolSize:       proxy.PoolSizeFromEnv(),
 		BackendUser:    rootUser,
 	})
