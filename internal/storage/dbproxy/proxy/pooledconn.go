@@ -22,7 +22,7 @@ const handshakeTimeout = 10 * time.Second
 
 // sessionResult reports what the pool should do with the backend afterward.
 type sessionResult struct {
-	backend *pooledConn
+	backend  *pooledConn
 	reusable bool // false → caller must destroy (don't return to pool)
 }
 
