@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/configfile"
@@ -69,6 +70,13 @@ type OpenOpts struct {
 	LogFilePath    string
 	DoltBinPath    string
 	External       configfile.ExternalDoltConfig
+	// PoolSize, when > 0, makes the spawned proxy pool backend connections
+	// (see ProxyOpts.PoolSize). BackendUser is the user the proxy uses to
+	// authenticate those pooled connections; the password, when needed, is
+	// inherited by the child via the environment (it is never passed on the
+	// command line). 0 preserves the transparent, non-pooling proxy.
+	PoolSize    int
+	BackendUser string
 }
 
 const (
@@ -78,6 +86,26 @@ const (
 )
 
 var ResolveExecutable = os.Executable
+
+// PoolSizeEnvVar is the opt-in switch for backend connection pooling. When set
+// to a positive integer, a proxy spawned by this process pools up to that many
+// warm backend connections instead of dialing one per client. Unset or 0
+// disables pooling (transparent forwarding, the historical behavior).
+const PoolSizeEnvVar = "BEADS_PROXY_POOL_SIZE"
+
+// PoolSizeFromEnv reads PoolSizeEnvVar, returning 0 (pooling disabled) when
+// unset, empty, non-numeric, or negative.
+func PoolSizeFromEnv() int {
+	v := strings.TrimSpace(os.Getenv(PoolSizeEnvVar))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
 
 func PickFreePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -254,6 +282,12 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 	}
 	if opts.DoltBinPath != "" {
 		args = append(args, "--dolt-bin", opts.DoltBinPath)
+	}
+	if opts.PoolSize > 0 {
+		args = append(args, "--pool-size", strconv.Itoa(opts.PoolSize))
+		if opts.BackendUser != "" {
+			args = append(args, "--backend-user", opts.BackendUser)
+		}
 	}
 	if opts.Backend == BackendExternal {
 		ext := opts.External
