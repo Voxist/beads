@@ -971,8 +971,14 @@ func TestGitOutput(t *testing.T) {
 // TestGitCmd_WorktreeContext tests that GitCmd correctly operates on the main repo
 // even when running from a git worktree context (GH#2538).
 func TestGitCmd_WorktreeContext(t *testing.T) {
-
+	// Clear BEADS_DIR so GetRepoContext uses auto-discovery on the temp git repo,
+	// not an externally-set path from the CI/developer environment.
+	origBEADS := os.Getenv("BEADS_DIR")
+	os.Unsetenv("BEADS_DIR")
 	t.Cleanup(func() {
+		if origBEADS != "" {
+			os.Setenv("BEADS_DIR", origBEADS)
+		}
 		ResetCaches()
 		git.ResetCaches()
 	})
@@ -1058,6 +1064,109 @@ func TestGitCmd_WorktreeContext(t *testing.T) {
 	}
 	if string(statusOutput) == "" {
 		t.Error("file was not staged - git status shows no changes")
+	}
+}
+
+// TestIsOperatorTrustedLocation tests that shared/group directories are accepted
+// when BEADS_DIR is explicitly set by an operator (SEC-003 advisory path).
+func TestIsOperatorTrustedLocation(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get home directory: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		// System directories — must still be rejected even for explicit BEADS_DIR
+		{"system /etc", "/etc/beads", false},
+		{"system /usr", "/usr/local/beads", false},
+		{"system /bin", "/bin/.beads", false},
+		{"macOS /System", "/System/Library/.beads", false},
+		{"macOS /Library", "/Library/Application Support/.beads", false},
+		{"macOS /private/etc", "/private/etc/.beads", false},
+
+		// Shared/group directories — allowed for explicitly-set BEADS_DIR
+		{"macOS shared dir", "/Users/Shared/Github/project/.beads", true},
+		{"macOS shared subdir", "/Users/Shared/.beads", true},
+
+		// User home dir — always allowed
+		{"user home", filepath.Join(homeDir, "projects/.beads"), true},
+		// Temp dir — always allowed
+		{"temp dir", os.TempDir(), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isOperatorTrustedLocation(tt.path)
+			if result != tt.expected {
+				t.Errorf("isOperatorTrustedLocation(%q) = %v, want %v", tt.path, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetRepoContext_ExplicitBEADSDIR_SharedPath verifies that buildRepoContext
+// succeeds when BEADS_DIR is explicitly set to a path under /Users/Shared
+// (a macOS group-shared directory that isPathInSafeBoundary correctly rejects
+// for auto-discovered paths but should trust for operator-set paths).
+// This is the fix for vp-mwm7 / SEC-003 false-negative.
+func TestGetRepoContext_ExplicitBEADSDIR_SharedPath(t *testing.T) {
+	const sharedBase = "/Users/Shared"
+	if _, err := os.Stat(sharedBase); os.IsNotExist(err) {
+		t.Skip("/Users/Shared not available on this machine")
+	}
+
+	// Confirm the path is currently rejected by isPathInSafeBoundary.
+	// This is the bug we're fixing — if this assertion fails the test env
+	// no longer exhibits the bug and the rest of the test is moot.
+	probePath := filepath.Join(sharedBase, "beads-test-probe")
+	if isPathInSafeBoundary(probePath) {
+		t.Skip("/Users/Shared passes isPathInSafeBoundary on this user; bug is not present")
+	}
+
+	// Create a temp git repo under /Users/Shared
+	tmpDir, err := os.MkdirTemp(sharedBase, "beads-test-*")
+	if err != nil {
+		t.Skipf("cannot create temp dir under /Users/Shared: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+
+	if err := initGitRepo(tmpDir); err != nil {
+		t.Fatalf("initGitRepo failed: %v", err)
+	}
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0750); err != nil {
+		t.Fatalf("failed to create .beads: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "beads.db"), []byte{}, 0644); err != nil {
+		t.Fatalf("failed to create beads.db: %v", err)
+	}
+
+	// Save and restore env + caches
+	origBEADS := os.Getenv("BEADS_DIR")
+	origCWD, _ := os.Getwd()
+	t.Cleanup(func() {
+		if origBEADS != "" {
+			os.Setenv("BEADS_DIR", origBEADS)
+		} else {
+			os.Unsetenv("BEADS_DIR")
+		}
+		os.Chdir(origCWD)
+		ResetCaches()
+		git.ResetCaches()
+	})
+
+	os.Setenv("BEADS_DIR", beadsDir)
+	os.Chdir(tmpDir)
+	ResetCaches()
+	git.ResetCaches()
+
+	_, err = GetRepoContext()
+	if err != nil {
+		t.Errorf("GetRepoContext() error = %v; want nil (explicit BEADS_DIR to /Users/Shared should be trusted)", err)
 	}
 }
 

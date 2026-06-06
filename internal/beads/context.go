@@ -109,7 +109,12 @@ func buildRepoContext() (*RepoContext, error) {
 
 	// 2. Security: Validate path boundary (SEC-003)
 	if !isPathInSafeBoundary(beadsDir) {
-		return nil, fmt.Errorf("BEADS_DIR points to unsafe location: %s", beadsDir)
+		// When BEADS_DIR is explicitly set, the operator has deliberately chosen
+		// the location. Trust non-system paths (e.g., /Users/Shared) that fail
+		// the user-home cross-boundary check but are not system directories.
+		if os.Getenv("BEADS_DIR") == "" || !isOperatorTrustedLocation(beadsDir) {
+			return nil, fmt.Errorf("BEADS_DIR points to unsafe location: %s", beadsDir)
+		}
 	}
 
 	// 3. Check for redirect file in the local repo
@@ -298,6 +303,46 @@ func ResetCaches() {
 var unsafePrefixes = []string{
 	"/etc", "/usr", "/var", "/root", "/System", "/Library",
 	"/bin", "/sbin", "/opt", "/private",
+}
+
+// isOperatorTrustedLocation validates that a path is not in a sensitive system directory.
+// Unlike isPathInSafeBoundary, it relaxes the user-home cross-boundary check for paths
+// in shared/group directories (e.g., /Users/Shared on macOS). Use this when BEADS_DIR
+// was explicitly set by an operator who has deliberately chosen the location (SEC-003
+// advisory — system paths are still rejected).
+func isOperatorTrustedLocation(path string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+
+	// Allow temp directories (same logic as isPathInSafeBoundary)
+	tempDir := os.TempDir()
+	resolvedTemp, _ := filepath.EvalSymlinks(tempDir)
+	resolvedPath, _ := filepath.EvalSymlinks(absPath)
+	if resolvedTemp != "" && strings.HasPrefix(resolvedPath, resolvedTemp) {
+		return true
+	}
+	if strings.HasPrefix(absPath, tempDir) {
+		return true
+	}
+
+	// Allow /var/home (Fedora Silverblue, Bluefin, etc.)
+	if strings.HasPrefix(absPath, "/var/home/") {
+		return true
+	}
+
+	// System directories are always rejected, even for explicitly-set BEADS_DIR
+	for _, prefix := range unsafePrefixes {
+		if strings.HasPrefix(absPath, prefix+"/") || absPath == prefix {
+			return false
+		}
+	}
+
+	// Unlike isPathInSafeBoundary, we do NOT check the user-home boundary here.
+	// The operator explicitly set BEADS_DIR, so cross-home placement (e.g.,
+	// /Users/Shared, a root-owned group directory) is intentional.
+	return true
 }
 
 // isPathInSafeBoundary validates that a path is not in sensitive system directories.
