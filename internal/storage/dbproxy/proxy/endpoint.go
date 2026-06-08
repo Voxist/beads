@@ -34,7 +34,12 @@ func IsUpstreamMismatch(err error) bool {
 }
 
 func intendedUpstreamID(opts OpenOpts) string {
-	if opts.Backend == BackendExternal {
+	// The shared backend fronts the managed dolt through the same external-server
+	// mechanism, so its upstream identity is the same ExternalDoltServerID. A
+	// shared proxy pointed at a different managed dolt must be rejected by the
+	// reuse guard exactly as an external one is (see ErrUpstreamMismatch).
+	switch opts.Backend {
+	case BackendExternal, BackendLocalSharedServer:
 		return server.ExternalDoltServerID(opts.External)
 	}
 	return ""
@@ -143,7 +148,10 @@ func GetCreateDatabaseProxyServerEndpoint(rootDir string, opts OpenOpts) (Endpoi
 		if opts.DoltBinPath == "" {
 			return Endpoint{}, fmt.Errorf("OpenOpts.DoltBinPath is required for backend %q", opts.Backend)
 		}
-	case BackendExternal:
+	case BackendExternal, BackendLocalSharedServer:
+		// The shared backend fronts the managed dolt via the external-server
+		// mechanism, so it carries the same requirements: a log path and a
+		// valid External target (which is also its upstream identity).
 		if opts.LogFilePath == "" {
 			return Endpoint{}, fmt.Errorf("OpenOpts.LogFilePath is required for backend %q", opts.Backend)
 		}
