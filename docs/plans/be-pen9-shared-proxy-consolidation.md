@@ -196,3 +196,22 @@ chain-of-evidence metadata is involved.
   > on a throwaway city: `pgrep -f db-proxy-child | wc -l` → 1. Base: a beads
   > release that includes be-pen9.
   > **Depends on:** be-pen9 (beads side) merged + released.
+
+## Status
+
+All micro-tasks green; one PR opens the accumulated per-task commits on `gc/be-pen9`.
+
+- [x] T-001 — failing test: shared-rootDir reuse + upstream-ID guard   ✅ green at `be89a1897`
+- [x] T-002 — failing test: `newDatabaseServer(BackendLocalSharedServer)` usable   ✅ green at `002316c49`
+- [x] T-003 — dispatch `BackendLocalSharedServer` → `NewExternalDoltServer`; password gate covers it; obsolete `…StillStubbed` test replaced   ✅ green at `002316c49`
+- [x] T-004 — `intendedUpstreamID` + endpoint validation switch cover the shared backend (`External` required)   ✅ green at `be89a1897`
+- [x] T-005 — extracted pure `childArgs(rootDir, opts, port)` seam; shared backend carries `--external-*` via `backendCarriesExternal`   ✅ green at `c2753121e`
+- [x] T-006 — `doltserver.SharedProxyRootDir()` machine-wide resolver + opt-in `BEADS_SHARED_PROXY` rootDir chokepoint in `resolveProxiedServerRootPath`   ✅ green at `587f3c9bc`
+- [x] T-007 — THROWAWAY proxied-shared city (NOT live portharbour): two external-proxied scopes → **1** db-proxy-child (before 0 → init A 1 → init B still 1; both stores queryable). N+1→1 confirmed; live fleet untouched. Evidence in the bead.
+- [x] T-008 — `go build ./...` + `go vet ./...` + `go test ./internal/storage/dbproxy/...` green; deployment-doc §4 (`local-shared-server`) added; cross-rig gascity sling captured as `ga-mozik` (gascity store, gated on be-pen9 release, unrouted by design)   ✅ green at `70a019042`
+
+### Resolved open questions
+
+- **New backend type necessary?** Kept as the plan's lightest wiring: `local-shared-server` dispatches to `NewExternalDoltServer` (same server type); the collapse is the shared rootDir. The distinct backend buys explicit validation, the upstream-ID guard, and `--external-*` fork plumbing — worth it for discoverability and a STEP-3 seam.
+- **Shared rootDir location + override.** `doltserver.SharedProxyRootDir()` → `~/.beads/shared-server/proxy/`, override `BEADS_SHARED_PROXY_ROOT_PATH` (mirrors `BEADS_SHARED_SERVER_DIR`). Scope opt-in is `BEADS_SHARED_PROXY` (truthy), OFF by default so existing proxied scopes are byte-for-byte unchanged.
+- **Blast radius / idle timeout.** Unchanged from the existing proxy: `BEADS_PROXY_IDLE_TIMEOUT` keeps a shared proxy warm; spawn-or-reuse recovery in `endpoint.go` is identical (one rootDir). No hardening needed for the opt-in beads side; production blast-radius tuning rides the gascity sling (`ga-mozik`).
