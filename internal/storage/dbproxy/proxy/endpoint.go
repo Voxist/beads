@@ -265,19 +265,20 @@ func spawnAndHandoff(rootDir string, opts OpenOpts, deadline time.Time, lock *ut
 	}
 }
 
-func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*exec.Cmd, <-chan struct{}, error) {
-	released := false
-	defer func() {
-		if !released {
-			lock.Unlock()
-		}
-	}()
+// backendCarriesExternal reports whether the backend fronts an external dolt
+// target whose --external-* connection args must cross the fork boundary. Both
+// the external backend and the shared backend (which fronts the managed dolt
+// through the same external-server mechanism) carry them; the managed
+// local-server backend does not.
+func backendCarriesExternal(b Backend) bool {
+	return b == BackendExternal || b == BackendLocalSharedServer
+}
 
-	self, err := ResolveExecutable()
-	if err != nil {
-		return nil, nil, fmt.Errorf("locate bd executable: %w", err)
-	}
-
+// childArgs builds the db-proxy-child argv (the tokens after the executable)
+// for the given rootDir, open options, and listener port. It is pure — no I/O,
+// no side effects — so the fork contract can be unit-tested without spawning a
+// process. forkExecChild is the sole production caller.
+func childArgs(rootDir string, opts OpenOpts, port int) []string {
 	idleTimeout := opts.IdleTimeout
 	if idleTimeout < 0 {
 		idleTimeout = 0
@@ -305,7 +306,7 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 			args = append(args, "--backend-user", opts.BackendUser)
 		}
 	}
-	if opts.Backend == BackendExternal {
+	if backendCarriesExternal(opts.Backend) {
 		ext := opts.External
 		if ext.Host != "" {
 			args = append(args, "--external-host", ext.Host)
@@ -329,6 +330,23 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 			args = append(args, "--external-keep-alive", ext.KeepAlivePeriod.String())
 		}
 	}
+	return args
+}
+
+func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*exec.Cmd, <-chan struct{}, error) {
+	released := false
+	defer func() {
+		if !released {
+			lock.Unlock()
+		}
+	}()
+
+	self, err := ResolveExecutable()
+	if err != nil {
+		return nil, nil, fmt.Errorf("locate bd executable: %w", err)
+	}
+
+	args := childArgs(rootDir, opts, port)
 
 	logFile, err := os.OpenFile(opts.LogFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: logFilePath is caller-derived (workspace path), not user-request input
 	if err != nil {
