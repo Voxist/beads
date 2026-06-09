@@ -107,6 +107,15 @@ func openDB(ctx context.Context, dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("uow: open db: %w", err)
 	}
+	// S3e (v2): bound the client-side *sql.DB pool. A bd invocation is a
+	// short-lived single-threaded process; without these caps the driver
+	// opens an unbounded set of backend connections to the db-proxy, which
+	// (combined with the routed-store leak) exhausted the proxy's connection
+	// budget and wedged it. One live + one idle connection, recycled every
+	// 5 minutes, is sufficient for a single command's lifetime.
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
+	conn.SetConnMaxLifetime(5 * time.Minute)
 	if err := conn.PingContext(ctx); err != nil {
 		return nil, errors.Join(fmt.Errorf("uow: ping db: %w", err), conn.Close())
 	}

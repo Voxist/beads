@@ -203,6 +203,16 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 		)
 		p.tracef("connection pooling enabled (maxIdle=%d, user=%q, lifetime=%s)", p.poolSize, user, p.poolLifetime)
 		defer p.pool.drain()
+
+		// S3a (v2, primary anti-wedge): cap the number of concurrently-handled
+		// client connections to poolSize. errgroup.SetLimit makes acceptLoop's
+		// p.conns.Go block (kernel backlog absorbs the queue) rather than
+		// spawning an unbounded set of handlers, each of which would dial or
+		// borrow a backend connection. This is what bounds live backend
+		// connections per proxy; with poolSize=2 an N-scope city peaks at
+		// N×(poolSize+1) backend connections. Only set when pooling is enabled:
+		// SetLimit(0) would block every handler and wedge the non-pooled path.
+		p.conns.SetLimit(p.poolSize)
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
