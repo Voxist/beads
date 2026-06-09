@@ -1071,6 +1071,16 @@ var rootCmd = &cobra.Command{
 				debug.Logf("proxied-server: routed store unavailable, store-based commands disabled: %v", serr)
 			}
 
+			// S4: restore workspace-identity validation in proxied mode. The
+			// direct-path call (below, ~1142) is unreachable here because the
+			// proxied block returns early, so without this a write command could
+			// silently mutate the wrong scope through a misconfigured proxy.
+			// validateWorkspaceIdentity reads _project_id over the routed store
+			// and no-ops when the store is nil, so it is safe in best-effort mode.
+			if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
+				validateWorkspaceIdentity(rootCtx, beadsDir)
+			}
+
 			syncCommandContext()
 			return
 		}
