@@ -41,6 +41,13 @@ func NewExternalDoltServerUOWProvider(
 		return nil, fmt.Errorf("uow: creating server root directory: %w", err)
 	}
 
+	// Tell Spotlight never to index this directory (same rationale as the
+	// local-server provider — see doltserver_provider.go).
+	noindex := filepath.Join(absServerRootDir, ".metadata_never_index")
+	if _, statErr := os.Stat(noindex); os.IsNotExist(statErr) {
+		_ = os.WriteFile(noindex, nil, 0o444)
+	}
+
 	ep, err := proxy.GetCreateDatabaseProxyServerEndpoint(absServerRootDir, proxy.OpenOpts{
 		Backend:     proxy.BackendExternal,
 		LogFilePath: serverLogFilePath,

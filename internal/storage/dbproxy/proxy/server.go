@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 
@@ -52,6 +53,10 @@ type ProxyOpts struct {
 	// duration. 0 (default) keeps them indefinitely — a short lifetime would
 	// re-create the very connection churn pooling exists to eliminate.
 	PoolConnMaxLifetime time.Duration
+	// Debug enables per-connection trace lines (accepted, handleConn start/end,
+	// dial ok, copy done). Default false — these lines are the dominant write
+	// source under fleet churn and drive the macOS FSEvents/Spotlight storm.
+	Debug bool
 }
 
 type proxyServer struct {
@@ -64,6 +69,7 @@ type proxyServer struct {
 	backendUser     string
 	backendPassword string
 	poolLifetime    time.Duration
+	debug           bool
 
 	logger      *log.Logger
 	listener    net.Listener
@@ -121,6 +127,7 @@ func NewProxyServer(opts ProxyOpts) *proxyServer {
 		backendUser:     opts.BackendUser,
 		backendPassword: opts.BackendPassword,
 		poolLifetime:    opts.PoolConnMaxLifetime,
+		debug:           opts.Debug,
 		// At most one benign-disconnect log line per second, burst 1.
 		disconnectLogLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
 	}
@@ -168,6 +175,14 @@ func (p *proxyServer) tracef(format string, args ...any) {
 	p.logger.Printf(format, args...)
 }
 
+// debugf logs only when Debug is enabled. Use for per-connection events that
+// are chatty under fleet churn (accepted, handleConn, copy done).
+func (p *proxyServer) debugf(format string, args ...any) {
+	if p.debug {
+		p.logger.Printf(format, args...)
+	}
+}
+
 func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 	lock, err := util.TryLock(filepath.Join(p.rootDir, LockFileName))
 	if err != nil {
@@ -179,12 +194,14 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 	defer lock.Unlock()
 
 	logPath := filepath.Join(p.rootDir, LogFileName)
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- logPath is derived from operator-supplied config, not untrusted request input
-	if err != nil {
-		return fmt.Errorf("open proxy log %q: %w", logPath, err)
+	lj := &lumberjack.Logger{
+		Filename:   logPath,
+		MaxSize:    50, // MB per file before rotation
+		MaxBackups: 3,
+		LocalTime:  true,
 	}
-	p.logger = log.New(f, "[proxy] ", log.LstdFlags|log.Lmicroseconds)
-	defer func() { _ = f.Close() }()
+	p.logger = log.New(lj, "[proxy] ", log.LstdFlags|log.Lmicroseconds)
+	defer func() { _ = lj.Close() }()
 
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
@@ -352,7 +369,7 @@ func (p *proxyServer) acceptLoop(ctx context.Context) error {
 			_ = tc.SetKeepAlive(true)
 			_ = tc.SetKeepAlivePeriod(tcpKeepAlivePeriod)
 		}
-		p.tracef("acceptLoop accepted (remote=%s)", conn.RemoteAddr())
+		p.debugf("acceptLoop accepted (remote=%s)", conn.RemoteAddr())
 		p.stats.IncAccept()
 		p.conns.Go(func() error {
 			return p.handleConn(ctx, conn)
@@ -362,11 +379,11 @@ func (p *proxyServer) acceptLoop(ctx context.Context) error {
 
 func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 	addr := client.RemoteAddr()
-	p.tracef("handleConn(%s) start", addr)
+	p.debugf("handleConn(%s) start", addr)
 	p.activeConns.Add(1)
 	defer func() {
 		p.activeConns.Add(-1)
-		p.tracef("handleConn(%s) end (active=%d)", addr, p.activeConns.Load())
+		p.debugf("handleConn(%s) end (active=%d)", addr, p.activeConns.Load())
 	}()
 
 	if p.pool != nil {
@@ -383,7 +400,7 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 		_ = client.Close()
 		return err
 	}
-	p.tracef("handleConn(%s) backend dial ok", addr)
+	p.debugf("handleConn(%s) backend dial ok", addr)
 	p.stats.IncBackendDialSuccess()
 	p.stats.IncHandledConn()
 
@@ -408,7 +425,7 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 		defer func() { _ = client.Close() }()
 		n, err := io.Copy(backend, client)
 		p.stats.AddBytesClientToBackend(n)
-		p.tracef("handleConn(%s) client→backend done (n=%d, err=%v)", addr, n, err)
+		p.debugf("handleConn(%s) client→backend done (n=%d, err=%v)", addr, n, err)
 		return err
 	})
 	g.Go(func() error {
@@ -417,7 +434,7 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 		defer func() { _ = client.Close() }()
 		n, err := io.Copy(client, backend)
 		p.stats.AddBytesBackendToClient(n)
-		p.tracef("handleConn(%s) backend→client done (n=%d, err=%v)", addr, n, err)
+		p.debugf("handleConn(%s) backend→client done (n=%d, err=%v)", addr, n, err)
 		return err
 	})
 	return g.Wait()

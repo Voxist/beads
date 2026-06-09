@@ -63,6 +63,9 @@ type OpenOpts struct {
 	// command line). 0 preserves the transparent, non-pooling proxy.
 	PoolSize    int
 	BackendUser string
+	// Debug enables per-connection trace logging in the proxy child process.
+	// Leave false in production; set true only for diagnostic runs.
+	Debug bool
 }
 
 const (
@@ -296,6 +299,9 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 		if opts.BackendUser != "" {
 			args = append(args, "--backend-user", opts.BackendUser)
 		}
+	}
+	if opts.Debug {
+		args = append(args, "--debug")
 	}
 	if opts.Backend == BackendExternal {
 		ext := opts.External
