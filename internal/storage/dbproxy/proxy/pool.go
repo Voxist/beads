@@ -22,6 +22,12 @@ import (
 	"time"
 )
 
+// poolDialTimeout bounds a backend TCP dial. It is deliberately tight and
+// distinct from handshakeTimeout (10s, see pooledconn.go): a saturated Dolt
+// should fail the dial fast, free the pool/errgroup slot, and let the caller
+// back off on "i/o timeout" rather than pinning the slot for the whole request.
+const poolDialTimeout = 2 * time.Second
+
 // backendKey identifies an interchangeable class of pooled connections. Two
 // borrowers may share a connection only if their keys are equal.
 type backendKey struct {
@@ -112,12 +118,20 @@ func (p *backendPool) get(ctx context.Context, key backendKey) (*pooledConn, err
 
 // dialNew opens and authenticates a fresh backend connection for key.
 func (p *backendPool) dialNew(ctx context.Context, key backendKey, transient bool) (*pooledConn, error) {
-	conn, err := p.dial(ctx)
+	// S3c: dial under a tight, dedicated deadline (or the caller's, if sooner).
+	dialCtx, cancel := context.WithTimeout(ctx, poolDialTimeout)
+	conn, err := p.dial(dialCtx)
+	cancel()
 	if err != nil {
 		p.stats.IncPoolDialError()
 		return nil, err
 	}
-	deadline, _ := ctx.Deadline()
+	// Handshake gets its own, more generous absolute deadline so a slow auth
+	// exchange is not bounded by the short dial timeout.
+	deadline := time.Now().Add(handshakeTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
 	if err := backendHandshake(conn, key.caps, key.db, p.user, p.password, deadline); err != nil {
 		_ = conn.Close()
 		p.stats.IncPoolDialError()
