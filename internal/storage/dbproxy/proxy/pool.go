@@ -118,10 +118,13 @@ func (p *backendPool) get(ctx context.Context, key backendKey) (*pooledConn, err
 
 // dialNew opens and authenticates a fresh backend connection for key.
 func (p *backendPool) dialNew(ctx context.Context, key backendKey, transient bool) (*pooledConn, error) {
+	// S3f: track concurrent dials for the peak gauge.
+	dialDone := p.stats.DialBegin()
 	// S3c: dial under a tight, dedicated deadline (or the caller's, if sooner).
 	dialCtx, cancel := context.WithTimeout(ctx, poolDialTimeout)
 	conn, err := p.dial(dialCtx)
 	cancel()
+	dialDone()
 	if err != nil {
 		p.stats.IncPoolDialError()
 		return nil, err

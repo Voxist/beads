@@ -374,7 +374,9 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 	}
 
 	p.stats.IncBackendDialAttempt()
+	dialDone := p.stats.DialBegin() // S3f: concurrent-dial peak gauge
 	backend, err := p.server.Dial(ctx)
+	dialDone()
 	if err != nil {
 		p.tracef("handleConn(%s) backend dial error: %v", addr, err)
 		p.stats.IncBackendDialError()
