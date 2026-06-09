@@ -1174,6 +1174,14 @@ var rootCmd = &cobra.Command{
 		defer restoreChangeDirSelection()
 
 		if proxiedServerMode {
+			// S1 (v2): close the routed store too. PreRun opens a proxied
+			// routed *sql.DB-backed store (newProxiedServerRoutedStore); closing
+			// only uowProvider here leaked one backend connection to the db-proxy
+			// per bd invocation, which exhausted the pool and wedged the proxy.
+			if store != nil {
+				_ = store.Close()
+				store = nil
+			}
 			if uowProvider != nil {
 				_ = uowProvider.Close(rootCtx)
 				uowProvider = nil
