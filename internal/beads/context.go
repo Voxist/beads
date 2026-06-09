@@ -326,6 +326,19 @@ func isPathInSafeBoundary(path string) bool {
 		return true
 	}
 
+	// SEC-003 carve-out: /Users/Shared is a macOS shared directory that is
+	// legitimately group-writable and is not any user's home, so a city/beads
+	// store may live there (e.g. /Users/Shared/Github/...). Without this, the
+	// "other users' home" check below rejects it and bd context hard-fails
+	// fleet-wide. Harden against symlink escape: the resolved path must also stay
+	// under /Users/Shared so a symlink there cannot reach a sensitive location.
+	const sharedRoot = "/Users/Shared"
+	if absPath == sharedRoot || strings.HasPrefix(absPath, sharedRoot+"/") {
+		if resolvedPath == "" || resolvedPath == sharedRoot || strings.HasPrefix(resolvedPath, sharedRoot+"/") {
+			return true
+		}
+	}
+
 	for _, prefix := range unsafePrefixes {
 		if strings.HasPrefix(absPath, prefix+"/") || absPath == prefix {
 			return false
