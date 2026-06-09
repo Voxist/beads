@@ -1071,6 +1071,18 @@ var rootCmd = &cobra.Command{
 				debug.Logf("proxied-server: routed store unavailable, store-based commands disabled: %v", serr)
 			}
 
+			// S2 (central guard): if the routed store failed to open, every
+			// store-requiring command reaching this block would dereference a nil
+			// store (~600 sites pass the global store into helpers like
+			// resolveAndGetFromStore that call store methods directly). Fail loudly
+			// once, here, with the captured cause + actionable hint. bd create is the
+			// only command reaching this block that runs on the uow provider alone,
+			// so it must tolerate a missing routed store; dolt push/pull/commit are
+			// unsupported and surface their own typed error in the command body.
+			if store == nil && cmdName != "create" {
+				_ = requireStore() // exits non-zero; never returns when store is nil
+			}
+
 			// S4: restore workspace-identity validation in proxied mode. The
 			// direct-path call (below, ~1142) is unreachable here because the
 			// proxied block returns early, so without this a write command could
@@ -1397,10 +1409,12 @@ func flushBatchCommitOnShutdown() {
 
 // requireStore returns the active store, or exits with a clear, non-panicking
 // error when it is nil (S2). In proxied mode the routed store can be nil when
-// the db-proxy is unreachable; store-requiring commands (ready/list/stats/
-// update/close/...) must fail loudly here instead of dereferencing a nil store
-// — the bd ready nil-store panic. bd create deliberately does not call this:
-// it uses the uow provider and tolerates a missing routed store.
+// the db-proxy is unreachable. The proxied PreRun installs a central guard that
+// calls this for every store-requiring command (every command reaching the
+// proxied store-init block except bd create), so the ~600 raw store-deref sites
+// fail loudly here instead of panicking — the bd ready nil-store panic. It is
+// also called directly at the bd ready use sites. bd create deliberately does
+// not trigger it: it uses the uow provider and tolerates a missing routed store.
 func requireStore() storage.DoltStorage {
 	storeMutex.Lock()
 	st := store
