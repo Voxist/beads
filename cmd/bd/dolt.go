@@ -254,6 +254,10 @@ uncommitted changes in its working set).
 Use --remote to push to a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
 	Run: func(cmd *cobra.Command, args []string) {
+		// S5: raw-Dolt remote sync is impossible through the proxy (the routed
+		// DoltRemoteUseCase covers remote config CRUD only). Fail loudly with a
+		// typed, actionable error rather than appearing to succeed.
+		guardUnsupportedInProxiedMode(CapabilityDoltPush)
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
@@ -323,6 +327,8 @@ variables for authentication.
 Use --remote to pull from a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
 	Run: func(cmd *cobra.Command, args []string) {
+		// S5: see doltPushCmd — raw-Dolt remote sync is unsupported in proxied mode.
+		guardUnsupportedInProxiedMode(CapabilityDoltPull)
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
