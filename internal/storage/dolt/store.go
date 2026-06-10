@@ -487,6 +487,7 @@ var doltMetrics struct {
 	circuitTrips        metric.Int64Counter
 	circuitRejected     metric.Int64Counter
 	serializationErrors metric.Int64Counter
+	writeRetries        metric.Int64Counter
 	connAcquireMs       metric.Float64Histogram
 	poolWaitCount       metric.Int64Counter
 	poolWaitMs          metric.Float64Histogram
@@ -513,6 +514,10 @@ func init() {
 	doltMetrics.serializationErrors, _ = m.Int64Counter("bd.db.serialization_errors",
 		metric.WithDescription("Serialization failures (MySQL 1213/1205) before retry"),
 		metric.WithUnit("{error}"),
+	)
+	doltMetrics.writeRetries, _ = m.Int64Counter("bd.write_retries_total",
+		metric.WithDescription("Write-tx retries in withRetryTx (label: type=serialization|connection)"),
+		metric.WithUnit("{retry}"),
 	)
 	doltMetrics.connAcquireMs, _ = m.Float64Histogram("bd.db.conn_acquire_ms",
 		metric.WithDescription("Time to acquire a pooled connection for a Dolt transaction"),
@@ -633,6 +638,11 @@ func (s *DoltStore) withRetryTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 		err := s.withWriteTx(ctx, fn)
 		if err != nil && isSerializationError(err) {
 			doltMetrics.serializationErrors.Add(ctx, 1)
+			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "serialization")))
+			return err // retryable
+		}
+		if err != nil && isRetryableError(err) {
+			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "connection")))
 			return err // retryable
 		}
 		if err != nil {

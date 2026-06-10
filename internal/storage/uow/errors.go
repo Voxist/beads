@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"syscall"
 
 	mysql "github.com/go-sql-driver/mysql"
@@ -45,4 +46,18 @@ func isRetryableWarmupError(err error) bool {
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET)
+}
+
+// isInvalidConnectionError returns true if the error is a transient MySQL
+// driver connection failure. The transaction was either rolled back or never
+// started, so the entire sequence is safe to replay.
+func isInvalidConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "invalid connection") ||
+		strings.Contains(s, "driver: bad connection") ||
+		strings.Contains(s, "lost connection") ||
+		strings.Contains(s, "broken pipe")
 }
