@@ -121,6 +121,28 @@ func IdleTimeoutFromEnv(fallback time.Duration) time.Duration {
 	return d
 }
 
+// DebugEnvVar re-enables the proxy's per-connection trace lines (accepted,
+// handleConn start/end, dial ok, copy done) for diagnostic runs. They default
+// OFF: under fleet churn those lines are the dominant proxy.log write source
+// (the 1.38 GB proxy.log incident) and feed the macOS FSEvents/Spotlight
+// storm. Accepts strconv.ParseBool values ("1", "true", "0", "false", ...).
+const DebugEnvVar = "BEADS_PROXY_DEBUG"
+
+// DebugFromEnv reads DebugEnvVar, returning fallback when unset, empty, or
+// unparseable. A parseable value wins over the fallback, so an explicit "0"
+// turns debug off even when the caller defaults it on.
+func DebugFromEnv(fallback bool) bool {
+	v := strings.TrimSpace(os.Getenv(DebugEnvVar))
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
+}
+
 func PickFreePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

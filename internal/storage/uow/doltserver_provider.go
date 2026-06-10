@@ -65,6 +65,7 @@ func NewDoltServerUOWProvider(
 		IdleTimeout:    proxy.IdleTimeoutFromEnv(defaultProxyIdleTimeout),
 		PoolSize:       proxy.PoolSizeFromEnv(),
 		BackendUser:    rootUser,
+		Debug:          proxy.DebugFromEnv(false),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("uow: get proxy endpoint: %w", err)
