@@ -71,7 +71,7 @@ not intended to be invoked directly by users.`,
 		// non-empty password; the managed loopback server uses root with no
 		// password.
 		backendPassword := ""
-		if backend == proxy.BackendExternal {
+		if backend == proxy.BackendExternal || backend == proxy.BackendLocalSharedServer {
 			backendPassword = os.Getenv(configfile.ExternalDoltPasswordEnvVar)
 		}
 
@@ -98,10 +98,12 @@ func newDatabaseServer(backend proxy.Backend, rootDir, configPath, logPath, dolt
 	switch backend {
 	case proxy.BackendLocalServer:
 		return server.NewDoltServer(doltBin, rootDir, configPath, logPath, 0)
-	case proxy.BackendExternal:
+	case proxy.BackendExternal, proxy.BackendLocalSharedServer:
+		// The shared backend fronts the managed dolt through the same external
+		// server. The N+1 → 1 collapse comes from pointing every scope at one
+		// shared rootDir (so the parent's spawn-or-reuse yields a single child),
+		// not from a distinct server type.
 		return server.NewExternalDoltServer(external)
-	case proxy.BackendLocalSharedServer:
-		return nil, fmt.Errorf("backend %q: not yet implemented", backend)
 	}
 	return nil, fmt.Errorf("unknown backend %q", backend)
 }

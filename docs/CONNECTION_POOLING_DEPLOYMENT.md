@@ -129,6 +129,38 @@ invocation. Add `env["BEADS_PROXY_POOL_SIZE"] = <n>` there so both agent and
 generates ~13 conns/sec even with no agents, so pooling helps the controller,
 not just agents.)
 
+### 4. `local-shared-server` — collapse N+1 proxy children into one (be-pen9)
+
+Sections 1–3 give every scope its **own** `db-proxy-child` (HQ + N rigs ⇒ N+1
+children, ~1 GB RAM measured on portharbour). The `local-shared-server` backend
+collapses them onto **one** shared child. The pool is already keyed by
+`(capabilities, database)`, so a single proxy multiplexes every scope's database;
+the collapse comes entirely from pointing every scope at **one shared proxy
+rootDir** (the parent's spawn-or-reuse is keyed by rootDir).
+
+On the beads side (landed in be-pen9):
+
+- `proxy.BackendLocalSharedServer` (`local-shared-server`) is now a dispatchable
+  backend — it fronts the managed dolt through the same external-server
+  mechanism, carries the `--external-*` args across the fork, and participates
+  in the upstream-ID guard (a shared proxy pointed at the wrong managed dolt is
+  rejected, never silently reused).
+- `doltserver.SharedProxyRootDir()` resolves the machine-wide shared rootDir
+  (`~/.beads/shared-server/proxy/`, override with `BEADS_SHARED_PROXY_ROOT_PATH`).
+- **Opt-in via `BEADS_SHARED_PROXY=1`**: when set, every proxied scope resolves
+  its proxy rootDir to `SharedProxyRootDir()` instead of its per-scope
+  `.beads/proxieddb`. **OFF by default**, so existing per-scope proxied scopes
+  are byte-for-byte unchanged.
+
+gascity wiring (the cross-rig sling that realizes the collapse in production):
+export `BEADS_SHARED_PROXY=1` in the projected env (`cmd/gc/bd_env.go`, alongside
+the section-3 pool-size injection) for every proxied scope, keeping the section-1
+`external` block pointing all scopes at the **same** managed dolt (same
+host/port ⇒ same upstream ID ⇒ they share one child). Validate on a **throwaway**
+city, never live portharbour: `pgrep -f db-proxy-child | wc -l` → 1 with each
+scope's store still queryable. (be-pen9 T-007 confirmed N+1→1 on a throwaway
+two-scope city: both scopes resolved to one rootDir and one child served both.)
+
 ### Why this matches the measured problem
 
 The managed dolt config (`/Users/cstar/portharbour/.gc/runtime/packs/dolt/
