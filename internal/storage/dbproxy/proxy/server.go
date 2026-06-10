@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
-	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/steveyegge/beads/internal/lockfile"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/pidfile"
@@ -116,6 +116,28 @@ const (
 
 var errIdleTimeout = errors.New("idle timeout reached")
 
+// Rotation policy for proxy.log. The trace log is size-capped so a chatty
+// proxy can never fill the disk again (incident 8: a 1.38 GB proxy.log): at
+// most proxyLogMaxBackups rotated backups of proxyLogMaxSizeMB each are kept,
+// and backups are gzip-compressed.
+const (
+	proxyLogMaxSizeMB  = 50
+	proxyLogMaxBackups = 3
+)
+
+// newProxyLogWriter returns the size-capped rotating writer behind proxy.log.
+// Lumberjack rotates the live file once it exceeds the cap, prunes old
+// backups, and compresses rotated files in the background.
+func newProxyLogWriter(path string) *lumberjack.Logger {
+	return &lumberjack.Logger{
+		Filename:   path,
+		MaxSize:    proxyLogMaxSizeMB,
+		MaxBackups: proxyLogMaxBackups,
+		Compress:   true,
+		LocalTime:  true,
+	}
+}
+
 func NewProxyServer(opts ProxyOpts) *proxyServer {
 	return &proxyServer{
 		rootDir:         opts.RootDir,
@@ -193,13 +215,7 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 	}
 	defer lock.Unlock()
 
-	logPath := filepath.Join(p.rootDir, LogFileName)
-	lj := &lumberjack.Logger{
-		Filename:   logPath,
-		MaxSize:    50, // MB per file before rotation
-		MaxBackups: 3,
-		LocalTime:  true,
-	}
+	lj := newProxyLogWriter(filepath.Join(p.rootDir, LogFileName))
 	p.logger = log.New(lj, "[proxy] ", log.LstdFlags|log.Lmicroseconds)
 	defer func() { _ = lj.Close() }()
 

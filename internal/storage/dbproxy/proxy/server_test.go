@@ -657,10 +657,10 @@ func TestProxy_TraceLog_LifecycleEvents(t *testing.T) {
 	const idle = 2 * time.Second
 	const tickSlack = 1200 * time.Millisecond
 	h := runProxy(t, proxy.ProxyOpts{
-		RootDir:     root, Port: port,
+		RootDir: root, Port: port,
 		IdleTimeout: idle,
 		Server:      ts, Stats: stats,
-		Debug:       true, // per-connection traces enabled
+		Debug: true, // per-connection traces enabled
 	})
 	waitListening(t, root, listenWait)
 
@@ -712,7 +712,7 @@ func TestProxy_DebugOff_NoPerConnLines(t *testing.T) {
 	root := t.TempDir()
 
 	h := runProxy(t, proxy.ProxyOpts{
-		RootDir:     root, Port: port,
+		RootDir: root, Port: port,
 		IdleTimeout: 500 * time.Millisecond, // non-zero so idleWatcher starts and logs "idleWatcher start"
 		Server:      ts,
 		// Debug not set — defaults to false
