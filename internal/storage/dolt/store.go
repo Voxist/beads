@@ -1176,19 +1176,36 @@ func (s *DoltStore) verifyProjectIdentity(ctx context.Context, beadsDir string) 
 	}
 
 	if localID != dbID {
-		return fmt.Errorf(
-			"PROJECT IDENTITY MISMATCH — refusing to connect\n\n"+
-				"  Local project ID (metadata.json):  %s\n"+
-				"  Database project ID:               %s\n\n"+
-				"This means the Dolt server is serving a DIFFERENT project's database.\n"+
-				"This can happen when:\n"+
-				"  - Another project's server is running on the same port\n"+
-				"  - The server restarted with a different data directory\n\n"+
-				"To diagnose: bd dolt status\n"+
-				"Do NOT run 'bd init' — your data likely exists, just on a different server.",
-			localID, dbID)
+		return newProjectIdentityMismatchError(localID, dbID, false)
 	}
 	return nil
+}
+
+// newProjectIdentityMismatchError builds the diagnostic error returned when an
+// opened store's project identity does not match the local metadata.json. The
+// error wraps storage.ErrStoreIdentityMismatch so callers can detect the
+// condition with errors.Is and fall back instead of silently serving the wrong
+// (or freshly created, empty) database. The global flag selects the
+// global-database variant of the diagnostic text.
+func newProjectIdentityMismatchError(localID, dbID string, global bool) error {
+	if global {
+		return fmt.Errorf(
+			"%w (global) — refusing to connect\n\n"+
+				"  Expected global project ID (metadata.json): %s\n"+
+				"  Database project ID:                        %s\n\n",
+			storage.ErrStoreIdentityMismatch, localID, dbID)
+	}
+	return fmt.Errorf(
+		"%w — refusing to connect\n\n"+
+			"  Local project ID (metadata.json):  %s\n"+
+			"  Database project ID:               %s\n\n"+
+			"This means the Dolt server is serving a DIFFERENT project's database.\n"+
+			"This can happen when:\n"+
+			"  - Another project's server is running on the same port\n"+
+			"  - The server restarted with a different data directory\n\n"+
+			"To diagnose: bd dolt status\n"+
+			"Do NOT run 'bd init' — your data likely exists, just on a different server.",
+		storage.ErrStoreIdentityMismatch, localID, dbID)
 }
 
 func (s *DoltStore) verifyGlobalProjectIdentity(ctx context.Context, beadsDir string) error {
@@ -1211,11 +1228,7 @@ func (s *DoltStore) verifyGlobalProjectIdentity(ctx context.Context, beadsDir st
 	}
 
 	if expectedID != dbID {
-		return fmt.Errorf(
-			"GLOBAL PROJECT IDENTITY MISMATCH — refusing to connect\n\n"+
-				"  Expected global project ID (metadata.json): %s\n"+
-				"  Database project ID:                        %s\n\n"+
-				expectedID, dbID)
+		return newProjectIdentityMismatchError(expectedID, dbID, true)
 	}
 	return nil
 }
