@@ -56,6 +56,12 @@ var (
 	storeMutex  sync.Mutex // Protects store access from background goroutine
 	storeActive = false    // Tracks if store is available
 
+	// routedStoreOpenErr records why the proxied routed store failed to open,
+	// so store-requiring commands can report the real cause (S2) instead of
+	// panicking on a nil store. Nil in direct mode and when the routed store
+	// opened successfully.
+	routedStoreOpenErr error
+
 	// Version upgrade tracking
 	versionUpgradeDetected = false // Set to true if bd version changed since last run
 	previousVersion        = ""    // The last bd version user had (empty = first run or unknown)
@@ -1057,7 +1063,34 @@ var rootCmd = &cobra.Command{
 					store = storage.NewHookFiringStore(store, hookRunner)
 				}
 			} else {
+				// Keep store nil and record the cause. bd create only needs the
+				// uow provider, so we must not fail the whole proxied path here;
+				// store-requiring commands fail loudly at the use site via
+				// requireStore() (S2) rather than dereferencing a nil store.
+				routedStoreOpenErr = serr
 				debug.Logf("proxied-server: routed store unavailable, store-based commands disabled: %v", serr)
+			}
+
+			// S2 (central guard): if the routed store failed to open, every
+			// store-requiring command reaching this block would dereference a nil
+			// store (~600 sites pass the global store into helpers like
+			// resolveAndGetFromStore that call store methods directly). Fail loudly
+			// once, here, with the captured cause + actionable hint. bd create is the
+			// only command reaching this block that runs on the uow provider alone,
+			// so it must tolerate a missing routed store; dolt push/pull/commit are
+			// unsupported and surface their own typed error in the command body.
+			if store == nil && cmdName != "create" {
+				_ = requireStore() // exits non-zero; never returns when store is nil
+			}
+
+			// S4: restore workspace-identity validation in proxied mode. The
+			// direct-path call (below, ~1142) is unreachable here because the
+			// proxied block returns early, so without this a write command could
+			// silently mutate the wrong scope through a misconfigured proxy.
+			// validateWorkspaceIdentity reads _project_id over the routed store
+			// and no-ops when the store is nil, so it is safe in best-effort mode.
+			if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
+				validateWorkspaceIdentity(rootCtx, beadsDir)
 			}
 
 			syncCommandContext()
@@ -1174,6 +1207,14 @@ var rootCmd = &cobra.Command{
 		defer restoreChangeDirSelection()
 
 		if proxiedServerMode {
+			// S1 (v2): close the routed store too. PreRun opens a proxied
+			// routed *sql.DB-backed store (newProxiedServerRoutedStore); closing
+			// only uowProvider here leaked one backend connection to the db-proxy
+			// per bd invocation, which exhausted the pool and wedged the proxy.
+			if store != nil {
+				_ = store.Close()
+				store = nil
+			}
 			if uowProvider != nil {
 				_ = uowProvider.Close(rootCtx)
 				uowProvider = nil
@@ -1364,6 +1405,30 @@ func flushBatchCommitOnShutdown() {
 	} else {
 		fmt.Fprintf(os.Stderr, "\nFlushed pending batch commit on shutdown\n")
 	}
+}
+
+// requireStore returns the active store, or exits with a clear, non-panicking
+// error when it is nil (S2). In proxied mode the routed store can be nil when
+// the db-proxy is unreachable. The proxied PreRun installs a central guard that
+// calls this for every store-requiring command (every command reaching the
+// proxied store-init block except bd create), so the ~600 raw store-deref sites
+// fail loudly here instead of panicking — the bd ready nil-store panic. It is
+// also called directly at the bd ready use sites. bd create deliberately does
+// not trigger it: it uses the uow provider and tolerates a missing routed store.
+func requireStore() storage.DoltStorage {
+	storeMutex.Lock()
+	st := store
+	storeMutex.Unlock()
+	if st != nil {
+		return st
+	}
+	const hint = "the beads store is unavailable; in proxied mode ensure the db-proxy is running and reachable, or set [beads] proxied=false to use direct ServerMode"
+	if routedStoreOpenErr != nil {
+		FatalErrorWithHintRespectJSON(
+			fmt.Sprintf("no database connection: routed store unavailable: %v", routedStoreOpenErr), hint)
+	}
+	FatalErrorWithHintRespectJSON("no database connection: store is not available", hint)
+	return nil // unreachable: FatalError* exits
 }
 
 // validateWorkspaceIdentity checks that the project identity from metadata.json

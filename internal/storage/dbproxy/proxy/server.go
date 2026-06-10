@@ -17,6 +17,7 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/time/rate"
 
 	"github.com/steveyegge/beads/internal/lockfile"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/pidfile"
@@ -70,6 +71,14 @@ type proxyServer struct {
 	connID      atomic.Uint32
 	activeConns atomic.Int64
 	conns       errgroup.Group
+
+	// S3d: rate-limit logging of benign client disconnects. bd clients connect,
+	// run one command, and disconnect; logging each teardown unconditionally
+	// produced the proxy.log flood (1 GB in the incident). disconnectLogLimiter
+	// caps those log lines; droppedDisconnectLogs counts suppressed lines so the
+	// next emitted line can report the gap (no silent loss).
+	disconnectLogLimiter  *rate.Limiter
+	droppedDisconnectLogs atomic.Int64
 }
 
 const (
@@ -112,7 +121,47 @@ func NewProxyServer(opts ProxyOpts) *proxyServer {
 		backendUser:     opts.BackendUser,
 		backendPassword: opts.BackendPassword,
 		poolLifetime:    opts.PoolConnMaxLifetime,
+		// At most one benign-disconnect log line per second, burst 1.
+		disconnectLogLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
 	}
+}
+
+// isExpectedClientDisconnect reports whether err is a benign client teardown
+// (clean EOF — including the wrapped "read handshake response: EOF" — a closed
+// connection, a canceled context, or a read/write timeout) rather than a real
+// proxy fault. These are normal for short-lived bd clients and must not be
+// logged at full volume.
+func isExpectedClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return false
+}
+
+// logSessionError logs a handlePooledConn error, rate-limiting benign client
+// disconnects (S3d) while always logging genuine faults. Suppressed benign
+// lines are counted and surfaced on the next emitted benign line.
+func (p *proxyServer) logSessionError(remote net.Addr, err error) {
+	if !isExpectedClientDisconnect(err) {
+		p.tracef("handlePooledConn(%s) session error: %v", remote, err)
+		return
+	}
+	if p.disconnectLogLimiter == nil || p.disconnectLogLimiter.Allow() {
+		if dropped := p.droppedDisconnectLogs.Swap(0); dropped > 0 {
+			p.tracef("handlePooledConn(%s) client disconnected: %v (+%d similar suppressed)", remote, err, dropped)
+		} else {
+			p.tracef("handlePooledConn(%s) client disconnected: %v", remote, err)
+		}
+		return
+	}
+	p.droppedDisconnectLogs.Add(1)
 }
 
 func (p *proxyServer) tracef(format string, args ...any) {
@@ -203,6 +252,16 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 		)
 		p.tracef("connection pooling enabled (maxIdle=%d, user=%q, lifetime=%s)", p.poolSize, user, p.poolLifetime)
 		defer p.pool.drain()
+
+		// S3a (v2, primary anti-wedge): cap the number of concurrently-handled
+		// client connections to poolSize. errgroup.SetLimit makes acceptLoop's
+		// p.conns.Go block (kernel backlog absorbs the queue) rather than
+		// spawning an unbounded set of handlers, each of which would dial or
+		// borrow a backend connection. This is what bounds live backend
+		// connections per proxy; with poolSize=2 an N-scope city peaks at
+		// N×(poolSize+1) backend connections. Only set when pooling is enabled:
+		// SetLimit(0) would block every handler and wedge the non-pooled path.
+		p.conns.SetLimit(p.poolSize)
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -315,7 +374,9 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 	}
 
 	p.stats.IncBackendDialAttempt()
+	dialDone := p.stats.DialBegin() // S3f: concurrent-dial peak gauge
 	backend, err := p.server.Dial(ctx)
+	dialDone()
 	if err != nil {
 		p.tracef("handleConn(%s) backend dial error: %v", addr, err)
 		p.stats.IncBackendDialError()
@@ -370,7 +431,7 @@ func (p *proxyServer) handlePooledConn(ctx context.Context, client net.Conn) err
 	p.stats.IncHandledConn()
 	res, err := runPooledSession(ctx, p.stats, p.pool, client, p.connID.Add(1))
 	if err != nil {
-		p.tracef("handlePooledConn(%s) session error: %v", client.RemoteAddr(), err)
+		p.logSessionError(client.RemoteAddr(), err)
 		if res.backend != nil {
 			_ = res.backend.conn.Close()
 		}

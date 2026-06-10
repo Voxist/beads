@@ -1,6 +1,9 @@
 package proxy
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 type Counters struct {
 	ListenAndServeCalls  int64
@@ -30,11 +33,35 @@ type Counters struct {
 	PoolResetErrors int64
 	PoolDead        int64
 	PoolRetires     int64
+
+	// BackendDialConcurrentPeak (S3f) is the high-water mark of simultaneous
+	// in-flight backend dials. It is the direct indicator of the wedge this
+	// change set defends against: under the bound (S3a SetLimit=poolSize) it
+	// should never exceed poolSize. An operator watching this gauge climb
+	// toward @@max_connections has early warning before saturation.
+	BackendDialConcurrentPeak int64
 }
 
 type Stats struct {
-	mu       sync.Mutex
-	counters Counters
+	mu           sync.Mutex
+	counters     Counters
+	dialInFlight atomic.Int64 // current simultaneous backend dials (S3f)
+}
+
+// DialBegin records the start of a backend dial, updates the concurrent-dial
+// peak gauge, and returns a function that must be called (defer) when the dial
+// completes. Safe on a nil *Stats.
+func (s *Stats) DialBegin() func() {
+	if s == nil {
+		return func() {}
+	}
+	cur := s.dialInFlight.Add(1)
+	s.update(func(c *Counters) {
+		if cur > c.BackendDialConcurrentPeak {
+			c.BackendDialConcurrentPeak = cur
+		}
+	})
+	return func() { s.dialInFlight.Add(-1) }
 }
 
 func (s *Stats) Snapshot() Counters {
