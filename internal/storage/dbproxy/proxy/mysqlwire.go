@@ -538,10 +538,11 @@ func scramble(plugin, password string, salt []byte) []byte {
 
 // nativeScramble implements mysql_native_password:
 // SHA1(password) XOR SHA1(salt + SHA1(SHA1(password))).
-func nativeScramble(password string, salt []byte) []byte { //nolint:gosec // MySQL native scramble requires SHA1 per protocol; not security crypto
-	h1 := sha1.Sum([]byte(password))
-	h2 := sha1.Sum(h1[:])
-	h := sha1.New()
+func nativeScramble(password string, salt []byte) []byte {
+	// MySQL native scramble mandates SHA1 per wire protocol; not used for security.
+	h1 := sha1.Sum([]byte(password)) //nolint:gosec // MySQL protocol requires SHA1
+	h2 := sha1.Sum(h1[:])            //nolint:gosec // MySQL protocol requires SHA1
+	h := sha1.New()                  //nolint:gosec // MySQL protocol requires SHA1
 	_, _ = h.Write(salt)
 	_, _ = h.Write(h2[:])
 	mixed := h.Sum(nil)
