@@ -45,6 +45,9 @@ func bdProxiedEnv(dir string) []string {
 		"HOME="+dir,
 		"BEADS_DOLT_PROXIED_SERVER=1",
 		"BEADS_NO_DAEMON=1",
+		// Bypass the bd init --proxied-server dark-launch gate (bd-6dnrw.44)
+		// for the bd subprocesses these suites spawn.
+		"BEADS_TEST_PROXIED_SERVER_INIT=1",
 	)
 }
 
@@ -171,6 +174,22 @@ type proxiedProject struct {
 
 func bdProxiedInit(t *testing.T, bd, prefix string, extraInitArgs ...string) proxiedProject {
 	t.Helper()
+
+	// Embedded proxied-server (no external backend) is intentionally unsupported:
+	// `bd init --proxied-server` requires --proxied-server-external-* args. External-only
+	// is the settled design (embedded "Pass" mode was reverted because the native store
+	// must reject session beads). Skip embedded-mode integration tests rather than assert
+	// removed behavior; external callers (which pass --proxied-server-external-*) still run.
+	hasExternal := false
+	for _, a := range extraInitArgs {
+		if strings.HasPrefix(a, "--proxied-server-external") {
+			hasExternal = true
+			break
+		}
+	}
+	if !hasExternal {
+		t.Skip("embedded proxied-server is intentionally unsupported (external-only); see be-s3ca / option2-native-store decision")
+	}
 
 	dir := t.TempDir()
 	initGitRepoAt(t, dir)
