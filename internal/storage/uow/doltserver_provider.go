@@ -50,6 +50,14 @@ func NewDoltServerUOWProvider(
 		return nil, fmt.Errorf("uow: creating server root directory: %w", err)
 	}
 
+	// Tell Spotlight never to index this directory. The proxy log and Dolt
+	// write-ahead files generate continuous fseventsd/mds_stores churn on
+	// macOS that starves proxy I/O and causes bd handshake timeouts.
+	noindex := filepath.Join(absServerRootDir, ".metadata_never_index")
+	if _, statErr := os.Stat(noindex); os.IsNotExist(statErr) {
+		_ = os.WriteFile(noindex, nil, 0o444)
+	}
+
 	ep, err := proxy.GetCreateDatabaseProxyServerEndpoint(absServerRootDir, proxy.OpenOpts{
 		Backend:        backend,
 		ConfigFilePath: serverConfigFilePath,
@@ -58,6 +66,7 @@ func NewDoltServerUOWProvider(
 		IdleTimeout:    proxy.IdleTimeoutFromEnv(defaultProxyIdleTimeout),
 		PoolSize:       proxy.PoolSizeFromEnv(),
 		BackendUser:    rootUser,
+		Debug:          proxy.DebugFromEnv(false),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("uow: get proxy endpoint: %w", err)

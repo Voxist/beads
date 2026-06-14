@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -145,4 +147,102 @@ func TestLogSessionErrorConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestProxyLogWriterBounded guards the production rotation policy for
+// proxy.log (incident 8: an unbounded proxy.log grew to 1.38 GB). The writer
+// must cap the live file at proxyLogMaxSizeMB, keep at most
+// proxyLogMaxBackups backups, and compress them.
+func TestProxyLogWriterBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), LogFileName)
+	w := newProxyLogWriter(path)
+	defer func() { _ = w.Close() }()
+
+	if w.Filename != path {
+		t.Fatalf("Filename = %q, want %q", w.Filename, path)
+	}
+	if w.MaxSize != 50 {
+		t.Fatalf("MaxSize = %d MB, want 50 (size cap is the incident-8 guard)", w.MaxSize)
+	}
+	if w.MaxBackups != 3 {
+		t.Fatalf("MaxBackups = %d, want 3", w.MaxBackups)
+	}
+	if !w.Compress {
+		t.Fatal("Compress = false, want true (backups must be gzipped)")
+	}
+}
+
+// TestProxyLogWriterRotates exercises rotation end-to-end through the
+// production writer: once the live file exceeds the size cap it is rotated
+// to a backup and the live file starts over, so proxy.log can never grow
+// without bound. The cap is lowered to 1 MB (lumberjack's minimum unit) to
+// keep the test fast; the policy values themselves are guarded by
+// TestProxyLogWriterBounded.
+func TestProxyLogWriterRotates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, LogFileName)
+	w := newProxyLogWriter(path)
+	w.MaxSize = 1 // MB; test seam — lumberjack exposes the field
+	defer func() { _ = w.Close() }()
+
+	line := bytes.Repeat([]byte("x"), 64*1024-1)
+	line = append(line, '\n')
+	// 3 MB of writes against a 1 MB cap forces at least one rotation.
+	for i := 0; i < 48; i++ {
+		if _, err := w.Write(line); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat live log: %v", err)
+	}
+	if fi.Size() > 2<<20 {
+		t.Fatalf("live log = %d bytes, want bounded near the 1 MB cap (rotation did not happen)", fi.Size())
+	}
+
+	// Backups land beside the live file as proxy-<timestamp>.log, then are
+	// compressed to .gz in the background; accept either form.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	backups := 0
+	for _, e := range entries {
+		if e.Name() != LogFileName && strings.HasPrefix(e.Name(), "proxy-") {
+			backups++
+		}
+	}
+	if backups == 0 {
+		t.Fatalf("no backup files after writing 3 MB against a 1 MB cap; dir entries: %v", entries)
+	}
+}
+
+// TestDebugfGatedOffByDefault guards the trace throttle (vp-rnq0): the
+// per-connection debugf lines are the dominant proxy.log write source under
+// fleet churn and must stay silent unless Debug is explicitly enabled, while
+// tracef (lifecycle/error lines) always writes.
+func TestDebugfGatedOffByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	p := &proxyServer{logger: log.New(&buf, "", 0)}
+
+	p.debugf("chatty per-conn line")
+	if buf.Len() != 0 {
+		t.Fatalf("debugf wrote with Debug=false: %q", buf.String())
+	}
+	p.tracef("lifecycle line")
+	if !strings.Contains(buf.String(), "lifecycle line") {
+		t.Fatalf("tracef must always write, got %q", buf.String())
+	}
+
+	buf.Reset()
+	p.debug = true
+	p.debugf("chatty per-conn line")
+	if !strings.Contains(buf.String(), "chatty per-conn line") {
+		t.Fatalf("debugf must write with Debug=true, got %q", buf.String())
+	}
 }

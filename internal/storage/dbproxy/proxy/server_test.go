@@ -660,6 +660,7 @@ func TestProxy_TraceLog_LifecycleEvents(t *testing.T) {
 		RootDir: root, Port: port,
 		IdleTimeout: idle,
 		Server:      ts, Stats: stats,
+		Debug: true, // per-connection traces enabled
 	})
 	waitListening(t, root, listenWait)
 
@@ -697,5 +698,63 @@ func TestProxy_TraceLog_LifecycleEvents(t *testing.T) {
 		"acceptLoop exit",
 	} {
 		assert.Contains(t, text, want, "log missing %q", want)
+	}
+}
+
+// TestProxy_DebugOff_NoPerConnLines verifies that the default (Debug=false)
+// suppresses per-connection log lines. Under fleet churn these lines are the
+// dominant write source (~5 KB/s per proxy) driving the FSEvents storm.
+func TestProxy_DebugOff_NoPerConnLines(t *testing.T) {
+	t.Parallel()
+
+	ts := server.New()
+	port := freeTCPPort(t)
+	root := t.TempDir()
+
+	h := runProxy(t, proxy.ProxyOpts{
+		RootDir: root, Port: port,
+		IdleTimeout: 500 * time.Millisecond, // non-zero so idleWatcher starts and logs "idleWatcher start"
+		Server:      ts,
+		// Debug not set — defaults to false
+	})
+	waitListening(t, root, listenWait)
+
+	conn := dialProxy(t, port)
+	_, err := conn.Write([]byte("ping"))
+	require.NoError(t, err)
+	buf := make([]byte, 4)
+	_, err = io.ReadFull(conn, buf)
+	require.NoError(t, err)
+	require.Equal(t, "ping", string(buf))
+	require.NoError(t, conn.Close())
+
+	h.Cancel()
+	require.NoError(t, h.waitErr(t, shutdownWait))
+
+	body, err := os.ReadFile(filepath.Join(root, proxy.LogFileName))
+	require.NoError(t, err)
+	text := string(body)
+
+	// Lifecycle lines must appear even without Debug.
+	for _, want := range []string{
+		"acceptLoop start",
+		"acceptLoop exit",
+		"idleWatcher start",
+	} {
+		assert.Contains(t, text, want, "log missing lifecycle line %q", want)
+	}
+
+	// Per-connection lines must be absent with Debug=false.
+	// Note: "handleConn(addr) ctx canceled" is a tracef (error-path) and may
+	// appear; we check for the specific chatty-path patterns instead.
+	for _, absent := range []string{
+		"acceptLoop accepted",
+		") start",        // handleConn(%s) start
+		") end (active=", // handleConn(%s) end
+		"backend dial ok",
+		"client→backend done",
+		"backend→client done",
+	} {
+		assert.NotContains(t, text, absent, "expected per-conn line %q absent with Debug=false", absent)
 	}
 }

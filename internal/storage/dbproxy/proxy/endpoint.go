@@ -77,6 +77,9 @@ type OpenOpts struct {
 	// command line). 0 preserves the transparent, non-pooling proxy.
 	PoolSize    int
 	BackendUser string
+	// Debug enables per-connection trace logging in the proxy child process.
+	// Leave false in production; set true only for diagnostic runs.
+	Debug bool
 }
 
 const (
@@ -130,6 +133,28 @@ func IdleTimeoutFromEnv(fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// DebugEnvVar re-enables the proxy's per-connection trace lines (accepted,
+// handleConn start/end, dial ok, copy done) for diagnostic runs. They default
+// OFF: under fleet churn those lines are the dominant proxy.log write source
+// (the 1.38 GB proxy.log incident) and feed the macOS FSEvents/Spotlight
+// storm. Accepts strconv.ParseBool values ("1", "true", "0", "false", ...).
+const DebugEnvVar = "BEADS_PROXY_DEBUG"
+
+// DebugFromEnv reads DebugEnvVar, returning fallback when unset, empty, or
+// unparseable. A parseable value wins over the fallback, so an explicit "0"
+// turns debug off even when the caller defaults it on.
+func DebugFromEnv(fallback bool) bool {
+	v := strings.TrimSpace(os.Getenv(DebugEnvVar))
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
 }
 
 func PickFreePort() (int, error) {
@@ -313,6 +338,9 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 		if opts.BackendUser != "" {
 			args = append(args, "--backend-user", opts.BackendUser)
 		}
+	}
+	if opts.Debug {
+		args = append(args, "--debug")
 	}
 	if opts.Backend == BackendExternal {
 		ext := opts.External
