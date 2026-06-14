@@ -88,6 +88,11 @@ func TestIsRetryableError(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "dolt merge conflict 1105 — retryable",
+			err:      errors.New("dolt commit: Error 1105 (HY000): Merge conflict detected, @autocommit transaction rolled back"),
+			expected: true,
+		},
+		{
 			name:     "syntax error - not retryable",
 			err:      errors.New("Error 1064: You have an error in your SQL syntax"),
 			expected: false,
