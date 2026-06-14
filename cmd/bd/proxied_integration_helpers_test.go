@@ -175,6 +175,22 @@ type proxiedProject struct {
 func bdProxiedInit(t *testing.T, bd, prefix string, extraInitArgs ...string) proxiedProject {
 	t.Helper()
 
+	// Embedded proxied-server (no external backend) is intentionally unsupported:
+	// `bd init --proxied-server` requires --proxied-server-external-* args. External-only
+	// is the settled design (embedded "Pass" mode was reverted because the native store
+	// must reject session beads). Skip embedded-mode integration tests rather than assert
+	// removed behavior; external callers (which pass --proxied-server-external-*) still run.
+	hasExternal := false
+	for _, a := range extraInitArgs {
+		if strings.HasPrefix(a, "--proxied-server-external") {
+			hasExternal = true
+			break
+		}
+	}
+	if !hasExternal {
+		t.Skip("embedded proxied-server is intentionally unsupported (external-only); see be-s3ca / option2-native-store decision")
+	}
+
 	dir := t.TempDir()
 	initGitRepoAt(t, dir)
 	beadsDir := filepath.Join(dir, ".beads")
