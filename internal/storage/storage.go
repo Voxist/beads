@@ -33,6 +33,18 @@ var ErrNotInitialized = errors.New("database not initialized")
 // ErrPrefixMismatch is returned when an issue ID does not match the configured prefix.
 var ErrPrefixMismatch = errors.New("prefix mismatch")
 
+// ErrStoreIdentityMismatch is returned when an opened store's project identity
+// (the database's _project_id metadata) does not match the project identity
+// recorded in the local metadata.json. It signals that the store is serving a
+// DIFFERENT project's database — for example, a server restarted with a
+// different data directory, or a port now points at another project's server.
+//
+// Callers MUST treat this as a hard failure and never silently serve the
+// mismatched (or freshly created, empty) database. It is wrapped (errors.Is)
+// by the detailed diagnostic errors returned from store open so that automated
+// fallback paths can detect identity mismatches without string matching.
+var ErrStoreIdentityMismatch = errors.New("store project identity mismatch")
+
 // Storage is the interface satisfied by *dolt.DoltStore.
 // Consumers depend on this interface rather than on the concrete type so that
 // alternative implementations (mocks, proxies, etc.) can be substituted.

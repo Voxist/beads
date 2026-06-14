@@ -15,14 +15,23 @@ import (
 // configured mode:
 //
 //   - Embedded mode (default): Opens via the CGo embedded Dolt engine.
-//   - Server mode: Connects to an external dolt sql-server via OpenFromConfig.
+//   - Server mode: Connects to an external dolt sql-server via NewFromConfig.
+//   - Proxied-server mode: Connects to the local db-proxy via NewFromConfig.
+//     Proxied-server is server-backed (the proxy speaks the MySQL wire
+//     protocol), so it must NOT fall through to the embedded engine — doing so
+//     creates a fresh, typeless database and yields "invalid issue type".
+//
+// The server-backed path asserts project identity on open (see
+// dolt.New / verifyProjectIdentity); a server serving a different project's
+// database fails with ErrStoreIdentityMismatch rather than being silently
+// served.
 //
 // The returned Storage must be closed when no longer needed.
 //
 // beadsDir is the path to the .beads directory.
 func OpenBestAvailable(ctx context.Context, beadsDir string) (Storage, error) {
-	cfg, err := configfile.Load(beadsDir)
-	if err == nil && cfg != nil && cfg.IsDoltServerMode() {
+	cfg, _ := configfile.Load(beadsDir)
+	if resolveOpenBackend(cfg) == openBackendServer {
 		store, err := dolt.NewFromConfig(ctx, beadsDir)
 		if err != nil {
 			return nil, err
