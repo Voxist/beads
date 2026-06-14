@@ -18,7 +18,7 @@ package proxy
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // MySQL native_password auth mandates SHA1 per wire protocol; not used for security
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -55,7 +55,7 @@ const (
 )
 
 const (
-	mysqlNativePassword = "mysql_native_password"
+	mysqlNativePassword = "mysql_native_password" //nolint:gosec // G101 false positive: this is the auth-method name, not a credential
 	// serverCapabilities is what the proxy advertises to clients. It is a
 	// superset; the client narrows it in its response and the proxy mirrors
 	// the client's effective set onto the backend, keeping wire parity.
@@ -245,7 +245,7 @@ func parseClientHandshakeResponse(p []byte) (clientHandshake, error) {
 	return h, nil
 }
 
-func indexByte(p []byte, from int, b byte) int {
+func indexByte(p []byte, from int, b byte) int { //nolint:unparam // generic byte-scan helper; b kept for clarity
 	for i := from; i < len(p); i++ {
 		if p[i] == b {
 			return i
@@ -453,7 +453,7 @@ func buildHandshakeResponse41(caps uint32, database, user string, authResp []byt
 // readBackendAuthResult reads the backend's reply to our handshake response,
 // handling OK, ERR, AuthSwitchRequest and caching_sha2 fast-auth flows for the
 // empty-password case.
-func readBackendAuthResult(conn net.Conn, password string, salt []byte) error {
+func readBackendAuthResult(conn net.Conn, password string, salt []byte) error { //nolint:unparam // salt retained for protocol-API symmetry
 	for {
 		pkt, seq, err := readPacket(conn)
 		if err != nil {
@@ -538,7 +538,7 @@ func scramble(plugin, password string, salt []byte) []byte {
 
 // nativeScramble implements mysql_native_password:
 // SHA1(password) XOR SHA1(salt + SHA1(SHA1(password))).
-func nativeScramble(password string, salt []byte) []byte {
+func nativeScramble(password string, salt []byte) []byte { //nolint:gosec // MySQL native scramble requires SHA1 per protocol; not security crypto
 	h1 := sha1.Sum([]byte(password))
 	h2 := sha1.Sum(h1[:])
 	h := sha1.New()
