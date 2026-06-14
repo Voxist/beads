@@ -364,6 +364,14 @@ func isRetryableError(err error) bool {
 	if strings.Contains(errStr, "no root value found") {
 		return true
 	}
+	// Dolt concurrent-write race: when two goroutines call DOLT_COMMIT on the
+	// same row, Dolt's 3-way merge rolls back with Error 1105 "Merge conflict
+	// detected, @autocommit transaction rolled back". Dolt cleans up completely
+	// (no data loss, no corruption) — retrying the full transaction is safe.
+	// Observed 2026-06-14 under concurrent bd writes (vp-5xx5).
+	if strings.Contains(errStr, "merge conflict detected") {
+		return true
+	}
 	return false
 }
 
