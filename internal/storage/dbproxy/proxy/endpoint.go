@@ -139,7 +139,7 @@ func PoolConnMaxLifetimeFromEnv() time.Duration {
 // IdleTimeoutEnvVar overrides how long a pooling proxy stays alive with no
 // active client connections before it shuts down. The default (30s) is tuned
 // for a single busy workspace; an orchestrator that touches many scopes
-// sparsely (e.g. gascity probing dozens of rigs once per patrol) starves each
+// sparsely (e.g. an orchestrator probing dozens of scopes once per patrol) starves each
 // proxy below that window, so it spawns, serves one op, idle-dies, and respawns
 // on the next touch — pure churn that never reaches the warm-pool steady state
 // pooling exists to provide. Raising the timeout (e.g. "10m") keeps proxies warm
