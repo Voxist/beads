@@ -31,6 +31,7 @@ var (
 	dbProxyChildExternalKeepAlive   time.Duration
 	dbProxyChildPoolSize            int
 	dbProxyChildBackendUser         string
+	dbProxyChildPoolConnMaxLifetime time.Duration
 	dbProxyChildDebug               bool
 )
 
@@ -77,14 +78,15 @@ not intended to be invoked directly by users.`,
 		}
 
 		p := proxy.NewProxyServer(proxy.ProxyOpts{
-			RootDir:         dbProxyChildRoot,
-			Port:            dbProxyChildPort,
-			IdleTimeout:     dbProxyChildIdleTimeout,
-			Server:          srv,
-			PoolSize:        dbProxyChildPoolSize,
-			BackendUser:     dbProxyChildBackendUser,
-			BackendPassword: backendPassword,
-			Debug:           dbProxyChildDebug,
+			RootDir:             dbProxyChildRoot,
+			Port:                dbProxyChildPort,
+			IdleTimeout:         dbProxyChildIdleTimeout,
+			Server:              srv,
+			PoolSize:            dbProxyChildPoolSize,
+			BackendUser:         dbProxyChildBackendUser,
+			BackendPassword:     backendPassword,
+			PoolConnMaxLifetime: dbProxyChildPoolConnMaxLifetime,
+			Debug:               dbProxyChildDebug,
 		})
 		if err := p.ListenAndServe(cmd.Context()); err != nil {
 			if errors.Is(err, proxy.ErrLockHeld) {
@@ -126,6 +128,7 @@ func init() {
 	dbProxyChildCmd.Flags().DurationVar(&dbProxyChildExternalKeepAlive, "external-keep-alive", 0, "external backend: TCP keepalive period (default 30s)")
 	dbProxyChildCmd.Flags().IntVar(&dbProxyChildPoolSize, "pool-size", 0, "if >0, pool up to N warm authenticated backend connections instead of dialing one per client")
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildBackendUser, "backend-user", "root", "user the proxy authenticates pooled backend connections as")
+	dbProxyChildCmd.Flags().DurationVar(&dbProxyChildPoolConnMaxLifetime, "pool-conn-max-lifetime", 0, "if >0, retire pooled backend connections after this duration (0 keeps them indefinitely)")
 	dbProxyChildCmd.Flags().BoolVar(&dbProxyChildDebug, "debug", false, "enable per-connection trace logging")
 	_ = dbProxyChildCmd.MarkFlagRequired("root")
 	_ = dbProxyChildCmd.MarkFlagRequired("port")

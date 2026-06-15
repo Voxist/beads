@@ -49,13 +49,14 @@ func NewExternalDoltServerUOWProvider(
 	}
 
 	ep, err := proxy.GetCreateDatabaseProxyServerEndpoint(absServerRootDir, proxy.OpenOpts{
-		Backend:     proxy.BackendExternal,
-		LogFilePath: serverLogFilePath,
-		External:    external,
-		IdleTimeout: proxy.IdleTimeoutFromEnv(defaultProxyIdleTimeout),
-		PoolSize:    proxy.PoolSizeFromEnv(),
-		BackendUser: rootUser,
-		Debug:       proxy.DebugFromEnv(false),
+		Backend:             proxy.BackendExternal,
+		LogFilePath:         serverLogFilePath,
+		External:            external,
+		IdleTimeout:         proxy.IdleTimeoutFromEnv(defaultProxyIdleTimeout),
+		PoolSize:            proxy.PoolSizeFromEnv(),
+		BackendUser:         rootUser,
+		PoolConnMaxLifetime: proxy.PoolConnMaxLifetimeFromEnv(),
+		Debug:               proxy.DebugFromEnv(false),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("uow: get proxy endpoint: %w", err)

@@ -77,6 +77,12 @@ type OpenOpts struct {
 	// command line). 0 preserves the transparent, non-pooling proxy.
 	PoolSize    int
 	BackendUser string
+	// PoolConnMaxLifetime, when > 0, retires pooled backend connections after
+	// this duration (see ProxyOpts.PoolConnMaxLifetime). 0 (default) keeps them
+	// indefinitely, which is the right choice for steady-state pooling; the knob
+	// exists as an operator escape hatch (e.g. to recycle connections around a
+	// backend that leaks server-side state). Only consulted when PoolSize > 0.
+	PoolConnMaxLifetime time.Duration
 	// Debug enables per-connection trace logging in the proxy child process.
 	// Leave false in production; set true only for diagnostic runs.
 	Debug bool
@@ -108,6 +114,26 @@ func PoolSizeFromEnv() int {
 		return 0
 	}
 	return n
+}
+
+// PoolConnMaxLifetimeEnvVar optionally retires pooled backend connections after
+// the given Go duration (e.g. "30m"). Unset, empty, unparseable, or non-positive
+// keeps pooled connections indefinitely — the steady-state pooling default.
+// Only has effect when pooling is enabled (PoolSizeEnvVar > 0).
+const PoolConnMaxLifetimeEnvVar = "BEADS_PROXY_CONN_MAX_LIFETIME"
+
+// PoolConnMaxLifetimeFromEnv reads PoolConnMaxLifetimeEnvVar, returning 0
+// (connections kept indefinitely) when unset, empty, unparseable, or non-positive.
+func PoolConnMaxLifetimeFromEnv() time.Duration {
+	v := strings.TrimSpace(os.Getenv(PoolConnMaxLifetimeEnvVar))
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // IdleTimeoutEnvVar overrides how long a pooling proxy stays alive with no
@@ -337,6 +363,9 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 		args = append(args, "--pool-size", strconv.Itoa(opts.PoolSize))
 		if opts.BackendUser != "" {
 			args = append(args, "--backend-user", opts.BackendUser)
+		}
+		if opts.PoolConnMaxLifetime > 0 {
+			args = append(args, "--pool-conn-max-lifetime", opts.PoolConnMaxLifetime.String())
 		}
 	}
 	if opts.Debug {
