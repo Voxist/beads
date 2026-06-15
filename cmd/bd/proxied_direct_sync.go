@@ -10,11 +10,13 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
-// Raw-Dolt remote sync (dolt push / dolt pull) in proxied-server mode.
+// Raw-Dolt operations that need direct ServerMode (dolt push / pull / commit)
+// in proxied-server mode.
 //
 // The S5 guard (proxied_unsupported.go) exists because the multiplexed proxy
-// cannot service CALL DOLT_PUSH / DOLT_PULL safely, and silently dead-dropping
-// them (empty-JSON exit 0) stranded syncs. But a gc-managed proxied scope
+// cannot service CALL DOLT_PUSH / DOLT_PULL (or raw history writes) safely, and
+// silently dead-dropping them (empty-JSON exit 0) stranded syncs. But a
+// gc-managed proxied scope
 // records the REAL dolt endpoint — the same server the proxy itself fronts —
 // in proxied_server_client_info.json. For these capabilities we can do what
 // direct ServerMode would do: open a direct connection to that endpoint for
@@ -56,8 +58,9 @@ func directSyncDoltConfig(beadsDir, database string, ext *configfile.ExternalDol
 	return cfg
 }
 
-// storeForRawDoltSync returns the store a raw-Dolt remote-sync command should
-// operate on. Outside proxied-server mode it is the normal store (getStore),
+// storeForRawDoltSync returns the store a raw-Dolt command that needs direct
+// ServerMode (push/pull/commit) should operate on. Outside proxied-server mode
+// it is the normal store (getStore),
 // byte-for-byte the existing behavior. In proxied-server mode it opens a
 // direct ServerMode store at the scope's recorded external endpoint; when no
 // usable endpoint is recorded it exits with the typed unsupported error,
