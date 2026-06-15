@@ -55,7 +55,7 @@ func NewDoltServerUOWProvider(
 	// macOS that starves proxy I/O and causes bd handshake timeouts.
 	noindex := filepath.Join(absServerRootDir, ".metadata_never_index")
 	if _, statErr := os.Stat(noindex); os.IsNotExist(statErr) {
-		_ = os.WriteFile(noindex, nil, 0o444)
+		_ = os.WriteFile(noindex, nil, 0o444) //nolint:gosec // empty Spotlight-exclusion marker; perms are not security-sensitive
 	}
 
 	ep, err := proxy.GetCreateDatabaseProxyServerEndpoint(absServerRootDir, proxy.OpenOpts{
