@@ -59,14 +59,15 @@ func NewDoltServerUOWProvider(
 	}
 
 	ep, err := proxy.GetCreateDatabaseProxyServerEndpoint(absServerRootDir, proxy.OpenOpts{
-		Backend:        backend,
-		ConfigFilePath: serverConfigFilePath,
-		LogFilePath:    serverLogFilePath,
-		DoltBinPath:    absDoltBinExec,
-		IdleTimeout:    proxy.IdleTimeoutFromEnv(defaultProxyIdleTimeout),
-		PoolSize:       proxy.PoolSizeFromEnv(),
-		BackendUser:    rootUser,
-		Debug:          proxy.DebugFromEnv(false),
+		Backend:             backend,
+		ConfigFilePath:      serverConfigFilePath,
+		LogFilePath:         serverLogFilePath,
+		DoltBinPath:         absDoltBinExec,
+		IdleTimeout:         proxy.IdleTimeoutFromEnv(defaultProxyIdleTimeout),
+		PoolSize:            proxy.PoolSizeFromEnv(),
+		PoolConnMaxLifetime: proxy.PoolConnMaxLifetimeFromEnv(),
+		BackendUser:         rootUser,
+		Debug:               proxy.DebugFromEnv(false),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("uow: get proxy endpoint: %w", err)

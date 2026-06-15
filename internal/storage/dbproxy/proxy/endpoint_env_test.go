@@ -34,6 +34,33 @@ func TestIdleTimeoutFromEnv(t *testing.T) {
 	}
 }
 
+// TestPoolConnMaxLifetimeFromEnv covers the operator escape hatch for retiring
+// pooled backend connections (default 0 = keep indefinitely, the steady-state
+// pooling default). Non-positive and unparseable values fall back to 0.
+func TestPoolConnMaxLifetimeFromEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		val  string
+		want time.Duration
+	}{
+		{"unset returns 0", "", 0},
+		{"blank returns 0", "   ", 0},
+		{"unparseable returns 0", "soon", 0},
+		{"zero returns 0", "0", 0},
+		{"negative returns 0", "-5m", 0},
+		{"valid minutes", "30m", 30 * time.Minute},
+		{"valid hours", "2h", 2 * time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(PoolConnMaxLifetimeEnvVar, tc.val)
+			if got := PoolConnMaxLifetimeFromEnv(); got != tc.want {
+				t.Fatalf("PoolConnMaxLifetimeFromEnv() with %s=%q = %v, want %v", PoolConnMaxLifetimeEnvVar, tc.val, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDebugFromEnv covers the operator escape hatch for the trace throttle
 // (vp-rnq0): per-connection proxy traces default OFF and are re-enabled for
 // diagnostic runs via BEADS_PROXY_DEBUG, without code changes.
