@@ -336,15 +336,18 @@ uncommitted changes in its working set).
 Use --remote to push to a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// S5: raw-Dolt remote sync is impossible through the proxy (the routed
-		// DoltRemoteUseCase covers remote config CRUD only). Fail loudly with a
-		// typed, actionable error rather than appearing to succeed.
-		guardUnsupportedInProxiedMode(CapabilityDoltPush)
+		// S5: raw-Dolt remote sync is impossible *through the proxy* (the routed
+		// DoltRemoteUseCase covers remote config CRUD only). In proxied-server
+		// mode this opens a direct ServerMode store at the scope's recorded
+		// external endpoint instead, and exits with the typed unsupported error
+		// when none is recorded — never appearing to succeed.
 		ctx := context.Background()
-		st := getStore()
+		st := storeForRawDoltSync(ctx, CapabilityDoltPush)
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			FatalErrorRespectJSON("dolt push: no store available")
+		}
+		if proxiedServerMode {
+			defer st.Close() //nolint:errcheck // best-effort close of the per-command direct-endpoint store
 		}
 		force, _ := cmd.Flags().GetBool("force")
 		remote, _ := cmd.Flags().GetString("remote")
@@ -413,13 +416,15 @@ variables for authentication.
 Use --remote to pull from a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// S5: see doltPushCmd — raw-Dolt remote sync is unsupported in proxied mode.
-		guardUnsupportedInProxiedMode(CapabilityDoltPull)
+		// S5: see doltPushCmd — direct-endpoint escape hatch in proxied mode,
+		// typed unsupported error when no external endpoint is recorded.
 		ctx := context.Background()
-		st := getStore()
+		st := storeForRawDoltSync(ctx, CapabilityDoltPull)
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			FatalErrorRespectJSON("dolt pull: no store available")
+		}
+		if proxiedServerMode {
+			defer st.Close() //nolint:errcheck // best-effort close of the per-command direct-endpoint store
 		}
 		remote, _ := cmd.Flags().GetString("remote")
 		if remote != "" {
@@ -473,10 +478,17 @@ auto-commit was off or changes were made externally.
 For more options (--stdin, custom messages), see: bd vc commit`,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
-		st := getStore()
+		// dolt commit is a raw-history write; in proxied-server mode it runs
+		// against the scope's recorded direct endpoint (the canonical managed
+		// server), not the multiplexed proxy — consistent with dolt push/pull
+		// and with CapabilityDoltCommit's declared need for direct ServerMode.
+		// Outside proxied mode this is getStore(), unchanged.
+		st := storeForRawDoltSync(ctx, CapabilityDoltCommit)
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			FatalErrorRespectJSON("dolt commit: no store available")
+		}
+		if proxiedServerMode {
+			defer st.Close() //nolint:errcheck // best-effort close of the per-command direct-endpoint store
 		}
 		msg, _ := cmd.Flags().GetString("message")
 		if msg == "" {
