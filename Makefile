@@ -9,7 +9,7 @@ SHELL := $(subst cmd,bin,$(subst git.exe,bash.exe,$(GIT_BASH)))
 endif
 endif
 
-.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short
+.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force help check-up-to-date check-deploy-bd fmt fmt-check check-testing-short
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm ci-website
 
 # Default target
@@ -22,6 +22,10 @@ INSTALL_DIR := $(USERPROFILE)/.local/bin
 else
 INSTALL_DIR := $(HOME)/.local/bin
 endif
+
+# Canonical gc/bin path managed by bd-deploy (atomic install + chflags lock + rollback).
+# make install must not write here unless DEPLOY_BD=1.
+GC_BIN_DIR := $(HOME)/.gc/bin
 
 # Dolt backend requires CGO for embedded database support.
 # Without CGO, builds will fail with "dolt backend requires CGO".
@@ -162,10 +166,27 @@ ifndef SKIP_UPDATE_CHECK
 	fi
 endif
 
+# Guard: refuse to install to the canonical gc/bin path unless DEPLOY_BD=1.
+# The canonical path is managed by bd-deploy (atomic install, chflags, rollback).
+# A plain 'make install' there would bypass those safety checks.
+check-deploy-bd:
+ifneq ($(OS),Windows_NT)
+	@_dir="$(INSTALL_DIR)"; \
+	_gc="$(GC_BIN_DIR)"; \
+	_dir_real=$$(cd "$$_dir" 2>/dev/null && pwd -P || echo "$$_dir"); \
+	_gc_real=$$(cd "$$_gc" 2>/dev/null && pwd -P || echo "$$_gc"); \
+	if [ "$$_dir_real" = "$$_gc_real" ] && [ "$(DEPLOY_BD)" != "1" ]; then \
+		echo "ERROR: INSTALL_DIR ($$_dir_real) is the canonical gc/bin path."; \
+		echo "  The canonical bd binary is managed by bd-deploy (codesign, chflags lock, bd.prev rollback)."; \
+		echo "  Use 'bd-deploy' to update it, or run: make install DEPLOY_BD=1 (dangerous)."; \
+		exit 1; \
+	fi
+endif
+
 # Install bd to ~/.local/bin (builds, signs on macOS, and copies)
 # Also creates 'beads' symlink as an alias for bd
 # Use install-force to skip the origin/main update check
-install install-force: build
+install install-force: check-deploy-bd build
 	@mkdir -p $(INSTALL_DIR)
 ifeq ($(OS),Windows_NT)
 	@rm -f $(INSTALL_DIR)/bd $(INSTALL_DIR)/bd.exe
