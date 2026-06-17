@@ -148,6 +148,13 @@ func autoMigrateOnVersionBump(beadsDir string) {
 		return
 	}
 
+	// Designated-migrator gate: suppress auto-migration in fleet sessions;
+	// only the safe-migrate wrapper (which unsets this var) may migrate.
+	if os.Getenv("BD_NO_AUTO_MIGRATE") == "1" {
+		debug.Logf("auto-migrate: suppressed (BD_NO_AUTO_MIGRATE=1); designated migrator must migrate")
+		return
+	}
+
 	// Validate beadsDir
 	if beadsDir == "" {
 		debug.Logf("auto-migrate: skipping migration, no beads directory")

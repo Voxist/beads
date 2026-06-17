@@ -430,6 +430,31 @@ func TestAutoMigrateOnVersionBump_NoDatabase(t *testing.T) {
 	// Test passes if no panic occurs
 }
 
+func TestAutoMigrateSkippedWhenEnvSet(t *testing.T) {
+	// With BD_NO_AUTO_MIGRATE=1 set and an upgrade detected, autoMigrateOnVersionBump
+	// must return before attempting to open the database.
+	t.Setenv("BD_NO_AUTO_MIGRATE", "1")
+
+	origUpgradeDetected := versionUpgradeDetected
+	origPreviousVersion := previousVersion
+	defer func() {
+		versionUpgradeDetected = origUpgradeDetected
+		previousVersion = origPreviousVersion
+	}()
+
+	versionUpgradeDetected = true
+	previousVersion = "0.22.0"
+
+	// Pass an empty temp dir — if the guard fires we return before configfile.Load;
+	// no panic regardless, but this documents the suppression contract.
+	autoMigrateOnVersionBump(t.TempDir())
+
+	// Test passes if no panic and global state is not modified by migration.
+	if !versionUpgradeDetected {
+		t.Error("BD_NO_AUTO_MIGRATE guard must not clear versionUpgradeDetected")
+	}
+}
+
 // NOTE: TestAutoMigrateOnVersionBump_MigratesVersion, TestAutoMigrateOnVersionBump_AlreadyMigrated,
 // TestAutoMigrateOnVersionBump_RefusesDowngrade, and TestAutoMigrateOnVersionBump_TracksMaxVersion
 // were removed because they depended on the SQLite storage backend (sqlite.New) for round-trip
