@@ -200,3 +200,30 @@ func TestPool_LifetimeRetire(t *testing.T) {
 	p.put(pc) // expired → destroyed, not returned
 	require.Equal(t, 0, p.idleCount(), "expired conn not retained")
 }
+
+func TestPool_IdleCountFor(t *testing.T) {
+	fb := &fakeBackend{}
+	p := newBackendPool(fb.dialer(), "root", "", 4, 0, &Stats{})
+	defer p.drain()
+	ctx := context.Background()
+
+	k1 := backendKey{caps: capProtocol41, db: "alpha"}
+	k2 := backendKey{caps: capProtocol41, db: "beta"}
+
+	// Before any connections: both keys report 0.
+	require.Equal(t, 0, p.idleCountFor("alpha"))
+	require.Equal(t, 0, p.idleCountFor("beta"))
+
+	pc1, err := p.get(ctx, k1)
+	require.NoError(t, err)
+	p.put(pc1)
+	require.Equal(t, 1, p.idleCountFor("alpha"), "alpha has one idle conn")
+	require.Equal(t, 0, p.idleCountFor("beta"), "beta still empty")
+
+	pc2, err := p.get(ctx, k2)
+	require.NoError(t, err)
+	p.put(pc2)
+	require.Equal(t, 1, p.idleCountFor("alpha"), "alpha unaffected by beta put")
+	require.Equal(t, 1, p.idleCountFor("beta"), "beta now has one idle conn")
+	require.Equal(t, 2, p.idleCount(), "total is sum of both keys")
+}

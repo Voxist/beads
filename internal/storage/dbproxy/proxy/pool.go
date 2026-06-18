@@ -216,3 +216,18 @@ func (p *backendPool) idleCount() int {
 	}
 	return n
 }
+
+// idleCountFor reports the idle count for backends whose key.db matches db
+// (test helper). Use this instead of idleCount() when multiple databases are
+// active in the pool: idleCount()==1 can be transiently satisfied by a
+// different key while the target key's put() is still running.
+func (p *backendPool) idleCountFor(db string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k, stack := range p.idle {
+		if k.db == db {
+			return len(stack)
+		}
+	}
+	return 0
+}
