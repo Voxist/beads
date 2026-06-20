@@ -2,6 +2,7 @@ package uow
 
 import (
 	"errors"
+	"strings"
 
 	mysql "github.com/go-sql-driver/mysql"
 )
@@ -16,4 +17,25 @@ func isSerializationError(err error) bool {
 		return false
 	}
 	return mysqlErr.Number == 1213 || mysqlErr.Number == 1205
+}
+
+// isInvalidConnectionError returns true if the error is a transient MySQL
+// driver connection failure (the dolt sql-server reaped an idle pooled
+// connection, the server restarted, the pipe broke, etc.).
+//
+// Whether retrying is SAFE depends on WHEN this fires, not just that it did:
+//   - Before commit (pinning a connection, starting the tx, or a write inside
+//     fn): nothing was committed, so replaying the whole sequence is safe.
+//   - At/after commit: the result is AMBIGUOUS — the commit may have landed on
+//     the server before the connection dropped. Callers must NOT blindly replay
+//     a commit-phase failure; see RunInTx for the phase-aware handling.
+func isInvalidConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "invalid connection") ||
+		strings.Contains(s, "driver: bad connection") ||
+		strings.Contains(s, "lost connection") ||
+		strings.Contains(s, "broken pipe")
 }
