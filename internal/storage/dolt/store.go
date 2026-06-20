@@ -309,10 +309,37 @@ func newServerRetryBackoff() backoff.BackOff {
 	return bo
 }
 
+// ErrCommitIndeterminate indicates a transaction's COMMIT could not be confirmed
+// because the connection failed at or after the commit. The write may or may not
+// have landed on the server, so the operation is deliberately NOT retried —
+// replaying could double-apply it (e.g. mint a second issue). Callers should
+// re-read state to reconcile. (double-mint fix; mirrors uow.RunInTx upstream.)
+var ErrCommitIndeterminate = errors.New("commit result indeterminate after connection loss")
+
+// commitPhaseError classifies an error returned at or after COMMIT. If the
+// underlying failure is a transient error that withRetry would otherwise replay,
+// it is wrapped as ErrCommitIndeterminate so the whole transaction is NOT re-run
+// (which would risk a double-apply). Non-transient errors pass through unchanged.
+func commitPhaseError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isRetryableError(err) {
+		return fmt.Errorf("%w: %w", ErrCommitIndeterminate, err)
+	}
+	return err
+}
+
 // isRetryableError returns true if the error is a transient connection error
 // that should be retried in server mode.
 func isRetryableError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A commit-phase connection loss is deliberately NON-retryable: the COMMIT
+	// may have landed on the server before the connection dropped, so replaying
+	// the transaction could double-apply it (double-mint). See commitPhaseError.
+	if errors.Is(err, ErrCommitIndeterminate) {
 		return false
 	}
 	if schema.IsMigrationLockError(err) {
@@ -691,7 +718,10 @@ func (s *DoltStore) execContext(ctx context.Context, query string, args ...any) 
 			_ = tx.Rollback()
 			return execErr
 		}
-		return tx.Commit()
+		// Commit phase: a transient failure here is indeterminate (the write may
+		// have landed before the connection dropped) — do not let withRetry
+		// replay the Exec, which would double-apply it. (double-mint fix)
+		return commitPhaseError(tx.Commit())
 	})
 	finalErr := wrapLockError(err)
 	endSpan(span, finalErr)
