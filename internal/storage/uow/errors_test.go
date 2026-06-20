@@ -16,6 +16,8 @@ func TestIsInvalidConnectionError(t *testing.T) {
 		{name: "driver: bad connection", err: errors.New("driver: bad connection"), expected: true},
 		{name: "lost connection", err: errors.New("Error 2013: Lost connection to MySQL server"), expected: true},
 		{name: "broken pipe", err: errors.New("write: broken pipe"), expected: true},
+		{name: "connection reset", err: errors.New("read: connection reset by peer"), expected: true},
+		{name: "connection refused - server restart", err: errors.New("dial tcp 127.0.0.1:3306: connect: connection refused"), expected: true},
 		{name: "case insensitive", err: errors.New("Invalid Connection"), expected: true},
 		{name: "syntax error - not retryable", err: errors.New("Error 1064: syntax error"), expected: false},
 		{name: "table not found - not retryable", err: errors.New("Error 1146: Table not found"), expected: false},

@@ -34,8 +34,16 @@ func isInvalidConnectionError(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
+	// These substrings must stay in lock-step with the direct DoltStore-layer
+	// classifier (internal/storage/dolt.isRetryableError): the two retry layers
+	// have to agree on what "transient connection failure" means, or the same
+	// dolt-server/db-proxy restart retries on one path and FatalErrors on the
+	// other. "connection reset"/"connection refused" cover the server-restart
+	// window the direct path already treats as transient.
 	return strings.Contains(s, "invalid connection") ||
 		strings.Contains(s, "driver: bad connection") ||
 		strings.Contains(s, "lost connection") ||
-		strings.Contains(s, "broken pipe")
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "connection refused")
 }

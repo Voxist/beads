@@ -65,6 +65,10 @@ func (p *doltSQLProvider) BeginTx(ctx context.Context) (Tx, error) {
 
 	_, err := conn.ExecContext(ctx, "START TRANSACTION;")
 	if err != nil {
+		// Close the just-pinned conn instead of leaking it in-use. With the
+		// pool capped at one connection, a leak here would block every
+		// subsequent BeginTx (including RunInTx's retries) until ctx timeout.
+		_ = conn.Close()
 		return nil, fmt.Errorf("uow: failed to start transaction: %w", err)
 	}
 
