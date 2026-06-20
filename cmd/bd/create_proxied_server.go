@@ -104,8 +104,9 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		return
 	}
 
-	uw, cctx := proxiedOpenUOW(ctx)
-	defer uw.Close(ctx)
+	// Load create context (read-only) to validate input before the write tx.
+	configUW, cctx := proxiedOpenUOW(ctx)
+	configUW.Close(ctx)
 
 	customTypes := resolveProxiedCustomTypes(cctx.CustomTypes)
 	if in.issueType != "" {
@@ -135,17 +136,19 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 	}
 
 	var result domain.CreateIssueResult
-	if issue.Ephemeral {
-		result, err = uw.IssueUseCase().CreateWisp(ctx, params, in.createdBy)
-	} else {
-		result, err = uw.IssueUseCase().CreateIssue(ctx, params, in.createdBy)
-	}
-	if err != nil {
+	if err := uow.RunInTxMsg(ctx, uowProvider, func(uw uow.UnitOfWork) (string, error) {
+		var e error
+		if issue.Ephemeral {
+			result, e = uw.IssueUseCase().CreateWisp(ctx, params, in.createdBy)
+		} else {
+			result, e = uw.IssueUseCase().CreateIssue(ctx, params, in.createdBy)
+		}
+		if e != nil {
+			return "", e
+		}
+		return fmt.Sprintf("bd: create %s", result.Issue.ID), nil
+	}); err != nil {
 		FatalError("%v", err)
-	}
-
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: create %s", result.Issue.ID)); err != nil && !isDoltNothingToCommit(err) {
-		FatalError("commit: %v", err)
 	}
 
 	switch {
@@ -246,8 +249,9 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 		builds = append(builds, templateBuild{template: t, deps: deps})
 	}
 
-	uw, cctx := proxiedOpenUOW(ctx)
-	defer uw.Close(ctx)
+	// Load create context (read-only) to validate input before the write tx.
+	configUW, cctx := proxiedOpenUOW(ctx)
+	configUW.Close(ctx)
 
 	customTypes := resolveProxiedCustomTypes(cctx.CustomTypes)
 	for _, b := range builds {
@@ -284,18 +288,19 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 	}
 
 	var result domain.CreateIssuesResult
-	if in.ephemeral {
-		result, err = uw.IssueUseCase().CreateWisps(ctx, paramsList, in.createdBy)
-	} else {
-		result, err = uw.IssueUseCase().CreateIssues(ctx, paramsList, in.createdBy)
-	}
-	if err != nil {
+	if err := uow.RunInTxMsg(ctx, uowProvider, func(uw uow.UnitOfWork) (string, error) {
+		var e error
+		if in.ephemeral {
+			result, e = uw.IssueUseCase().CreateWisps(ctx, paramsList, in.createdBy)
+		} else {
+			result, e = uw.IssueUseCase().CreateIssues(ctx, paramsList, in.createdBy)
+		}
+		if e != nil {
+			return "", e
+		}
+		return fmt.Sprintf("bd: create %d issue(s) from %s", len(result.Issues), in.markdownFile), nil
+	}); err != nil {
 		FatalError("creating issues from markdown: %v", err)
-	}
-
-	commitMsg := fmt.Sprintf("bd: create %d issue(s) from %s", len(result.Issues), in.markdownFile)
-	if err := uw.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
-		FatalError("commit: %v", err)
 	}
 
 	if in.jsonOutput {
@@ -376,8 +381,9 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 		return
 	}
 
-	uw, cctx := proxiedOpenUOW(ctx)
-	defer uw.Close(ctx)
+	// Load create context (read-only) to validate input before the write tx.
+	configUW, cctx := proxiedOpenUOW(ctx)
+	configUW.Close(ctx)
 
 	if err := validateGraphApplyPlan(&plan, resolveProxiedCustomTypes(cctx.CustomTypes)); err != nil {
 		FatalError("invalid graph plan: %v", err)
@@ -385,23 +391,22 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 
 	domainPlan := buildDomainGraphPlan(plan, in)
 
-	var result domain.GraphApplyResult
-	if in.ephemeral {
-		result, err = uw.IssueUseCase().ApplyWispGraph(ctx, domainPlan, in.createdBy)
-	} else {
-		result, err = uw.IssueUseCase().ApplyIssueGraph(ctx, domainPlan, in.createdBy)
-	}
-	if err != nil {
-		FatalError("graph create: %v", err)
-	}
-
 	commitMsg := plan.CommitMessage
 	if commitMsg == "" {
 		commitMsg = fmt.Sprintf("bd: graph-apply %d nodes", len(plan.Nodes))
 	}
 
-	if err := uw.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
-		FatalError("commit: %v", err)
+	var result domain.GraphApplyResult
+	if err := uow.RunInTx(ctx, uowProvider, commitMsg, func(uw uow.UnitOfWork) error {
+		var e error
+		if in.ephemeral {
+			result, e = uw.IssueUseCase().ApplyWispGraph(ctx, domainPlan, in.createdBy)
+		} else {
+			result, e = uw.IssueUseCase().ApplyIssueGraph(ctx, domainPlan, in.createdBy)
+		}
+		return e
+	}); err != nil {
+		FatalError("graph create: %v", err)
 	}
 
 	if in.jsonOutput {
