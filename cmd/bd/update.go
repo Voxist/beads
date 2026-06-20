@@ -29,6 +29,11 @@ create, update, show, or close operation).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		CheckReadonly("update")
 
+		if usesProxiedServer() {
+			runUpdateProxiedServer(cmd, rootCtx, args)
+			return
+		}
+
 		// If no IDs provided, use last touched issue
 		if len(args) == 0 {
 			lastTouched := GetLastTouchedID()
@@ -322,9 +327,8 @@ create, update, show, or close operation).`,
 			pendingCloseResults = nil
 		}
 		for _, id := range args {
-			// Resolve and get issue with routing (e.g., gt-xyz routes to another rig).
-			// Write-intent: update commits through the routed target store (#4141).
-			result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
+			// Resolve and get issue with routing (e.g., gt-xyz routes to another rig)
+			result, err := resolveAndGetIssueForMutation(ctx, store, id)
 			if err != nil {
 				if result != nil {
 					result.Close()

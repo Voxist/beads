@@ -180,6 +180,7 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd preflight](#bd-preflight) — Show PR readiness checklist
 - [bd prune](#bd-prune) — Delete old closed beads to reclaim space and shrink exports
 - [bd purge](#bd-purge) — Delete closed ephemeral beads to reclaim space
+- [bd recompute-blocked](#bd-recompute-blocked) — Recompute is_blocked for all issues (repairs stale flags after a pull)
 - [bd rename-prefix](#bd-rename-prefix) — Rename the issue prefix for all issues in the database
 - [bd rules](#bd-rules) — Audit and compact Claude rules
   - [bd rules audit](#bd-rules-audit) — Scan rules for contradictions and merge opportunities
@@ -3419,6 +3420,7 @@ bd init [flags]
       --external                                       Server is externally managed (skip server startup); use with --shared-server or --server
       --force                                          Deprecated alias for --reinit-local. Bypasses only the LOCAL data-safety guard; does NOT authorize remote divergence (see 'bd help init-safety').
       --from-jsonl                                     Import issues from configured import.path instead of git history
+      --init-if-missing                                If the workspace is already initialized, skip init and exit 0 instead of failing (idempotent init for scaffolds)
       --non-interactive                                Skip all interactive prompts (auto-detected in CI or non-TTY environments)
   -p, --prefix string                                  Issue prefix (default: current directory name)
       --proxied-server                                 [EXPERIMENTAL] Use a per-workspace proxied dolt sql-server (proxy + child dolt) rooted at .beads/proxieddb
@@ -4264,6 +4266,30 @@ bd purge [flags]
   -f, --force               Actually purge (without this, shows preview)
       --older-than string   Only purge beads closed more than N ago (e.g., 7d, 2w, 30)
       --pattern string      Only purge beads matching ID glob pattern (e.g., *-wisp-*)
+```
+
+### bd recompute-blocked
+
+Recompute the denormalized is_blocked flag for every issue and wisp.
+
+is_blocked is derived from the dependency graph and maintained automatically by
+local writes and by a post-pull recompute scoped to what the merge changed. If
+that scoped recompute is skipped — a recompute that failed after its merge
+committed, or a conflicted pull resolved by hand — the flag can go stale, and a
+later pull that merges nothing will not refresh it (bd-6dnrw.37). 'bd ready'
+trusts the flag, so stale values silently hide ready work or surface blocked
+work.
+
+This command runs the full recompute unconditionally and commits the result.
+It is idempotent: on a consistent database it changes nothing. Works in both
+embedded and server mode (unlike 'bd doctor', which is server-mode only).
+
+Examples:
+  bd recompute-blocked          # Repair stale is_blocked flags
+  bd recompute-blocked --json   # Machine-parseable &#123;"rows_corrected": N&#125;
+
+```
+bd recompute-blocked
 ```
 
 ### bd rename-prefix
@@ -6705,6 +6731,7 @@ bd ready [flags]
       --metadata-field stringArray   Filter by metadata field (key=value, repeatable)
       --mol string                   Filter to steps within a specific molecule
       --mol-type string              Filter by molecule type: swarm, patrol, or work
+      --offset int                   Skip the first N matching results (0-based). Only supported under --proxied-server.
       --parent string                Filter to descendants of this bead/epic
       --plain                        Display issues as a plain numbered list
       --pretty                       Display issues in a tree format with status/priority symbols (default true)
