@@ -122,18 +122,23 @@ func (s *DoltStore) runDoltTransaction(ctx context.Context, commitMsg string, fn
 		return err
 	}
 
+	// COMMIT PHASE (double-mint fix): from here the write may land on the server
+	// even if the client connection then drops, so a transient failure must NOT
+	// cause withRetry to replay the whole transaction (which would re-apply the
+	// write). commitPhaseError converts such failures into a non-retryable
+	// ErrCommitIndeterminate; pre-commit failures above stay safely retryable.
 	if err := regularTx.Commit(); err != nil {
 		_ = ignoredTx.Rollback()
-		return fmt.Errorf("sql commit (regular): %w", err)
+		return commitPhaseError(fmt.Errorf("sql commit (regular): %w", err))
 	}
 
 	if err := versioncontrolops.StageAndCommit(ctx, conn, tx.dirty.DirtyTables(), commitMsg, s.commitAuthorString()); err != nil {
 		_ = ignoredTx.Rollback()
-		return err
+		return commitPhaseError(err)
 	}
 
 	if err := ignoredTx.Commit(); err != nil {
-		return fmt.Errorf("sql commit (ignored, regular already committed): %w", err)
+		return commitPhaseError(fmt.Errorf("sql commit (ignored, regular already committed): %w", err))
 	}
 	return nil
 }
