@@ -382,15 +382,7 @@ func createIssuesFromMarkdown(_ *cobra.Command, filepath string) {
 		FatalError("creating issues from markdown: %v", err)
 	}
 	commitMsg := fmt.Sprintf("bd: create %d issue(s) from %s", len(templates), filepath)
-	issueIDs := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		issueIDs = append(issueIDs, issue.ID)
-	}
-	if err := commitPendingIfEmbedded(ctx, store, actor, doltAutoCommitParams{
-		Command:         "create",
-		IssueIDs:        issueIDs,
-		MessageOverride: commitMsg,
-	}); err != nil {
+	if err := store.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
 		WarnError("failed to commit: %v", err)
 	}
 	createdIssues = append(createdIssues, issues...)

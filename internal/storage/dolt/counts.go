@@ -3,6 +3,8 @@ package dolt
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
@@ -22,17 +24,20 @@ const depTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends
 
 // CountIssues returns the number of issues matching query and filter.
 // Filter.Limit and Filter.Offset are ignored; all other fields apply.
-// Wisps-merge semantics follow SearchIssues: SkipWisps=true counts the
-// durable issues table only, otherwise the wisps tier is merged in (GH#4387).
 func (s *DoltStore) CountIssues(ctx context.Context, query string, filter types.IssueFilter) (int64, error) {
 	var n int64
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
-		count, err := issueops.CountIssuesInTx(ctx, tx, query, filter)
+		whereClauses, args, err := issueops.BuildIssueFilterClauses(query, filter, issueops.IssuesFilterTables)
 		if err != nil {
 			return err
 		}
-		n = int64(count)
-		return nil
+		where := ""
+		if len(whereClauses) > 0 {
+			where = " WHERE " + strings.Join(whereClauses, " AND ")
+		}
+		//nolint:gosec // table name is a static constant; placeholders are bound
+		q := fmt.Sprintf(`SELECT count(*) FROM issues%s`, where)
+		return tx.QueryRowContext(ctx, q, args...).Scan(&n)
 	})
 	return n, err
 }

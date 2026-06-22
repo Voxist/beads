@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"text/template"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -21,7 +23,8 @@ func printTruncationHint(truncated bool, effectiveLimit int) {
 	fmt.Fprint(os.Stderr, ui.RenderWarn(msg))
 }
 
-func outputDotFormat(issues []*types.Issue, depsByIssueID map[string][]*types.Dependency) error {
+// outputDotFormat outputs issues in Graphviz DOT format
+func outputDotFormat(ctx context.Context, store storage.DoltStorage, issues []*types.Issue) error {
 	fmt.Println("digraph dependencies {")
 	fmt.Println("  rankdir=TB;")
 	fmt.Println("  node [shape=box, style=rounded];")
@@ -64,7 +67,11 @@ func outputDotFormat(issues []*types.Issue, depsByIssueID map[string][]*types.De
 
 	// Output edges with labels for dependency type
 	for _, issue := range issues {
-		for _, dep := range depsByIssueID[issue.ID] {
+		deps, err := store.GetDependencyRecords(ctx, issue.ID)
+		if err != nil {
+			continue
+		}
+		for _, dep := range deps {
 			// Only output edges where both nodes are in the filtered list
 			if issueMap[dep.DependsOnID] != nil {
 				// Color code by dependency type
@@ -93,10 +100,11 @@ func outputDotFormat(issues []*types.Issue, depsByIssueID map[string][]*types.De
 	return nil
 }
 
-func outputFormattedList(issues []*types.Issue, depsByIssueID map[string][]*types.Dependency, formatStr string) error {
+// outputFormattedList outputs issues in a custom format (preset or Go template)
+func outputFormattedList(ctx context.Context, store storage.DoltStorage, issues []*types.Issue, formatStr string) error {
 	// Handle special 'dot' format (Graphviz output)
 	if formatStr == "dot" {
-		return outputDotFormat(issues, depsByIssueID)
+		return outputDotFormat(ctx, store, issues)
 	}
 
 	// Built-in format presets
@@ -124,7 +132,11 @@ func outputFormattedList(issues []*types.Issue, depsByIssueID map[string][]*type
 
 	// For each issue, output its dependencies using the template
 	for _, issue := range issues {
-		for _, dep := range depsByIssueID[issue.ID] {
+		deps, err := store.GetDependencyRecords(ctx, issue.ID)
+		if err != nil {
+			continue
+		}
+		for _, dep := range deps {
 			// Only output edges where both nodes are in the filtered list
 			if issueMap[dep.DependsOnID] {
 				// Template data includes both issue and dependency info

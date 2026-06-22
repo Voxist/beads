@@ -81,6 +81,10 @@ Examples:
 	Run: func(_ *cobra.Command, _ []string) {
 		// Block mutating operations in embedded mode; allow --stats, --analyze, --dry-run read-only paths.
 		if !compactStats && !compactAnalyze && !compactDryRun {
+			// S5: compaction rewrites Dolt history and needs exclusive direct
+			// repository access — impossible through the proxy. Read-only paths
+			// (--stats/--analyze/--dry-run) remain serviceable over the routed store.
+			guardUnsupportedInProxiedMode(CapabilityCompaction)
 			if err := requireServerMode("compact"); err != nil {
 				FatalError("%v", err)
 			}

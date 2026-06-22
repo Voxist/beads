@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
 func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error) {
+	limit := filter.Limit
+
 	wispDepsExist, err := optionalTableExistsInTx(ctx, tx, "wisp_dependencies")
 	if err != nil {
 		return nil, fmt.Errorf("search issues with counts: wisp dependency probe: %w", err)
@@ -21,26 +22,14 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		if probeErr != nil {
 			return nil, fmt.Errorf("search issues with counts: ephemeral wisp probe: %w", probeErr)
 		}
-		if !empty && wispDepsExist {
-			wisps, err := runFilterSearchQueryInTx(ctx, tx, query, filter, WispsFilterTables, true)
-			if err != nil && !isTableNotExistError(err) {
-				return nil, err
-			}
-			if len(wisps) > 0 {
-				return finishSearchIssuesWithCounts(wisps, filter), nil
-			}
+		if empty || !wispDepsExist {
+			return nil, nil
 		}
-		// Fall through: the wisps tier is missing/empty or matched no rows.
-		// Mirror SearchIssuesInTx / CountIssuesInTx so count-projection searches
-		// also surface a durable issues-table row flagged ephemeral=1 instead of
-		// dropping it. Use the same IssuesFilterTables query the non-ephemeral
-		// path uses, keeping the GH#4387 count/list cardinality parity for
-		// searches that project counts (e.g. `bd search --counts --include-infra`).
-		out, err := runFilterSearchQueryInTx(ctx, tx, query, filter, IssuesFilterTables, wispDepsExist)
+		wisps, err := runFilterSearchQueryInTx(ctx, tx, query, filter, WispsFilterTables, true)
 		if err != nil {
 			return nil, err
 		}
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(wisps, limit), nil
 	}
 
 	out, err := runFilterSearchQueryInTx(ctx, tx, query, filter, IssuesFilterTables, wispDepsExist)
@@ -48,31 +37,26 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		return nil, err
 	}
 
-	// Skip wisps merge entirely when caller opts out (Q2: perf escape hatch).
-	if filter.SkipWisps {
-		return finishSearchIssuesWithCounts(out, filter), nil
-	}
-
 	empty, probeErr := wispsTableEmptyOrMissingInTx(ctx, tx)
 	if probeErr != nil {
 		return nil, fmt.Errorf("search issues with counts: wisp probe: %w", probeErr)
 	}
 	if empty {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, limit), nil
 	}
 	if !wispDepsExist {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, limit), nil
 	}
 
 	wisps, err := runFilterSearchQueryInTx(ctx, tx, query, filter, WispsFilterTables, true)
 	if err != nil {
 		if isTableNotExistError(err) {
-			return finishSearchIssuesWithCounts(out, filter), nil
+			return finishSearchIssuesWithCounts(out, limit), nil
 		}
 		return nil, err
 	}
 	if len(wisps) == 0 {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, limit), nil
 	}
 
 	seen := make(map[string]struct{}, len(out))
@@ -90,7 +74,7 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		}
 		out = append(out, w)
 	}
-	return finishSearchIssuesWithCounts(out, filter), nil
+	return finishSearchIssuesWithCounts(out, limit), nil
 }
 
 func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter, tables FilterTables, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
@@ -106,13 +90,92 @@ func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, fil
 	if filter.Limit > 0 {
 		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
 	}
-	orderBy := sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, "i")
+	const orderBy = "ORDER BY i.priority ASC, i.created_at DESC, i.id ASC"
 	return runSearchQueryInTx(ctx, tx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, filter.SkipLabels)
 }
 
 //nolint:gosec // G201: SQL fragments are caller-built from hardcoded shapes
 func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, whereSQL, orderBySQL, limitSQL string, args []interface{}, includeWispReverseDeps bool, skipLabels bool) ([]*types.IssueWithCounts, error) {
-	searchSQL := sqlbuild.SearchCountsSQL(tables, whereSQL, orderBySQL, limitSQL, includeWispReverseDeps, skipLabels)
+	reverseBlockerSelect := `
+				SELECT COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS dep_id
+				FROM dependencies WHERE type = 'blocks'
+	`
+	if includeWispReverseDeps {
+		reverseBlockerSelect += `
+				UNION ALL
+				SELECT COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS dep_id
+				FROM wisp_dependencies WHERE type = 'blocks'
+		`
+	}
+
+	labelsSelect := "l.labels_json AS labels_json"
+	labelsJoin := fmt.Sprintf(`
+		LEFT JOIN (
+			SELECT issue_id, JSON_ARRAYAGG(label) AS labels_json
+			FROM %s
+			GROUP BY issue_id
+		) l ON l.issue_id = i.id`, tables.Labels)
+	if skipLabels {
+		labelsSelect = "NULL AS labels_json"
+		labelsJoin = ""
+	}
+
+	searchSQL := fmt.Sprintf(`
+		SELECT %s,
+			%s,
+			COALESCE(dc.cnt, 0) AS dep_count,
+			COALESCE(rc.cnt, 0) AS rdep_count,
+			COALESCE(cc.cnt, 0) AS comment_count,
+			pc.parent_id     AS parent_id,
+			d.deps_json      AS deps_json
+		FROM %s i
+		%s
+		LEFT JOIN (
+			SELECT issue_id, COUNT(*) AS cnt
+			FROM %s
+			WHERE type = 'blocks'
+			GROUP BY issue_id
+		) dc ON dc.issue_id = i.id
+		LEFT JOIN (
+			SELECT dep_id, COUNT(*) AS cnt FROM (
+				%s
+			) all_blockers GROUP BY dep_id
+		) rc ON rc.dep_id = i.id
+		LEFT JOIN (
+			SELECT issue_id, COUNT(*) AS cnt
+			FROM %s
+			GROUP BY issue_id
+		) cc ON cc.issue_id = i.id
+		LEFT JOIN (
+			SELECT issue_id,
+			       MIN(COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)) AS parent_id
+			FROM %s
+			WHERE type = 'parent-child'
+			GROUP BY issue_id
+		) pc ON pc.issue_id = i.id
+		LEFT JOIN (
+			SELECT issue_id, JSON_ARRAYAGG(%s) AS deps_json
+			FROM %s
+			GROUP BY issue_id
+		) d ON d.issue_id = i.id
+		%s
+		%s
+		%s
+	`,
+		readyWorkIssueColumns,
+		labelsSelect,
+		tables.Main,
+		labelsJoin,
+		tables.Dependencies,
+		reverseBlockerSelect,
+		tables.Comments,
+		tables.Dependencies,
+		readyWorkDepJSONObject,
+		tables.Dependencies,
+		whereSQL,
+		orderBySQL,
+		limitSQL,
+	)
 
 	rows, err := tx.QueryContext(ctx, searchSQL, args...)
 	if err != nil {
@@ -123,7 +186,7 @@ func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, wh
 	var out []*types.IssueWithCounts
 	seen := make(map[string]bool)
 	for rows.Next() {
-		iwc, scanErr := ScanReadyWorkRowWithCounts(rows)
+		iwc, scanErr := scanReadyWorkRowWithCounts(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -142,18 +205,15 @@ func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, wh
 	return out, nil
 }
 
-func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, filter types.IssueFilter) []*types.IssueWithCounts {
-	sortSearchIssuesWithCounts(items, filter.SortBy, filter.SortDesc)
-	if filter.Limit > 0 && len(items) > filter.Limit {
-		return items[:filter.Limit]
+func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, limit int) []*types.IssueWithCounts {
+	sortSearchIssuesWithCounts(items)
+	if limit > 0 && len(items) > limit {
+		return items[:limit]
 	}
 	return items
 }
 
-// sortSearchIssuesWithCounts must order the merged issues+wisps rows the same
-// way sqlbuild.OrderBy orders each per-table query; otherwise the limit cut in
-// finishSearchIssuesWithCounts keeps a different row set than SQL selected.
-func sortSearchIssuesWithCounts(items []*types.IssueWithCounts, sortBy string, sortDesc bool) {
+func sortSearchIssuesWithCounts(items []*types.IssueWithCounts) {
 	if len(items) <= 1 {
 		return
 	}
@@ -165,7 +225,13 @@ func sortSearchIssuesWithCounts(items []*types.IssueWithCounts, sortBy string, s
 		if b == nil || b.Issue == nil {
 			return true
 		}
-		return sqlbuild.Less(a.Issue, b.Issue, sortBy, sortDesc)
+		if a.Issue.Priority != b.Issue.Priority {
+			return a.Issue.Priority < b.Issue.Priority
+		}
+		if !a.Issue.CreatedAt.Equal(b.Issue.CreatedAt) {
+			return a.Issue.CreatedAt.After(b.Issue.CreatedAt)
+		}
+		return a.Issue.ID < b.Issue.ID
 	})
 }
 

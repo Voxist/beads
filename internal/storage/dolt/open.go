@@ -36,10 +36,6 @@ const (
 // stops the server, External mode's "you manage the lifecycle" semantics
 // asks the user to run `bd dolt start`.
 func ApplyCLIAutoStart(beadsDir string, cfg *Config) {
-	if cfg.DisableAutoStart {
-		cfg.AutoStart = false
-		return
-	}
 	autoStartCfg := config.GetString("dolt.auto-start")
 	if autoStartCfg == "" {
 		autoStartCfg = config.GetStringFromDir(beadsDir, "dolt.auto-start")
@@ -122,11 +118,7 @@ func NewFromConfigWithOptions(ctx context.Context, beadsDir string, cfg *Config)
 	// launching a different server when the user's configured server is
 	// temporarily unreachable — the root cause of the shadow database bug.
 	mode := doltserver.ResolveServerMode(beadsDir)
-	if cfg.DisableAutoStart {
-		cfg.AutoStart = false
-	} else {
-		cfg.AutoStart = resolveAutoStart(cfg.AutoStart, autoStartCfg, mode)
-	}
+	cfg.AutoStart = resolveAutoStart(cfg.AutoStart, autoStartCfg, mode)
 
 	return New(ctx, cfg)
 }

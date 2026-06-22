@@ -21,9 +21,6 @@ const sidebars: SidebarsConfig = {
         'core-concepts/index',
         'core-concepts/issues',
         'core-concepts/hash-ids',
-        'core-concepts/sync-concepts',
-        'core-concepts/labels',
-        'core-concepts/metadata',
       ],
     },
     {
@@ -71,7 +68,6 @@ const sidebars: SidebarsConfig = {
         'recovery/merge-conflicts',
         'recovery/circular-dependencies',
         'recovery/sync-failures',
-        'recovery/uninstalling',
       ],
     },
     {
@@ -106,7 +102,6 @@ const sidebars: SidebarsConfig = {
         'integrations/github-copilot',
       ],
     },
-    'community-tools',
     {
       type: 'category',
       label: 'Reference',
@@ -116,7 +111,6 @@ const sidebars: SidebarsConfig = {
         'reference/git-integration',
         'reference/advanced',
         'reference/troubleshooting',
-        'reference/antivirus',
         'reference/faq',
       ],
     },

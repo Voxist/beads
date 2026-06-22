@@ -137,6 +137,9 @@ func getFederatedStore() (storage.DoltStorage, error) {
 }
 
 func runFederationSync(cmd *cobra.Command, args []string) {
+	// S5: federation sync performs staging-branch surgery over raw Dolt and
+	// cannot run through the proxy. Status/list-peers reads stay serviceable.
+	guardUnsupportedInProxiedMode(CapabilityFederation)
 	ctx := rootCtx
 
 	ds, err := getFederatedStore()
@@ -446,7 +449,7 @@ func runFederationListPeers(cmd *cobra.Command, args []string) {
 	}
 
 	if jsonOutput {
-		outputJSON(formatFederationPeerListJSON(remotes))
+		outputJSON(remotes)
 		return
 	}
 
@@ -460,20 +463,4 @@ func runFederationListPeers(cmd *cobra.Command, args []string) {
 		fmt.Printf("  %s  %s\n", ui.RenderAccent(r.Name), ui.RenderMuted(r.URL))
 	}
 	fmt.Println()
-}
-
-type federationPeerListJSON struct {
-	Name string `json:"Name"`
-	URL  string `json:"URL"`
-}
-
-func formatFederationPeerListJSON(remotes []storage.RemoteInfo) []federationPeerListJSON {
-	out := make([]federationPeerListJSON, 0, len(remotes))
-	for _, r := range remotes {
-		out = append(out, federationPeerListJSON{
-			Name: r.Name,
-			URL:  r.URL,
-		})
-	}
-	return out
 }

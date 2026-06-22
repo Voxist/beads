@@ -192,43 +192,36 @@ func TestListCommandSuite(t *testing.T) {
 				t.Fatalf("Failed to add dependency: %v", err)
 			}
 
-			deps, derr := h.store.GetAllDependencyRecords(h.ctx)
-			if derr != nil {
-				t.Fatalf("GetAllDependencyRecords: %v", derr)
-			}
-			err := outputDotFormat(h.issues, deps)
+			err := outputDotFormat(h.ctx, h.store, h.issues)
 			if err != nil {
 				t.Errorf("outputDotFormat failed: %v", err)
 			}
 		})
 
 		t.Run("output formatted list dot", func(t *testing.T) {
-			deps, _ := h.store.GetAllDependencyRecords(h.ctx)
-			err := outputFormattedList(h.issues, deps, "dot")
+			err := outputFormattedList(h.ctx, h.store, h.issues, "dot")
 			if err != nil {
 				t.Errorf("outputFormattedList with dot format failed: %v", err)
 			}
 		})
 
 		t.Run("output formatted list digraph preset", func(t *testing.T) {
-			deps, _ := h.store.GetAllDependencyRecords(h.ctx)
-			err := outputFormattedList(h.issues, deps, "digraph")
+			// Dependency already added in previous test, just use it
+			err := outputFormattedList(h.ctx, h.store, h.issues, "digraph")
 			if err != nil {
 				t.Errorf("outputFormattedList with digraph format failed: %v", err)
 			}
 		})
 
 		t.Run("output formatted list custom template", func(t *testing.T) {
-			deps, _ := h.store.GetAllDependencyRecords(h.ctx)
-			err := outputFormattedList(h.issues, deps, "{{.ID}} {{.Title}}")
+			err := outputFormattedList(h.ctx, h.store, h.issues, "{{.ID}} {{.Title}}")
 			if err != nil {
 				t.Errorf("outputFormattedList with custom template failed: %v", err)
 			}
 		})
 
 		t.Run("output formatted list invalid template", func(t *testing.T) {
-			deps, _ := h.store.GetAllDependencyRecords(h.ctx)
-			err := outputFormattedList(h.issues, deps, "{{.ID")
+			err := outputFormattedList(h.ctx, h.store, h.issues, "{{.ID")
 			if err == nil {
 				t.Error("Expected error for invalid template")
 			}

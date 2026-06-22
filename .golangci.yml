@@ -30,10 +30,8 @@ linters:
         - (os).Chdir
         - (os).MkdirAll
         - (fmt).Sscanf
-        - (fmt).Fprint
         - (fmt).Fprintf
         - (fmt).Fprintln
-        - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
     misspell:

@@ -171,9 +171,7 @@ func maybeAutoPush(ctx context.Context) {
 			} else {
 				fmt.Fprintf(os.Stderr, "Warning: dolt auto-push failed: %v\n", err)
 			}
-			if isAncestorPKMismatchErr(err) {
-				printAncestorPKMismatchGuidance(err)
-			} else if isDivergedHistoryErr(err) {
+			if isDivergedHistoryErr(err) {
 				printDivergedHistoryGuidance("push")
 			}
 		}

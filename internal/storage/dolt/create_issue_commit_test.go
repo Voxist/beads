@@ -107,7 +107,7 @@ func TestCreateIssueWithoutInitialRelationalDataDoesNotCommitDirtySideTables(t *
 		t.Fatalf("dirty label insert: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx,
-		"INSERT INTO comments (id, issue_id, author, text, created_at) VALUES (UUID(), ?, ?, ?, ?)",
+		"INSERT INTO comments (issue_id, author, text, created_at) VALUES (?, ?, ?, ?)",
 		dirtyOwner.ID, "tester", "uncommitted comment", time.Now().UTC(),
 	); err != nil {
 		t.Fatalf("dirty comment insert: %v", err)
@@ -288,7 +288,7 @@ func TestCreateIssuesWithoutInitialRelationalDataDoesNotCommitDirtySideTables(t 
 		t.Fatalf("dirty label insert: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx,
-		"INSERT INTO comments (id, issue_id, author, text, created_at) VALUES (UUID(), ?, ?, ?, ?)",
+		"INSERT INTO comments (issue_id, author, text, created_at) VALUES (?, ?, ?, ?)",
 		dirtyOwner.ID, "tester", "batch uncommitted comment", time.Now().UTC(),
 	); err != nil {
 		t.Fatalf("dirty comment insert: %v", err)
@@ -593,13 +593,13 @@ func TestCreateIssuesDuplicateSideTableInputsDoNotCommitDirtySideTables(t *testi
 		t.Fatalf("dirty label insert: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx,
-		"INSERT INTO comments (id, issue_id, author, text, created_at) VALUES (UUID(), ?, ?, ?, ?)",
+		"INSERT INTO comments (issue_id, author, text, created_at) VALUES (?, ?, ?, ?)",
 		dirtyOwner.ID, "tester", "uncommitted comment", createdAt.Add(time.Minute),
 	); err != nil {
 		t.Fatalf("dirty comment insert: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx,
-		"INSERT INTO dependencies (id, issue_id, depends_on_issue_id, type, created_at, created_by) VALUES (UUID(), ?, ?, ?, ?, ?)",
+		"INSERT INTO dependencies (issue_id, depends_on_issue_id, type, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
 		dirtyOwner.ID, dirtyTarget.ID, types.DepBlocks, createdAt.Add(2*time.Minute), "tester",
 	); err != nil {
 		t.Fatalf("dirty dependency insert: %v", err)

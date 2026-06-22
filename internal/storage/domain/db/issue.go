@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
-	"github.com/steveyegge/beads/internal/storage/issueops"
-	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -30,9 +28,16 @@ type issueSQLRepositoryImpl struct {
 
 var _ domain.IssueSQLRepository = (*issueSQLRepositoryImpl)(nil)
 
-// issueSelectColumns aliases the shared canonical column list; the scan side
-// delegates to issueops.ScanIssueFrom, which scans it positionally.
-const issueSelectColumns = sqlbuild.IssueSelectColumns
+const issueSelectColumns = `id, content_hash, title, description, design, acceptance_criteria, notes,
+	status, priority, issue_type, assignee, estimated_minutes,
+	created_at, created_by, owner, updated_at, started_at, closed_at, external_ref, spec_id,
+	compaction_level, compacted_at, compacted_at_commit, original_size, source_repo, close_reason,
+	sender, ephemeral, no_history, wisp_type, pinned, is_template,
+	await_type, await_id, timeout_ns, waiters,
+	mol_type,
+	event_kind, actor, target, payload,
+	due_at, defer_until,
+	work_type, source_system, metadata`
 
 var allowedUpdateFields = map[string]struct{}{
 	"status": {}, "priority": {}, "title": {}, "assignee": {},
@@ -292,6 +297,89 @@ func (r *issueSQLRepositoryImpl) seedCounterFromExisting(ctx context.Context, pr
 	return nil
 }
 
+func (r *issueSQLRepositoryImpl) Search(ctx context.Context, filter types.IssueFilter, opts domain.IssueTableOpts) ([]*types.Issue, error) {
+	q, args := buildSearchQuery(filter, pickIssueTable(opts.UseWispsTable))
+	rows, err := r.runner.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: Search: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*types.Issue
+	for rows.Next() {
+		issue, err := scanIssue(rows)
+		if err != nil {
+			return nil, fmt.Errorf("db: Search: scan: %w", err)
+		}
+		out = append(out, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: Search: rows: %w", err)
+	}
+	return out, nil
+}
+
+func buildSearchQuery(filter types.IssueFilter, table string) (string, []any) {
+	var where []string
+	var args []any
+
+	if filter.Status != nil {
+		where = append(where, "status = ?")
+		args = append(args, string(*filter.Status))
+	}
+	if len(filter.Statuses) > 0 {
+		ph := make([]string, len(filter.Statuses))
+		for i, s := range filter.Statuses {
+			ph[i] = "?"
+			args = append(args, string(s))
+		}
+		where = append(where, fmt.Sprintf("status IN (%s)", strings.Join(ph, ",")))
+	}
+	if filter.Priority != nil {
+		where = append(where, "priority = ?")
+		args = append(args, *filter.Priority)
+	}
+	if filter.IssueType != nil {
+		where = append(where, "issue_type = ?")
+		args = append(args, string(*filter.IssueType))
+	}
+	if filter.Assignee != nil {
+		where = append(where, "assignee = ?")
+		args = append(args, *filter.Assignee)
+	}
+	if filter.TitleSearch != "" {
+		where = append(where, "title LIKE ?")
+		args = append(args, "%"+filter.TitleSearch+"%")
+	}
+	if len(filter.IDs) > 0 {
+		ph := make([]string, len(filter.IDs))
+		for i, id := range filter.IDs {
+			ph[i] = "?"
+			args = append(args, id)
+		}
+		where = append(where, fmt.Sprintf("id IN (%s)", strings.Join(ph, ",")))
+	}
+	if filter.IDPrefix != "" {
+		where = append(where, "id LIKE ?")
+		args = append(args, filter.IDPrefix+"%")
+	}
+	if filter.SpecIDPrefix != "" {
+		where = append(where, "spec_id LIKE ?")
+		args = append(args, filter.SpecIDPrefix+"%")
+	}
+
+	//nolint:gosec // G201: table is one of two hardcoded constants
+	q := fmt.Sprintf("SELECT %s FROM %s", issueSelectColumns, table)
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " ORDER BY priority ASC, created_at DESC"
+	if filter.Limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", filter.Limit)
+	}
+	return q, args
+}
+
 func normalizeIssueTimestamps(issue *types.Issue) {
 	now := time.Now().UTC()
 	if issue.CreatedAt.IsZero() {
@@ -377,13 +465,150 @@ type issueScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanIssue delegates to the classic scan so both stacks hydrate issues with
-// identical semantics (bd-6dnrw.44 item 12, extract-don't-duplicate per .46).
-// The shared scan reads created_at/updated_at as strings with format
-// fallbacks where a hand-rolled sql.NullTime scan hard-fails on any driver
-// that hands timestamps back as text.
 func scanIssue(s issueScanner) (*types.Issue, error) {
-	return issueops.ScanIssueFrom(s)
+	var issue types.Issue
+	var startedAt, closedAt, compactedAt, dueAt, deferUntil sql.NullTime
+	var estimatedMinutes, originalSize, timeoutNs sql.NullInt64
+	var contentHash, createdBy, owner sql.NullString
+	var assignee, externalRef, specID, compactedAtCommit sql.NullString
+	var sourceRepo, closeReason sql.NullString
+	var workType, sourceSystem sql.NullString
+	var sender, wispType, molType, eventKind, actorCol, target, payload sql.NullString
+	var awaitType, awaitID, waiters sql.NullString
+	var ephemeral, noHistory, pinned, isTemplate sql.NullInt64
+	var metadata sql.NullString
+	var createdAt, updatedAt sql.NullTime
+
+	if err := s.Scan(
+		&issue.ID, &contentHash, &issue.Title, &issue.Description, &issue.Design,
+		&issue.AcceptanceCriteria, &issue.Notes, &issue.Status,
+		&issue.Priority, &issue.IssueType, &assignee, &estimatedMinutes,
+		&createdAt, &createdBy, &owner, &updatedAt, &startedAt, &closedAt, &externalRef, &specID,
+		&issue.CompactionLevel, &compactedAt, &compactedAtCommit, &originalSize, &sourceRepo, &closeReason,
+		&sender, &ephemeral, &noHistory, &wispType, &pinned, &isTemplate,
+		&awaitType, &awaitID, &timeoutNs, &waiters,
+		&molType,
+		&eventKind, &actorCol, &target, &payload,
+		&dueAt, &deferUntil,
+		&workType, &sourceSystem, &metadata,
+	); err != nil {
+		return nil, err
+	}
+
+	if createdAt.Valid {
+		issue.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		issue.UpdatedAt = updatedAt.Time
+	}
+	if contentHash.Valid {
+		issue.ContentHash = contentHash.String
+	}
+	if startedAt.Valid {
+		issue.StartedAt = &startedAt.Time
+	}
+	if closedAt.Valid {
+		issue.ClosedAt = &closedAt.Time
+	}
+	if estimatedMinutes.Valid {
+		mins := int(estimatedMinutes.Int64)
+		issue.EstimatedMinutes = &mins
+	}
+	if assignee.Valid {
+		issue.Assignee = assignee.String
+	}
+	if createdBy.Valid {
+		issue.CreatedBy = createdBy.String
+	}
+	if owner.Valid {
+		issue.Owner = owner.String
+	}
+	if externalRef.Valid {
+		issue.ExternalRef = &externalRef.String
+	}
+	if specID.Valid {
+		issue.SpecID = specID.String
+	}
+	if compactedAt.Valid {
+		issue.CompactedAt = &compactedAt.Time
+	}
+	if compactedAtCommit.Valid {
+		issue.CompactedAtCommit = &compactedAtCommit.String
+	}
+	if originalSize.Valid {
+		issue.OriginalSize = int(originalSize.Int64)
+	}
+	if sourceRepo.Valid {
+		issue.SourceRepo = sourceRepo.String
+	}
+	if closeReason.Valid {
+		issue.CloseReason = closeReason.String
+	}
+	if sender.Valid {
+		issue.Sender = sender.String
+	}
+	if ephemeral.Valid && ephemeral.Int64 != 0 {
+		issue.Ephemeral = true
+	}
+	if noHistory.Valid && noHistory.Int64 != 0 {
+		issue.NoHistory = true
+	}
+	if wispType.Valid {
+		issue.WispType = types.WispType(wispType.String)
+	}
+	if pinned.Valid && pinned.Int64 != 0 {
+		issue.Pinned = true
+	}
+	if isTemplate.Valid && isTemplate.Int64 != 0 {
+		issue.IsTemplate = true
+	}
+	if awaitType.Valid {
+		issue.AwaitType = awaitType.String
+	}
+	if awaitID.Valid {
+		issue.AwaitID = awaitID.String
+	}
+	if timeoutNs.Valid {
+		issue.Timeout = time.Duration(timeoutNs.Int64)
+	}
+	if waiters.Valid && waiters.String != "" {
+		var parsed []string
+		if err := json.Unmarshal([]byte(waiters.String), &parsed); err == nil {
+			issue.Waiters = parsed
+		}
+	}
+	if molType.Valid {
+		issue.MolType = types.MolType(molType.String)
+	}
+	if eventKind.Valid {
+		issue.EventKind = eventKind.String
+	}
+	if actorCol.Valid {
+		issue.Actor = actorCol.String
+	}
+	if target.Valid {
+		issue.Target = target.String
+	}
+	if payload.Valid {
+		issue.Payload = payload.String
+	}
+	if dueAt.Valid {
+		issue.DueAt = &dueAt.Time
+	}
+	if deferUntil.Valid {
+		issue.DeferUntil = &deferUntil.Time
+	}
+	if workType.Valid {
+		issue.WorkType = types.WorkType(workType.String)
+	}
+	if sourceSystem.Valid {
+		issue.SourceSystem = sourceSystem.String
+	}
+	if metadata.Valid && metadata.String != "" && metadata.String != "{}" {
+		issue.Metadata = []byte(metadata.String)
+	}
+
+	return &issue, nil
 }
 
 func nullString(s string) any {
@@ -470,18 +695,18 @@ func normalizeUpdateValue(key string, value any) any {
 	return value
 }
 
-func (r *issueSQLRepositoryImpl) SearchAcrossIssuesAndWisps(ctx context.Context, query string, filter types.IssueFilter) (domain.SearchPage, error) {
+func (r *issueSQLRepositoryImpl) SearchAcrossIssuesAndWisps(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) {
 	return r.searchAcrossIssuesAndWisps(ctx, query, filter)
 }
 
-func (r *issueSQLRepositoryImpl) SearchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) (domain.SearchCountsPage, error) {
+func (r *issueSQLRepositoryImpl) SearchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error) {
 	return r.searchAcrossIssuesAndWispsWithCounts(ctx, query, filter)
 }
 
-func (r *issueSQLRepositoryImpl) GetReadyWork(ctx context.Context, filter types.WorkFilter) (domain.SearchPage, error) {
-	return r.getReadyWorkUnion(ctx, filter)
+func (r *issueSQLRepositoryImpl) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error) {
+	return r.getReadyWork(ctx, filter)
 }
 
-func (r *issueSQLRepositoryImpl) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (domain.SearchCountsPage, error) {
-	return r.getReadyWorkWithCountsUnion(ctx, filter)
+func (r *issueSQLRepositoryImpl) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
+	return r.getReadyWorkWithCounts(ctx, filter)
 }

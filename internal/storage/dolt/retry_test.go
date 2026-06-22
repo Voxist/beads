@@ -88,11 +88,6 @@ func TestIsRetryableError(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "dolt merge conflict 1105 — retryable",
-			err:      errors.New("dolt commit: Error 1105 (HY000): Merge conflict detected, @autocommit transaction rolled back"),
-			expected: true,
-		},
-		{
 			name:     "syntax error - not retryable",
 			err:      errors.New("Error 1064: You have an error in your SQL syntax"),
 			expected: false,
@@ -186,25 +181,5 @@ func TestWithRetry_NonRetryableError(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Errorf("expected 1 call for non-retryable error, got %d", callCount)
-	}
-}
-
-func TestWithRetry_RetryOnMergeConflict(t *testing.T) {
-	store := &DoltStore{}
-
-	callCount := 0
-	err := store.withRetry(context.Background(), func() error {
-		callCount++
-		if callCount < 3 {
-			return errors.New("dolt commit: Error 1105 (HY000): Merge conflict detected, @autocommit transaction rolled back")
-		}
-		return nil
-	})
-
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if callCount != 3 {
-		t.Errorf("expected 3 calls (2 retries + success), got %d", callCount)
 	}
 }

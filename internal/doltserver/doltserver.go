@@ -237,6 +237,30 @@ func SharedDoltDir() (string, error) {
 	return dir, nil
 }
 
+// SharedProxyRootDir returns the machine-wide rootDir for the shared db-proxy
+// child (its proxy.lock / proxy.pid / proxy.log). Every proxied scope that
+// selects the shared backend points at this one rootDir, so the proxy parent's
+// spawn-or-reuse — keyed by rootDir — collapses their per-scope children into a
+// single shared db-proxy-child. Returns ~/.beads/shared-server/proxy/ (created
+// on first use). Override the location with BEADS_SHARED_PROXY_ROOT_PATH, which
+// mirrors how BEADS_SHARED_SERVER_DIR overrides SharedServerDir.
+func SharedProxyRootDir() (string, error) {
+	var dir string
+	if d := os.Getenv("BEADS_SHARED_PROXY_ROOT_PATH"); d != "" {
+		dir = d
+	} else {
+		serverDir, err := SharedServerDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(serverDir, "proxy")
+	}
+	if err := os.MkdirAll(dir, config.BeadsDirPerm); err != nil {
+		return "", fmt.Errorf("cannot create shared proxy root directory %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
 // resolveServerDir returns the canonical server directory for dolt state files.
 // In shared server mode, returns ~/.beads/shared-server/ instead of the
 // project's .beads/ directory.
@@ -775,14 +799,17 @@ func Start(beadsDir string) (*State, error) {
 		}
 	}
 
-	// Launch dolt sql-server.
+	// Launch dolt sql-server, retrying once after an automatic corrupt-
+	// manifest recovery (GH#3290).
 	var (
-		pid        int
-		actualPort int
-		lastErr    error
-		attempts   int
+		pid               int
+		actualPort        int
+		lastErr           error
+		attempts          int
+		recoveryAttempted bool
 	)
-	{
+startupLoop:
+	for {
 		// Ensure dolt database directory is initialized
 		if err := ensureDoltInit(doltDir); err != nil {
 			return nil, fmt.Errorf("initializing dolt database: %w", err)
@@ -875,18 +902,25 @@ func Start(beadsDir string) (*State, error) {
 		_ = logFile.Close()
 
 		if lastErr != nil {
-			// GH#3290 / bd-6dnrw.6: unclean-shutdown manifest corruption is
-			// detected here but never auto-repaired — reinitializing .dolt is
-			// destructive, so repair stays behind explicit bd doctor --fix.
-			if dirs, detErr := detectCorruptManifest(beadsDir, doltDir); detErr == nil && len(dirs) > 0 {
-				return nil, fmt.Errorf("failed to start dolt server after %d attempts: %w\n"+
-					"Corrupt manifest with no recoverable data detected (GH#3290) in:\n  %s\n"+
-					"Run 'bd doctor --fix' to back up the corrupt database(s) and reinitialize.\nCheck logs: %s",
-					attempts, lastErr, strings.Join(dirs, "\n  "), logPath(beadsDir))
+			// GH#3290: detect unclean-shutdown manifest corruption and auto-
+			// recover when the journal is empty (no data to lose). Recovery
+			// backs up the corrupt .dolt/ with a timestamped suffix and
+			// reinitializes in place, then the outer loop retries startup.
+			if !recoveryAttempted {
+				recoveryAttempted = true
+				if backups, recErr := recoverCorruptManifest(beadsDir, doltDir); recErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: corrupt manifest recovery failed: %v\n", recErr)
+				} else if len(backups) > 0 {
+					for _, b := range backups {
+						fmt.Fprintf(os.Stderr, "Info: backed up corrupt dolt database to %s and reinitialized (GH#3290)\n", filepath.Base(b))
+					}
+					continue startupLoop
+				}
 			}
 			return nil, fmt.Errorf("failed to start dolt server after %d attempts: %w\nCheck logs: %s",
 				attempts, lastErr, logPath(beadsDir))
 		}
+		break
 	}
 
 	// Write PID and port files

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,7 +22,7 @@ import (
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
-	"github.com/steveyegge/beads/internal/storage/schema"
+	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/templates/agents"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
@@ -129,13 +128,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				FatalError("--proxied-server cannot be combined with --shared-server, --external, or any --server-* flag")
 			}
 		}
-		if initProxiedServer && !proxiedServerInitUngated() {
-			// Dark-launch gate (bd-6dnrw.44): stays until the remaining P1
-			// decisions land (TLS, auth). The env escape exists so the proxied
-			// integration suites and their CI lane can bootstrap real
-			// workspaces without opening the user surface.
-			FatalError("--proxied-server is not yet implemented")
-		}
 		if serverConfigPath != "" {
 			if !initProxiedServer {
 				FatalError("--proxied-server-config-path requires --proxied-server")
@@ -198,6 +190,17 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				FatalError("--proxied-server-external-*: %v", err)
 			}
 			externalConfig = &cfg
+		}
+		if initProxiedServer && externalConfig == nil {
+			// Managed (local dolt sql-server) proxied mode still lacks a local
+			// Dolt init lifecycle — that path must mark any local .dolt/ it
+			// creates or acknowledges with doltserver.MarkDoltDirCompatible
+			// before it can be enabled. External proxied mode fronts an
+			// already-running sql-server and creates no local Dolt, so it is
+			// supported.
+			FatalError("--proxied-server currently supports external mode only; " +
+				"specify the backend with --proxied-server-external-host and --proxied-server-external-port " +
+				"(or --proxied-server-external-socket-path)")
 		}
 
 		// Handle --backend flag: "dolt" is the only supported backend.
@@ -946,34 +949,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 
 		store, err := newDoltStore(ctx, doltCfg)
 		if err != nil {
-			// #4259: the remote-migrate gate refused to auto-apply pending
-			// migrations. When init just bootstrapped the clone, the REMOTE is
-			// what is behind this binary — the gate's generic "adopt: bd
-			// bootstrap" remedy is circular, and init has not yet written
-			// metadata.json/config.yaml, so without finalization the workspace
-			// is stranded where not even the gate's own unlock commands can
-			// open it (bd-4mpy7).
-			var gateErr *schema.RemoteMigrateGateError
-			if errors.As(err, &gateErr) {
-				if bootstrappedFromRemote {
-					// Leave the workspace in the same finalized state the
-					// bd bootstrap sync path produces (GH#3201) so
-					// `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate` and
-					// `bd dolt push` can open the cloned database.
-					fcfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName)
-					if ferr := finalizeSyncedBootstrap(beadsDir, syncURL, fcfg, dbName); ferr != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to finalize bootstrapped workspace: %v\n", ferr)
-					}
-				}
-				if jsonOutput {
-					handleRemoteMigrateGateJSON(gateErr)
-				} else if bootstrappedFromRemote {
-					printBootstrapRemoteBehindGuidance(os.Stderr, gateErr, syncURL, "bd init")
-				} else {
-					fmt.Fprint(os.Stderr, gateErr.UserMessage())
-				}
-				os.Exit(1)
-			}
 			fmt.Fprintf(os.Stderr, "Error: failed to open Dolt store: %v\n", err)
 			os.Exit(1)
 		}
@@ -2164,15 +2139,31 @@ func isDoltLocalOnly() bool {
 
 func configureInitDoltRemote(ctx context.Context, store storage.DoltStorage, syncURL string, quiet bool) {
 	hasRemote, _ := store.HasRemote(ctx, "origin")
-	if hasRemote {
+	if !hasRemote {
+		if err := store.AddRemote(ctx, "origin", syncURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to add remote 'origin': %v\n", err)
+			// Non-fatal — user can add manually with: bd dolt remote add origin <url>
+		} else if !quiet {
+			fmt.Printf("  %s Configured Dolt remote: origin → %s\n", ui.RenderPass("✓"), syncURL)
+		}
+	}
+
+	// Server-mode git remotes often need a matching CLI remote so push/pull can
+	// use the user's local SSH keys or credential helpers instead of the SQL
+	// server process environment.
+	if !usesSQLServer() {
 		return
 	}
-	if err := store.AddRemote(ctx, "origin", syncURL); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to add remote 'origin': %v\n", err)
+	locator, ok := storage.UnwrapStore(store).(storage.StoreLocator)
+	if !ok {
 		return
 	}
-	if !quiet {
-		fmt.Printf("  %s Configured Dolt remote: origin → %s\n", ui.RenderPass("✓"), syncURL)
+	dbPath := locator.CLIDir()
+	if dbPath == "" || doltutil.FindCLIRemote(dbPath, "origin") != "" {
+		return
+	}
+	if err := doltutil.AddCLIRemote(dbPath, "origin", syncURL); err != nil && !quiet {
+		fmt.Fprintf(os.Stderr, "Warning: failed to add CLI remote 'origin': %v\n", err)
 	}
 }
 

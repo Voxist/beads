@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/configfile"
@@ -32,25 +33,16 @@ func IsUpstreamMismatch(err error) bool {
 	return errors.As(err, &m)
 }
 
-func intendedUpstreamID(rootDir string, opts OpenOpts) string {
+func intendedUpstreamID(opts OpenOpts) string {
+	// The shared backend fronts the managed dolt through the same external-server
+	// mechanism, so its upstream identity is the same ExternalDoltServerID. A
+	// shared proxy pointed at a different managed dolt must be rejected by the
+	// reuse guard exactly as an external one is (see ErrUpstreamMismatch).
 	switch opts.Backend {
-	case BackendExternal:
+	case BackendExternal, BackendLocalSharedServer:
 		return server.ExternalDoltServerID(opts.External)
-	case BackendLocalServer:
-		return server.LocalDoltServerID(rootDir)
 	}
 	return ""
-}
-
-func checkUpstream(rootDir, want string, pf *pidfile.PidFile) error {
-	if want != "" && pf.UpstreamID != "" && pf.UpstreamID != want {
-		return &ErrUpstreamMismatch{
-			RootDir: rootDir,
-			Want:    want,
-			Have:    pf.UpstreamID,
-		}
-	}
-	return nil
 }
 
 type Endpoint struct {
@@ -69,6 +61,13 @@ type OpenOpts struct {
 	LogFilePath    string
 	DoltBinPath    string
 	External       configfile.ExternalDoltConfig
+	// PoolSize, when > 0, makes the spawned proxy pool backend connections
+	// (see ProxyOpts.PoolSize). BackendUser is the user the proxy uses to
+	// authenticate those pooled connections; the password, when needed, is
+	// inherited by the child via the environment (it is never passed on the
+	// command line). 0 preserves the transparent, non-pooling proxy.
+	PoolSize    int
+	BackendUser string
 }
 
 const (
@@ -78,6 +77,51 @@ const (
 )
 
 var ResolveExecutable = os.Executable
+
+// PoolSizeEnvVar is the opt-in switch for backend connection pooling. When set
+// to a positive integer, a proxy spawned by this process pools up to that many
+// warm backend connections instead of dialing one per client. Unset or 0
+// disables pooling (transparent forwarding, the historical behavior).
+const PoolSizeEnvVar = "BEADS_PROXY_POOL_SIZE"
+
+// PoolSizeFromEnv reads PoolSizeEnvVar, returning 0 (pooling disabled) when
+// unset, empty, non-numeric, or negative.
+func PoolSizeFromEnv() int {
+	v := strings.TrimSpace(os.Getenv(PoolSizeEnvVar))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// IdleTimeoutEnvVar overrides how long a pooling proxy stays alive with no
+// active client connections before it shuts down. The default (30s) is tuned
+// for a single busy workspace; an orchestrator that touches many scopes
+// sparsely (e.g. gascity probing dozens of rigs once per patrol) starves each
+// proxy below that window, so it spawns, serves one op, idle-dies, and respawns
+// on the next touch — pure churn that never reaches the warm-pool steady state
+// pooling exists to provide. Raising the timeout (e.g. "10m") keeps proxies warm
+// across sparse bursts. Accepts a Go duration string.
+const IdleTimeoutEnvVar = "BEADS_PROXY_IDLE_TIMEOUT"
+
+// IdleTimeoutFromEnv reads IdleTimeoutEnvVar, returning fallback when unset,
+// empty, or unparseable. A parsed non-positive value (e.g. "0") is returned
+// verbatim, which disables the idle timeout (proxy stays up until stopped).
+func IdleTimeoutFromEnv(fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(IdleTimeoutEnvVar))
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
 
 func PickFreePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -104,7 +148,10 @@ func GetCreateDatabaseProxyServerEndpoint(rootDir string, opts OpenOpts) (Endpoi
 		if opts.DoltBinPath == "" {
 			return Endpoint{}, fmt.Errorf("OpenOpts.DoltBinPath is required for backend %q", opts.Backend)
 		}
-	case BackendExternal:
+	case BackendExternal, BackendLocalSharedServer:
+		// The shared backend fronts the managed dolt via the external-server
+		// mechanism, so it carries the same requirements: a log path and a
+		// valid External target (which is also its upstream identity).
 		if opts.LogFilePath == "" {
 			return Endpoint{}, fmt.Errorf("OpenOpts.LogFilePath is required for backend %q", opts.Backend)
 		}
@@ -119,13 +166,17 @@ func GetCreateDatabaseProxyServerEndpoint(rootDir string, opts OpenOpts) (Endpoi
 	poll := time.NewTicker(openPollInterval)
 	defer poll.Stop()
 
-	want := intendedUpstreamID(rootDir, opts)
+	want := intendedUpstreamID(opts)
 
 	var lastSpawnErr error
 	for {
 		if ep, pf, ok := readAndDial(rootDir); ok {
-			if err := checkUpstream(rootDir, want, pf); err != nil {
-				return Endpoint{}, err
+			if want != "" && pf.UpstreamID != "" && pf.UpstreamID != want {
+				return Endpoint{}, &ErrUpstreamMismatch{
+					RootDir: rootDir,
+					Want:    want,
+					Have:    pf.UpstreamID,
+				}
 			}
 			return ep, nil
 		}
@@ -164,19 +215,19 @@ func spawnAndHandoff(rootDir string, opts OpenOpts, deadline time.Time, lock *ut
 	// readers into dialing a port that nobody is listening on.
 	_ = pidfile.Remove(rootDir, PIDFileName)
 
-	// Probe the proxy-child flock. Held: a previous proxy-child is still
+	// Probe the proxy-child flock: if held, a previous proxy-child is still
 	// alive and has an orphaned dolt sql-server we must kill before
-	// respawning. Acquired: no proxy-child survives, but a SIGKILLed one
-	// leaves its dolt sql-server orphaned (the flock dies with its holder;
-	// the grandchild process does not) — still holding the dolt data-dir
-	// lock, which would wedge every respawn. Either way, kill whatever live
-	// process the child pidfile names, then release the flock so the child
-	// we are about to spawn can take it.
+	// respawning. If we can acquire it, no proxy-child is running — release
+	// immediately so the child we are about to spawn can take it.
 	if l, err := util.TryLock(filepath.Join(rootDir, server.LockFileName)); err == nil {
-		reapPidfileProcess(rootDir, server.PIDFileName)
 		l.Unlock()
 	} else if lockfile.IsLocked(err) {
-		reapPidfileProcess(rootDir, server.PIDFileName)
+		if pf, perr := pidfile.Read(rootDir, server.PIDFileName); perr == nil && pf != nil {
+			if proc, ferr := os.FindProcess(pf.Pid); ferr == nil {
+				_ = proc.Kill()
+			}
+			_ = pidfile.Remove(rootDir, server.PIDFileName)
+		}
 	}
 
 	port, err := PickFreePort()
@@ -195,15 +246,8 @@ func spawnAndHandoff(rootDir string, opts OpenOpts, deadline time.Time, lock *ut
 	poll := time.NewTicker(openPollInterval)
 	defer poll.Stop()
 
-	want := intendedUpstreamID(rootDir, opts)
 	for {
-		if ep, pf, ok := readAndDial(rootDir); ok {
-			// Our child can lose the spawn race to a proxy fronting a
-			// different upstream; the winner's endpoint must fail the same
-			// check the steady-state discovery path applies.
-			if err := checkUpstream(rootDir, want, pf); err != nil {
-				return Endpoint{}, err
-			}
+		if ep, _, ok := readAndDial(rootDir); ok {
 			return ep, nil
 		}
 		select {
@@ -221,19 +265,20 @@ func spawnAndHandoff(rootDir string, opts OpenOpts, deadline time.Time, lock *ut
 	}
 }
 
-func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*exec.Cmd, <-chan struct{}, error) {
-	released := false
-	defer func() {
-		if !released {
-			lock.Unlock()
-		}
-	}()
+// backendCarriesExternal reports whether the backend fronts an external dolt
+// target whose --external-* connection args must cross the fork boundary. Both
+// the external backend and the shared backend (which fronts the managed dolt
+// through the same external-server mechanism) carry them; the managed
+// local-server backend does not.
+func backendCarriesExternal(b Backend) bool {
+	return b == BackendExternal || b == BackendLocalSharedServer
+}
 
-	self, err := ResolveExecutable()
-	if err != nil {
-		return nil, nil, fmt.Errorf("locate bd executable: %w", err)
-	}
-
+// childArgs builds the db-proxy-child argv (the tokens after the executable)
+// for the given rootDir, open options, and listener port. It is pure — no I/O,
+// no side effects — so the fork contract can be unit-tested without spawning a
+// process. forkExecChild is the sole production caller.
+func childArgs(rootDir string, opts OpenOpts, port int) []string {
 	idleTimeout := opts.IdleTimeout
 	if idleTimeout < 0 {
 		idleTimeout = 0
@@ -255,7 +300,13 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 	if opts.DoltBinPath != "" {
 		args = append(args, "--dolt-bin", opts.DoltBinPath)
 	}
-	if opts.Backend == BackendExternal {
+	if opts.PoolSize > 0 {
+		args = append(args, "--pool-size", strconv.Itoa(opts.PoolSize))
+		if opts.BackendUser != "" {
+			args = append(args, "--backend-user", opts.BackendUser)
+		}
+	}
+	if backendCarriesExternal(opts.Backend) {
 		ext := opts.External
 		if ext.Host != "" {
 			args = append(args, "--external-host", ext.Host)
@@ -279,6 +330,23 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 			args = append(args, "--external-keep-alive", ext.KeepAlivePeriod.String())
 		}
 	}
+	return args
+}
+
+func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*exec.Cmd, <-chan struct{}, error) {
+	released := false
+	defer func() {
+		if !released {
+			lock.Unlock()
+		}
+	}()
+
+	self, err := ResolveExecutable()
+	if err != nil {
+		return nil, nil, fmt.Errorf("locate bd executable: %w", err)
+	}
+
+	args := childArgs(rootDir, opts, port)
 
 	logFile, err := os.OpenFile(opts.LogFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: logFilePath is caller-derived (workspace path), not user-request input
 	if err != nil {
@@ -309,44 +377,9 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 	return cmd, done, nil
 }
 
-// reapConfirmDeadline bounds how long reapPidfileProcess waits for the killed
-// process to disappear. A SIGKILLed dolt that is still a child of a live
-// proxy-child stays a zombie until that parent reaps it, so death is awaited
-// best-effort, not to certainty.
-const reapConfirmDeadline = 5 * time.Second
-
-// reapPidfileProcess kills the process the pidfile names, waits (bounded) for
-// it to exit so the respawned dolt sql-server doesn't race the dying one for
-// the data-dir lock, and removes the pidfile. A pidfile whose pid is already
-// dead is simply stale and is removed without a kill.
-func reapPidfileProcess(rootDir, pidName string) {
-	pf, err := pidfile.Read(rootDir, pidName)
-	if err != nil || pf == nil {
-		return
-	}
-	if pf.Pid > 0 && pidAlive(pf.Pid) {
-		if proc, ferr := os.FindProcess(pf.Pid); ferr == nil {
-			_ = proc.Kill()
-		}
-		deadline := time.Now().Add(reapConfirmDeadline)
-		for pidAlive(pf.Pid) && time.Now().Before(deadline) {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-	_ = pidfile.Remove(rootDir, pidName)
-}
-
 func readAndDial(rootDir string) (Endpoint, *pidfile.PidFile, bool) {
 	pf, err := pidfile.Read(rootDir, PIDFileName)
 	if err != nil || pf == nil {
-		return Endpoint{}, nil, false
-	}
-	// A dead writer means a stale pidfile: after port reuse an arbitrary
-	// process could be listening on the recorded port, so a bare TCP probe
-	// must never be trusted on the word of a dead proxy. (Stale files are
-	// removed under proxy.lock in spawnAndHandoff, not here, so a racing
-	// starter's freshly written pidfile can't be deleted out from under it.)
-	if pf.Pid <= 0 || !pidAlive(pf.Pid) {
 		return Endpoint{}, nil, false
 	}
 	ep := Endpoint{Host: "127.0.0.1", Port: pf.Port}

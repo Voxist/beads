@@ -40,9 +40,7 @@ Examples:
 
 		ctx := rootCtx
 
-		// Write-intent routing: a prefix-routed target must open writable so the
-		// priority update commits on the target head (#4141).
-		result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
+		result, err := resolveAndGetIssueWithRouting(ctx, store, id)
 		if err != nil {
 			if result != nil {
 				result.Close()
@@ -69,12 +67,8 @@ Examples:
 		if err := issueStore.UpdateIssue(ctx, result.ResolvedID, updates, actor); err != nil {
 			FatalErrorRespectJSON("updating %s: %v", id, err)
 		}
-		if err := commitPendingIfEmbedded(ctx, issueStore, actor, doltAutoCommitParams{
-			Command:  "priority",
-			IssueIDs: []string{result.ResolvedID},
-		}); err != nil {
-			FatalErrorRespectJSON("failed to commit: %v", err)
-		}
+
+		commandDidWrite.Store(true)
 
 		SetLastTouchedID(result.ResolvedID)
 

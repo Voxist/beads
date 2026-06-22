@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/idgen"
-	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -26,24 +25,14 @@ type IssueSQLRepository interface {
 	Update(ctx context.Context, id string, updates map[string]any, actor string, opts IssueTableOpts) error
 	Get(ctx context.Context, id string, opts IssueTableOpts) (*types.Issue, error)
 	GetByIDs(ctx context.Context, ids []string, opts IssueTableOpts) ([]*types.Issue, error)
+	Search(ctx context.Context, filter types.IssueFilter, opts IssueTableOpts) ([]*types.Issue, error)
 	Exists(ctx context.Context, id string, opts IssueTableOpts) (bool, error)
 	CountForPrefix(ctx context.Context, prefix string, opts IssueTableOpts) (int, error)
 	NextCounterID(ctx context.Context, prefix string) (int, error)
-	SearchAcrossIssuesAndWisps(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error)
-	SearchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error)
-	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
-	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error)
-	GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error)
-}
-
-type SearchPage struct {
-	Items   []*types.Issue
-	HasMore bool
-}
-
-type SearchCountsPage struct {
-	Items   []*types.IssueWithCounts
-	HasMore bool
+	SearchAcrossIssuesAndWisps(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
+	SearchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error)
+	GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error)
+	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error)
 }
 
 type CreateIssueParams struct {
@@ -80,6 +69,23 @@ type CreateIssuesResult struct {
 	Issues []*types.Issue
 }
 
+type ListProjection struct {
+	Labels           bool
+	Dependencies     bool
+	DependencyCounts bool
+	Parent           bool
+	CommentCounts    bool
+	Comments         bool
+}
+
+type ListResult struct {
+	Issues    []*types.IssueWithCounts
+	Labels    map[string][]string
+	BlockedBy map[string][]string
+	Blocks    map[string][]string
+	Parent    map[string]string
+}
+
 type GraphPlan struct {
 	Nodes []GraphNode
 	Edges []GraphEdge
@@ -111,11 +117,11 @@ type GraphApplyResult struct {
 type IssueUseCase interface {
 	GetIssue(ctx context.Context, id string) (*types.Issue, error)
 	GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
-	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error)
-	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error)
-	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
-	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error)
-	GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error)
+	ListIssues(ctx context.Context, filter types.IssueFilter, proj ListProjection) (ListResult, error)
+	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
+	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error)
+	GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error)
+	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error)
 
 	CreateIssue(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateIssues(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
@@ -124,6 +130,7 @@ type IssueUseCase interface {
 
 	GetWisp(ctx context.Context, id string) (*types.Issue, error)
 	GetWispsByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
+	ListWisps(ctx context.Context, filter types.IssueFilter, proj ListProjection) (ListResult, error)
 	CreateWisp(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateWisps(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
 	UpdateWisp(ctx context.Context, id string, updates map[string]any, actor string) error
@@ -215,45 +222,165 @@ func (u *issueUseCaseImpl) update(ctx context.Context, id string, updates map[st
 	return u.issueRepo.Update(ctx, id, updates, actor, IssueTableOpts{UseWispsTable: useWisp})
 }
 
-func (u *issueUseCaseImpl) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error) {
+func (u *issueUseCaseImpl) ListIssues(ctx context.Context, filter types.IssueFilter, proj ListProjection) (ListResult, error) {
+	return u.list(ctx, filter, proj, false)
+}
+
+func (u *issueUseCaseImpl) ListWisps(ctx context.Context, filter types.IssueFilter, proj ListProjection) (ListResult, error) {
+	return u.list(ctx, filter, proj, true)
+}
+
+func (u *issueUseCaseImpl) list(ctx context.Context, filter types.IssueFilter, proj ListProjection, useWisp bool) (ListResult, error) {
+	issues, err := u.issueRepo.Search(ctx, filter, IssueTableOpts{UseWispsTable: useWisp})
+	if err != nil {
+		return ListResult{}, fmt.Errorf("list: search: %w", err)
+	}
+
+	out := ListResult{
+		Issues:    make([]*types.IssueWithCounts, 0, len(issues)),
+		Labels:    map[string][]string{},
+		BlockedBy: map[string][]string{},
+		Blocks:    map[string][]string{},
+		Parent:    map[string]string{},
+	}
+	if len(issues) == 0 {
+		return out, nil
+	}
+
+	ids := make([]string, len(issues))
+	for i, issue := range issues {
+		ids[i] = issue.ID
+	}
+
+	if proj.Labels {
+		labels, err := u.labelRepo.ListByIssueIDs(ctx, ids, LabelOpts{UseWispsTable: useWisp})
+		if err != nil {
+			return ListResult{}, fmt.Errorf("list: labels: %w", err)
+		}
+		out.Labels = labels
+		for _, issue := range issues {
+			if l, ok := labels[issue.ID]; ok {
+				issue.Labels = l
+			}
+		}
+	}
+
+	counts := make(map[string]*types.DependencyCounts, len(ids))
+	for _, id := range ids {
+		counts[id] = &types.DependencyCounts{}
+	}
+
+	needDeps := proj.Dependencies || proj.DependencyCounts || proj.Parent
+	if needDeps {
+		depBulk, err := u.depRepo.ListByIssueIDs(ctx, ids, DepListOpts{Direction: DepDirectionBoth, UseWispsTable: useWisp})
+		if err != nil {
+			return ListResult{}, fmt.Errorf("list: deps: %w", err)
+		}
+		for _, issue := range issues {
+			outgoing := depBulk.Outgoing[issue.ID]
+			if proj.Dependencies {
+				issue.Dependencies = outgoing
+			}
+			for _, d := range outgoing {
+				if d.Type == types.DepBlocks {
+					counts[issue.ID].DependencyCount++
+				}
+				if d.Type == types.DepParentChild {
+					out.Parent[issue.ID] = d.DependsOnID
+				}
+			}
+			for _, d := range depBulk.Incoming[issue.ID] {
+				if d.Type == types.DepBlocks {
+					counts[issue.ID].DependentCount++
+					out.BlockedBy[issue.ID] = append(out.BlockedBy[issue.ID], d.IssueID)
+				}
+			}
+		}
+		for from, deps := range depBulk.Outgoing {
+			for _, d := range deps {
+				if d.Type == types.DepBlocks {
+					out.Blocks[from] = append(out.Blocks[from], d.DependsOnID)
+				}
+			}
+		}
+	} else if proj.DependencyCounts {
+		c, err := u.depRepo.CountsByIssueIDs(ctx, ids, DepCountsOpts{UseWispsTable: useWisp})
+		if err != nil {
+			return ListResult{}, fmt.Errorf("list: dep counts: %w", err)
+		}
+		for id, v := range c {
+			counts[id] = v
+		}
+	}
+
+	var commentCounts map[string]int
+	if proj.CommentCounts {
+		commentCounts, err = u.commentRepo.CountsByIssueIDs(ctx, ids, CommentOpts{UseWispsTable: useWisp})
+		if err != nil {
+			return ListResult{}, fmt.Errorf("list: comment counts: %w", err)
+		}
+	}
+
+	if proj.Comments {
+		comments, err := u.commentRepo.ListByIssueIDs(ctx, ids, CommentOpts{UseWispsTable: useWisp})
+		if err != nil {
+			return ListResult{}, fmt.Errorf("list: comments: %w", err)
+		}
+		for _, issue := range issues {
+			issue.Comments = comments[issue.ID]
+		}
+	}
+
+	for _, issue := range issues {
+		c := counts[issue.ID]
+		if c == nil {
+			c = &types.DependencyCounts{}
+		}
+		var parentPtr *string
+		if p, ok := out.Parent[issue.ID]; ok {
+			pp := p
+			parentPtr = &pp
+		}
+		out.Issues = append(out.Issues, &types.IssueWithCounts{
+			Issue:           issue,
+			DependencyCount: c.DependencyCount,
+			DependentCount:  c.DependentCount,
+			CommentCount:    commentCounts[issue.ID],
+			Parent:          parentPtr,
+		})
+	}
+
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) {
 	out, err := u.issueRepo.SearchAcrossIssuesAndWisps(ctx, query, filter)
 	if err != nil {
-		return SearchPage{}, fmt.Errorf("SearchIssues: %w", err)
+		return nil, fmt.Errorf("SearchIssues: %w", err)
 	}
 	return out, nil
 }
 
-func (u *issueUseCaseImpl) SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error) {
+func (u *issueUseCaseImpl) SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error) {
 	out, err := u.issueRepo.SearchAcrossIssuesAndWispsWithCounts(ctx, query, filter)
 	if err != nil {
-		return SearchCountsPage{}, fmt.Errorf("SearchIssuesWithCounts: %w", err)
+		return nil, fmt.Errorf("SearchIssuesWithCounts: %w", err)
 	}
 	return out, nil
 }
 
-func (u *issueUseCaseImpl) GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error) {
+func (u *issueUseCaseImpl) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error) {
 	out, err := u.issueRepo.GetReadyWork(ctx, filter)
 	if err != nil {
-		return SearchPage{}, fmt.Errorf("GetReadyWork: %w", err)
+		return nil, fmt.Errorf("GetReadyWork: %w", err)
 	}
 	return out, nil
 }
 
-func (u *issueUseCaseImpl) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error) {
+func (u *issueUseCaseImpl) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
 	out, err := u.issueRepo.GetReadyWorkWithCounts(ctx, filter)
 	if err != nil {
-		return SearchCountsPage{}, fmt.Errorf("GetReadyWorkWithCounts: %w", err)
-	}
-	return out, nil
-}
-
-func (u *issueUseCaseImpl) GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error) {
-	if rootID == "" {
-		return nil, fmt.Errorf("GetDescendants: rootID must not be empty")
-	}
-	out, err := u.issueRepo.GetDescendants(ctx, rootID, filter)
-	if err != nil {
-		return nil, fmt.Errorf("GetDescendants: %w", err)
+		return nil, fmt.Errorf("GetReadyWorkWithCounts: %w", err)
 	}
 	return out, nil
 }
@@ -328,15 +455,7 @@ func (u *issueUseCaseImpl) create(ctx context.Context, params CreateIssueParams,
 
 	if params.InheritLabelsFromParent && params.ParentID != "" {
 		parentLabels, err := u.labelRepo.List(ctx, params.ParentID, LabelOpts{UseWispsTable: useWisp})
-		switch {
-		case dberrors.IsTableNotExist(err):
-			// Older schemas may lack the wisp label table; nothing to inherit.
-		case err != nil:
-			// Swallowing this silently created children missing their
-			// inherited labels (bd-6dnrw.44 P3); the create is transactional,
-			// so failing loud is safe.
-			return result, fmt.Errorf("create: read parent labels for inheritance from %s: %w", params.ParentID, err)
-		default:
+		if err == nil {
 			existing := make(map[string]bool, len(params.Labels))
 			for _, l := range params.Labels {
 				existing[l] = true

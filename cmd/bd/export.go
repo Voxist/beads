@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/atomicfile"
-	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -104,7 +104,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if len(infraTypes) == 0 {
-			infraTypes = domain.DefaultInfraTypes()
+			infraTypes = storage.DefaultInfraTypes()
 		}
 		for _, t := range infraTypes {
 			filter.ExcludeTypes = append(filter.ExcludeTypes, types.IssueType(t))

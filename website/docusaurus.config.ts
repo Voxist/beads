@@ -232,10 +232,6 @@ const config: Config = {
           title: 'Resources',
           items: [
             {
-              label: 'Community Tools',
-              to: '/community-tools',
-            },
-            {
               label: 'GitHub',
               href: `https://github.com/${orgName}/${projectName}`,
             },

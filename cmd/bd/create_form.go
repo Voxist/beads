@@ -238,13 +238,9 @@ func CreateIssueFromFormValues(ctx context.Context, s storage.DoltStorage, fv *c
 		}
 	}
 
-	// Match bd create: server-mode writes version themselves, while embedded
-	// create commits pending writes only when auto-commit is on.
-	shouldCommit, err := shouldCommitCreatePostWrites(issue, postCreateWrites)
-	if err != nil {
-		return nil, fmt.Errorf("dolt auto-commit: %w", err)
-	}
-	if shouldCommit {
+	// Commit embedded creates and post-create metadata to Dolt. Without this,
+	// working-set rows are visible locally but absent from HEAD and sync.
+	if !usesSQLServer() || postCreateWrites {
 		commitMsg := fmt.Sprintf("bd: create %s", issue.ID)
 		if postCreateWrites {
 			commitMsg = fmt.Sprintf("bd: create %s (metadata)", issue.ID)

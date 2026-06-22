@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
-	doltembed "github.com/dolthub/driver/v2"
+	doltembed "github.com/dolthub/driver"
 )
 
 // validIdentifier matches safe SQL identifiers (letters, digits, underscores).

@@ -180,7 +180,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		// Direct mode
 		ctx := rootCtx
 
-		activeStore := store
+		activeStore := requireStore()
 		if claimReady {
 			CheckReadonly("ready --claim")
 		} else {
@@ -208,12 +208,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 				}
 				return
 			}
-			if err := commitPendingIfEmbedded(ctx, activeStore, actor, doltAutoCommitParams{
-				Command:  "ready",
-				IssueIDs: []string{claimed.ID},
-			}); err != nil {
-				FatalErrorRespectJSON("failed to commit: %v", err)
-			}
+			commandDidWrite.Store(true)
 			SetLastTouchedID(claimed.ID)
 			if jsonOutput {
 				outputJSON(buildReadyIssueOutput(ctx, activeStore, []*types.Issue{claimed}))
@@ -477,7 +472,7 @@ func buildReadyIssueOutput(ctx context.Context, s storage.DoltStorage, issues []
 func runReadyExplain(_ *cobra.Command) {
 	ctx := rootCtx
 
-	activeStore := store
+	activeStore := requireStore()
 
 	// Get ready issues (no limit for explain mode — show everything)
 	filter := types.WorkFilter{

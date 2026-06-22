@@ -28,7 +28,6 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 )
 
@@ -520,14 +519,14 @@ func insertDependencies(ctx context.Context, db *sql.DB, count, issueCount int) 
 		}
 		var q strings.Builder
 		q.WriteString(`INSERT INTO dependencies
-			(id, issue_id, depends_on_issue_id, type, created_by, metadata)
+			(issue_id, depends_on_issue_id, type, created_by, metadata)
 			VALUES `)
-		args := make([]any, 0, (end-start)*6)
+		args := make([]any, 0, (end-start)*5)
 		for i := start; i < end; i++ {
 			if i > start {
 				q.WriteByte(',')
 			}
-			q.WriteString("(?,?,?,?,?,?)")
+			q.WriteString("(?,?,?,?,?)")
 			issueID, dependsOnID := dependencyEndpoints(i, issueCount, 1000, 300)
 			depType := "parent-child"
 			if i < 20 || (i >= 40 && i < 60) {
@@ -536,7 +535,7 @@ func insertDependencies(ctx context.Context, db *sql.DB, count, issueCount int) 
 			} else if i < 5000 {
 				depType = "blocks"
 			}
-			args = append(args, depid.New(issueID, dependsOnID), issueID, dependsOnID, depType, "bench", "{}")
+			args = append(args, issueID, dependsOnID, depType, "bench", "{}")
 		}
 		if _, err := db.ExecContext(ctx, q.String(), args...); err != nil {
 			return fmt.Errorf("insert dependencies %d-%d: %w", start, end, err)
@@ -584,20 +583,20 @@ func insertDepAddChains(ctx context.Context, db *sql.DB, ops, depth int) error {
 		}
 		var q strings.Builder
 		q.WriteString(`INSERT INTO dependencies
-			(id, issue_id, depends_on_issue_id, type, created_by, metadata)
+			(issue_id, depends_on_issue_id, type, created_by, metadata)
 			VALUES `)
-		args := make([]any, 0, (end-start)*6)
+		args := make([]any, 0, (end-start)*5)
 		for i := start; i < end; i++ {
 			if i > start {
 				q.WriteByte(',')
 			}
-			q.WriteString("(?,?,?,?,?,?)")
+			q.WriteString("(?,?,?,?,?)")
 			op := i / depth
 			step := i % depth
 			base := depBase(op, depth)
 			issueID := depIssueID(base + 1 + step)
 			dependsOnID := depIssueID(base + 2 + step)
-			args = append(args, depid.New(issueID, dependsOnID), issueID, dependsOnID, "blocks", "bench", "{}")
+			args = append(args, issueID, dependsOnID, "blocks", "bench", "{}")
 		}
 		if _, err := db.ExecContext(ctx, q.String(), args...); err != nil {
 			return fmt.Errorf("insert dep-add chains %d-%d: %w", start, end, err)

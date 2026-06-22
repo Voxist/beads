@@ -1,6 +1,9 @@
 package proxy
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 type Counters struct {
 	ListenAndServeCalls  int64
@@ -16,11 +19,49 @@ type Counters struct {
 	HandledConns         int64
 	BytesClientToBackend int64
 	BytesBackendToClient int64
+
+	// Pool counters (session-pooling proxy). PoolHit: a borrow served by a
+	// warm idle connection. PoolMiss: a borrow that had to dial+authenticate
+	// a new backend. PoolDial​Errors: failed dial/handshake. PoolResets /
+	// PoolResetErrors: COM_RESET_CONNECTION outcomes on return. PoolDead:
+	// idle connection failed its liveness check and was discarded.
+	// PoolRetires: connection closed due to lifetime/idle-cap/transient.
+	PoolHits        int64
+	PoolMisses      int64
+	PoolDialErrors  int64
+	PoolResets      int64
+	PoolResetErrors int64
+	PoolDead        int64
+	PoolRetires     int64
+
+	// BackendDialConcurrentPeak (S3f) is the high-water mark of simultaneous
+	// in-flight backend dials. It is the direct indicator of the wedge this
+	// change set defends against: under the bound (S3a SetLimit=poolSize) it
+	// should never exceed poolSize. An operator watching this gauge climb
+	// toward @@max_connections has early warning before saturation.
+	BackendDialConcurrentPeak int64
 }
 
 type Stats struct {
-	mu       sync.Mutex
-	counters Counters
+	mu           sync.Mutex
+	counters     Counters
+	dialInFlight atomic.Int64 // current simultaneous backend dials (S3f)
+}
+
+// DialBegin records the start of a backend dial, updates the concurrent-dial
+// peak gauge, and returns a function that must be called (defer) when the dial
+// completes. Safe on a nil *Stats.
+func (s *Stats) DialBegin() func() {
+	if s == nil {
+		return func() {}
+	}
+	cur := s.dialInFlight.Add(1)
+	s.update(func(c *Counters) {
+		if cur > c.BackendDialConcurrentPeak {
+			c.BackendDialConcurrentPeak = cur
+		}
+	})
+	return func() { s.dialInFlight.Add(-1) }
 }
 
 func (s *Stats) Snapshot() Counters {
@@ -58,3 +99,10 @@ func (s *Stats) AddBytesClientToBackend(n int64) {
 func (s *Stats) AddBytesBackendToClient(n int64) {
 	s.update(func(c *Counters) { c.BytesBackendToClient += n })
 }
+func (s *Stats) IncPoolHit()        { s.update(func(c *Counters) { c.PoolHits++ }) }
+func (s *Stats) IncPoolMiss()       { s.update(func(c *Counters) { c.PoolMisses++ }) }
+func (s *Stats) IncPoolDialError()  { s.update(func(c *Counters) { c.PoolDialErrors++ }) }
+func (s *Stats) IncPoolReset()      { s.update(func(c *Counters) { c.PoolResets++ }) }
+func (s *Stats) IncPoolResetError() { s.update(func(c *Counters) { c.PoolResetErrors++ }) }
+func (s *Stats) IncPoolDead()       { s.update(func(c *Counters) { c.PoolDead++ }) }
+func (s *Stats) IncPoolRetire()     { s.update(func(c *Counters) { c.PoolRetires++ }) }

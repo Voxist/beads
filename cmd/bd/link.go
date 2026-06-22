@@ -31,10 +31,8 @@ Examples:
 
 		ctx := rootCtx
 
-		// Resolve partial IDs with routing support. The source issue's store is
-		// mutated by AddDependency below, so resolve it write-intent (#4141); the
-		// dependency target is only resolved by ID and stays read-only.
-		fromID, fromStore, fromCleanup, err := resolveIDWithRoutingForWrite(ctx, store, id1)
+		// Resolve partial IDs with routing support
+		fromID, fromStore, fromCleanup, err := resolveIDWithRouting(ctx, store, id1)
 		if err != nil {
 			FatalErrorRespectJSON("%v", err)
 		}
@@ -70,11 +68,10 @@ Examples:
 		// Check for cycles after adding dependency
 		warnIfCyclesExist(fromStore)
 
-		if err := commitPendingIfEmbedded(ctx, fromStore, actor, doltAutoCommitParams{
-			Command:  "link",
-			IssueIDs: []string{fromID, toID},
-		}); err != nil {
-			FatalErrorRespectJSON("failed to commit: %v", err)
+		if !usesSQLServer() && fromStore != nil {
+			if err := fromStore.Commit(ctx, fmt.Sprintf("bd: link (auto-commit) by %s", actor)); err != nil && !isDoltNothingToCommit(err) {
+				FatalErrorRespectJSON("failed to commit: %v", err)
+			}
 		}
 
 		SetLastTouchedID(fromID)

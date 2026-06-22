@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -82,12 +81,15 @@ func SearchIssuesInTx(ctx context.Context, tx *sql.Tx, query string, filter type
 // Pattern B is equivalent to Pattern A but faster on large corpora where most rows
 // are never needed (mirrors the pattern in scanIssueIDs and GetStaleIssuesInTx).
 func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter, tables FilterTables) ([]*types.Issue, error) {
-	plan := sqlbuild.BuildLabelDrivenSearch(filter, tables)
-	whereClauses, args, err := BuildIssueFilterClauses(query, plan.Filter, tables)
+	fromSQL, labelWhere, labelArgs, labelDriven, filterForClauses := buildLabelDrivenSearch(filter, tables)
+	whereClauses, args, err := BuildIssueFilterClauses(query, filterForClauses, tables)
 	if err != nil {
 		return nil, err
 	}
-	whereClauses, args = plan.MergeInto(whereClauses, args)
+	if len(labelWhere) > 0 {
+		whereClauses = append(labelWhere, whereClauses...)
+		args = append(labelArgs, args...)
+	}
 
 	whereSQL := ""
 	if len(whereClauses) > 0 {
@@ -96,7 +98,7 @@ func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types
 
 	// Pattern B: when Limit > 0, use a cheap id scan then hydrate in batch.
 	if filter.Limit > 0 && !filter.NoIDShrink {
-		return searchTablePatternB(ctx, tx, plan.FromSQL, whereSQL, args, filter, tables, plan.Distinct)
+		return searchTablePatternB(ctx, tx, fromSQL, whereSQL, args, filter, tables, labelDriven)
 	}
 
 	// Pattern A: full 47-column scan (used for unlimited queries or when NoIDShrink is set).
@@ -106,12 +108,12 @@ func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types
 	}
 
 	selectSQL := "SELECT "
-	if plan.Distinct {
+	if labelDriven {
 		selectSQL = "SELECT DISTINCT "
 	}
 	//nolint:gosec // G201: SQL fragments are built from fixed table/column names and parameterized filters.
-	querySQL := fmt.Sprintf(`%s%s FROM %s %s %s %s`,
-		selectSQL, IssueSelectColumns, plan.FromSQL, whereSQL, sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, ""), limitSQL)
+	querySQL := fmt.Sprintf(`%s%s FROM %s %s ORDER BY priority ASC, created_at DESC, id ASC %s`,
+		selectSQL, IssueSelectColumns, fromSQL, whereSQL, limitSQL)
 
 	rows, err := tx.QueryContext(ctx, querySQL, args...)
 	if err != nil {
@@ -153,9 +155,8 @@ func searchTablePatternB(ctx context.Context, tx *sql.Tx, fromSQL, whereSQL stri
 		idSelect = "SELECT DISTINCT "
 	}
 	//nolint:gosec // G201: SQL fragments from fixed column/table names and parameterized filters.
-	idQuery := fmt.Sprintf(`%s%s.id FROM %s %s %s LIMIT %d`,
-		idSelect, tables.Main, fromSQL, whereSQL,
-		sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, tables.Main), filter.Limit)
+	idQuery := fmt.Sprintf(`%s%s.id FROM %s %s ORDER BY %s.priority ASC, %s.created_at DESC, %s.id ASC LIMIT %d`,
+		idSelect, tables.Main, fromSQL, whereSQL, tables.Main, tables.Main, tables.Main, filter.Limit)
 
 	rows, err := tx.QueryContext(ctx, idQuery, args...)
 	if err != nil {
@@ -265,4 +266,53 @@ func hydrateIssues(ctx context.Context, tx *sql.Tx, issues []*types.Issue, table
 	}
 
 	return nil
+}
+
+func buildLabelDrivenSearch(filter types.IssueFilter, tables FilterTables) (string, []string, []interface{}, bool, types.IssueFilter) {
+	labels := compactNonEmptyStrings(filter.Labels)
+	labelsAny := compactNonEmptyStrings(filter.LabelsAny)
+	if len(labels) == 0 && len(labelsAny) == 0 {
+		return tables.Main, nil, nil, false, filter
+	}
+
+	filterForClauses := filter
+	filterForClauses.Labels = nil
+	filterForClauses.LabelsAny = nil
+
+	var joins []string
+	var where []string
+	var args []interface{}
+
+	for i, label := range labels {
+		alias := fmt.Sprintf("label_filter_%d", i)
+		joins = append(joins, fmt.Sprintf("JOIN %s %s ON %s.issue_id = %s.id", tables.Labels, alias, alias, tables.Main))
+		where = append(where, fmt.Sprintf("%s.label = ?", alias))
+		args = append(args, label)
+	}
+
+	if len(labelsAny) > 0 {
+		alias := "label_filter_any"
+		joins = append(joins, fmt.Sprintf("JOIN %s %s ON %s.issue_id = %s.id", tables.Labels, alias, alias, tables.Main))
+		placeholders := make([]string, len(labelsAny))
+		for i, label := range labelsAny {
+			placeholders[i] = "?"
+			args = append(args, label)
+		}
+		where = append(where, fmt.Sprintf("%s.label IN (%s)", alias, strings.Join(placeholders, ", ")))
+	}
+
+	return tables.Main + " " + strings.Join(joins, " "), where, args, true, filterForClauses
+}
+
+func compactNonEmptyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }

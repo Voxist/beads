@@ -18,10 +18,7 @@
       "items": [
         "core-concepts/index",
         "core-concepts/issues",
-        "core-concepts/hash-ids",
-        "core-concepts/sync-concepts",
-        "core-concepts/labels",
-        "core-concepts/metadata"
+        "core-concepts/hash-ids"
       ]
     },
     {
@@ -68,8 +65,7 @@
         "recovery/database-corruption",
         "recovery/merge-conflicts",
         "recovery/circular-dependencies",
-        "recovery/sync-failures",
-        "recovery/uninstalling"
+        "recovery/sync-failures"
       ]
     },
     {
@@ -104,7 +100,6 @@
         "integrations/github-copilot"
       ]
     },
-    "community-tools",
     {
       "type": "category",
       "label": "Reference",
@@ -114,7 +109,6 @@
         "reference/git-integration",
         "reference/advanced",
         "reference/troubleshooting",
-        "reference/antivirus",
         "reference/faq"
       ]
     }

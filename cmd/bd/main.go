@@ -56,6 +56,12 @@ var (
 	storeMutex  sync.Mutex // Protects store access from background goroutine
 	storeActive = false    // Tracks if store is available
 
+	// routedStoreOpenErr records why the proxied routed store failed to open,
+	// so store-requiring commands can report the real cause (S2) instead of
+	// panicking on a nil store. Nil in direct mode and when the routed store
+	// opened successfully.
+	routedStoreOpenErr error
+
 	// Version upgrade tracking
 	versionUpgradeDetected = false // Set to true if bd version changed since last run
 	previousVersion        = ""    // The last bd version user had (empty = first run or unknown)
@@ -223,17 +229,12 @@ func loadEnvironment() {
 	}
 }
 
-var sharedServerEmbeddedMismatchWarned bool
-
-// warnSharedServerEmbeddedMismatch detects the case where shared-server mode
-// is active but metadata.json explicitly pins dolt_mode=embedded. The
-// shared-server setting wins for this invocation (GH#2946/2949: stale embedded
-// metadata must not hide server-backed issue state), but bd never rewrites the
-// committed metadata.json — per-machine environment must not leak into shared
-// config (bd-6dnrw.5). Print guidance so the user resolves the conflict
-// explicitly.
-func warnSharedServerEmbeddedMismatch(cfg *configfile.Config) {
-	if cfg == nil || sharedServerEmbeddedMismatchWarned {
+// repairSharedServerEmbeddedMismatch detects and auto-repairs the case where
+// shared-server mode is active but metadata.json still pins dolt_mode=embedded.
+// This prevents the silent fallback into embedded mode that hides server-backed
+// issue state after upgrades (GH#2949).
+func repairSharedServerEmbeddedMismatch(beadsDir string, cfg *configfile.Config) {
+	if cfg == nil {
 		return
 	}
 	if strings.ToLower(strings.TrimSpace(cfg.DoltMode)) != configfile.DoltModeEmbedded {
@@ -242,10 +243,14 @@ func warnSharedServerEmbeddedMismatch(cfg *configfile.Config) {
 	if !doltserver.IsSharedServerMode() {
 		return
 	}
-	sharedServerEmbeddedMismatchWarned = true
-	fmt.Fprintln(os.Stderr, "Notice: shared-server mode is enabled (BEADS_DOLT_SHARED_SERVER or dolt.shared-server in config.yaml) but .beads/metadata.json pins dolt_mode=\"embedded\". Using the shared server for this run.")
-	fmt.Fprintln(os.Stderr, "  To persist server mode: set dolt_mode to \"server\" in .beads/metadata.json and commit it.")
-	fmt.Fprintln(os.Stderr, "  To stay embedded: unset BEADS_DOLT_SHARED_SERVER (or remove dolt.shared-server from config.yaml).")
+	fmt.Fprintln(os.Stderr, "Notice: shared-server is enabled but metadata.json had dolt_mode=embedded.")
+	cfg.DoltMode = configfile.DoltModeServer
+	if err := cfg.Save(beadsDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to auto-repair metadata.json: %v\n", err)
+		fmt.Fprintln(os.Stderr, "Fix manually: set dolt_mode to \"server\" in .beads/metadata.json")
+	} else {
+		fmt.Fprintln(os.Stderr, "Auto-repaired: dolt_mode updated to \"server\" in metadata.json.")
+	}
 }
 
 // loadServerModeFromBeadsDir loads the storage mode (embedded vs server vs
@@ -259,7 +264,7 @@ func loadServerModeFromBeadsDir(beadsDir string) {
 	if err != nil || cfg == nil {
 		return
 	}
-	warnSharedServerEmbeddedMismatch(cfg)
+	repairSharedServerEmbeddedMismatch(beadsDir, cfg)
 	psm := cfg.IsDoltProxiedServerMode()
 	sm := cfg.IsDoltServerMode()
 	// GH#2946: shared-server override for stale metadata.json (no-db commands)
@@ -825,6 +830,10 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Ambient staleness warning: if Linear data is stale, warn once per
+		// shell session on stderr. Only fires when LINEAR_API_KEY is set.
+		maybeWarnLinearStaleness(cmd)
+
 		if skipsStoreInit {
 			return
 		}
@@ -959,7 +968,6 @@ var rootCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "warning: failed to load beads config from %s: %v\n", beadsDir, cfgErr)
 		}
 		if cfg != nil {
-			warnSharedServerEmbeddedMismatch(cfg)
 			doltCfg.ProxiedServer = cfg.IsDoltProxiedServerMode()
 			proxiedServerMode = doltCfg.ProxiedServer
 			if cmdCtx != nil {
@@ -1030,29 +1038,60 @@ var rootCmd = &cobra.Command{
 		dolt.ApplyCLIAutoStart(beadsDir, doltCfg)
 
 		if proxiedServerMode {
-			// Only commands with a proxied-server dispatch path may proceed:
-			// everything else reads the global store, which stays nil in this
-			// mode and would nil-panic mid-command (bd-6dnrw.44 item 1).
-			// Reject before spawning the proxy/dolt processes.
-			if !commandSupportsProxiedServer(cmd) {
-				FatalError("'bd %s' is not supported in proxied-server mode yet (supported: create, list, doctor, init; use 'bd list --ready' for ready work)", strings.TrimPrefix(cmd.CommandPath(), "bd "))
-			}
 			p, err := newProxiedServerUOWProvider(rootCtx, beadsDir)
 			if err != nil {
-				// #4259: same migrate-or-adopt UX as the dolt/embeddeddolt open
-				// paths when the remote-migrate gate refuses an in-place upgrade.
-				var gateErr *schema.RemoteMigrateGateError
-				if errors.As(err, &gateErr) {
-					if jsonOutput {
-						handleRemoteMigrateGateJSON(gateErr)
-					} else {
-						fmt.Fprint(os.Stderr, gateErr.UserMessage())
-					}
-					os.Exit(1)
-				}
 				FatalError("failed to open uow provider: %v", err)
 			}
 			uowProvider = p
+
+			// Also route a server-mode store through the proxy so the legacy
+			// store-based commands (list/ready/stats/update/close/...) work in
+			// proxied mode instead of dereferencing a nil store. Both the uow
+			// provider and this store connect through the same proxy and share
+			// its backend connection pool. Best-effort: `bd create` uses the uow
+			// provider and does not need the store, so a routing failure here
+			// must not break the proxied-create path.
+			if s, serr := newProxiedServerRoutedStore(rootCtx, beadsDir); serr == nil {
+				store = s
+				storeMutex.Lock()
+				storeActive = true
+				storeMutex.Unlock()
+				if dbPath != "" {
+					hookRunner = hooks.NewRunner(filepath.Join(filepath.Dir(dbPath), "hooks"))
+				}
+				if hookRunner != nil && !config.GetBool("no-hooks") {
+					store = storage.NewHookFiringStore(store, hookRunner)
+				}
+			} else {
+				// Keep store nil and record the cause. bd create only needs the
+				// uow provider, so we must not fail the whole proxied path here;
+				// store-requiring commands fail loudly at the use site via
+				// requireStore() (S2) rather than dereferencing a nil store.
+				routedStoreOpenErr = serr
+				debug.Logf("proxied-server: routed store unavailable, store-based commands disabled: %v", serr)
+			}
+
+			// S2 (central guard): if the routed store failed to open, every
+			// store-requiring command reaching this block would dereference a nil
+			// store (~600 sites pass the global store into helpers like
+			// resolveAndGetFromStore that call store methods directly). Fail loudly
+			// once, here, with the captured cause + actionable hint. bd create is the
+			// only command reaching this block that runs on the uow provider alone,
+			// so it must tolerate a missing routed store; dolt push/pull/commit are
+			// unsupported and surface their own typed error in the command body.
+			if store == nil && cmdName != "create" {
+				_ = requireStore() // exits non-zero; never returns when store is nil
+			}
+
+			// S4: restore workspace-identity validation in proxied mode. The
+			// direct-path call (below, ~1142) is unreachable here because the
+			// proxied block returns early, so without this a write command could
+			// silently mutate the wrong scope through a misconfigured proxy.
+			// validateWorkspaceIdentity reads _project_id over the routed store
+			// and no-ops when the store is nil, so it is safe in best-effort mode.
+			if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
+				validateWorkspaceIdentity(rootCtx, beadsDir)
+			}
 
 			syncCommandContext()
 			return
@@ -1096,17 +1135,6 @@ var rootCmd = &cobra.Command{
 					handleSchemaSkewJSON(skewErr)
 				} else {
 					fmt.Fprint(os.Stderr, skewErr.UserMessage())
-				}
-				os.Exit(1)
-			}
-			// #4259: the remote-migrate gate blocks silent in-place migration of a
-			// remote-backed database and tells the operator to migrate-or-adopt.
-			var gateErr *schema.RemoteMigrateGateError
-			if errors.As(err, &gateErr) {
-				if jsonOutput {
-					handleRemoteMigrateGateJSON(gateErr)
-				} else {
-					fmt.Fprint(os.Stderr, gateErr.UserMessage())
 				}
 				os.Exit(1)
 			}
@@ -1179,6 +1207,14 @@ var rootCmd = &cobra.Command{
 		defer restoreChangeDirSelection()
 
 		if proxiedServerMode {
+			// S1 (v2): close the routed store too. PreRun opens a proxied
+			// routed *sql.DB-backed store (newProxiedServerRoutedStore); closing
+			// only uowProvider here leaked one backend connection to the db-proxy
+			// per bd invocation, which exhausted the pool and wedged the proxy.
+			if store != nil {
+				_ = store.Close()
+				store = nil
+			}
 			if uowProvider != nil {
 				_ = uowProvider.Close(rootCtx)
 				uowProvider = nil
@@ -1186,26 +1222,9 @@ var rootCmd = &cobra.Command{
 		} else {
 			// Dolt auto-commit: after a successful write command (and after final flush),
 			// create a Dolt commit so changes don't remain only in the working set.
-			// commandDidWrite is a fast-path hint, not the sole trigger: a write path
-			// that forgets to set it would otherwise leak its writes into the NEXT
-			// command's auto-commit with wrong attribution, so a dirty working set
-			// also triggers the commit (bd-6dnrw.11) — except after read-only and
-			// inspection commands, where the sweep would commit the very state the
-			// command exists to display, or fail outright on a read-only store
-			// (bd-578h9.7). Sweep commits are attributed as sweeps: the changes
-			// belong to an earlier command, not this one.
-			if !commandDidExplicitDoltCommit {
-				didWrite := commandDidWrite.Load()
-				sweep := !didWrite && !autoCommitSweepExempt(cmd) &&
-					workingSetHasUnflaggedWrites(rootCtx, cmd.Name())
-				if didWrite || sweep {
-					params := doltAutoCommitParams{Command: cmd.Name()}
-					if sweep {
-						params.MessageOverride = formatDoltSweepCommitMessage(cmd.Name(), getActor())
-					}
-					if err := maybeAutoCommit(rootCtx, params); err != nil {
-						FatalError("dolt auto-commit failed: %v", err)
-					}
+			if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
+				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name()}); err != nil {
+					FatalError("dolt auto-commit failed: %v", err)
 				}
 			}
 
@@ -1386,6 +1405,30 @@ func flushBatchCommitOnShutdown() {
 	} else {
 		fmt.Fprintf(os.Stderr, "\nFlushed pending batch commit on shutdown\n")
 	}
+}
+
+// requireStore returns the active store, or exits with a clear, non-panicking
+// error when it is nil (S2). In proxied mode the routed store can be nil when
+// the db-proxy is unreachable. The proxied PreRun installs a central guard that
+// calls this for every store-requiring command (every command reaching the
+// proxied store-init block except bd create), so the ~600 raw store-deref sites
+// fail loudly here instead of panicking — the bd ready nil-store panic. It is
+// also called directly at the bd ready use sites. bd create deliberately does
+// not trigger it: it uses the uow provider and tolerates a missing routed store.
+func requireStore() storage.DoltStorage {
+	storeMutex.Lock()
+	st := store
+	storeMutex.Unlock()
+	if st != nil {
+		return st
+	}
+	const hint = "the beads store is unavailable; in proxied mode ensure the db-proxy is running and reachable, or set [beads] proxied=false to use direct ServerMode"
+	if routedStoreOpenErr != nil {
+		FatalErrorWithHintRespectJSON(
+			fmt.Sprintf("no database connection: routed store unavailable: %v", routedStoreOpenErr), hint)
+	}
+	FatalErrorWithHintRespectJSON("no database connection: store is not available", hint)
+	return nil // unreachable: FatalError* exits
 }
 
 // validateWorkspaceIdentity checks that the project identity from metadata.json

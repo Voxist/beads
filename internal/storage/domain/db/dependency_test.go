@@ -1,7 +1,6 @@
 package db
 
 import (
-	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -12,7 +11,6 @@ func (s *testSuite) TestDependencySQLRepository() {
 		s.Run("RejectsSelfDependency", s.depInsertSelfDep)
 		s.Run("RejectsEmptyIDs", s.depInsertEmptyIDs)
 		s.Run("SameTypeIsIdempotentMetadataRefresh", s.depInsertIdempotentSameType)
-		s.Run("UsesDeterministicID", s.depInsertUsesDeterministicID)
 		s.Run("DifferentTypeIsRejected", s.depInsertConflictingType)
 		s.Run("MissingTargetIssueFailsFK", s.depInsertFKViolation)
 		s.Run("ThreadIDPersists", s.depInsertThreadID)
@@ -34,6 +32,15 @@ func (s *testSuite) TestDependencySQLRepository() {
 		s.Run("EmptySliceReturnsEmptyMap", s.depCountsEmpty)
 		s.Run("CountsBlockingEdgesOnly", s.depCountsBlocksOnly)
 		s.Run("ZeroCountsPresentInMap", s.depCountsZeroPresent)
+	})
+	s.Run("GetAll", func() {
+		s.Run("KeyedByIssueID", s.depGetAllKeyedByIssueID)
+		s.Run("TypeFilterApplied", s.depGetAllTypeFilter)
+		s.Run("WispTableRouting", s.depGetAllWispRouting)
+	})
+	s.Run("GetAllAcrossIssuesAndWisps", func() {
+		s.Run("UnionsBothTables", s.depGetAllAcrossUnions)
+		s.Run("IgnoresUseWispsTableOpt", s.depGetAllAcrossIgnoresUseWispsOpt)
 	})
 	s.Run("GetBlockingInfo", func() {
 		s.Run("EmptyInputReturnsEmptyMaps", s.depBlockingInfoEmpty)
@@ -63,23 +70,6 @@ func newDep(issueID, dependsOnID string, t types.DependencyType) *types.Dependen
 		DependsOnID: dependsOnID,
 		Type:        t,
 	}
-}
-
-// depInsertUsesDeterministicID guards the #4259 fix on the server-mode (use-case)
-// insert path: the row must carry the deterministic id derived from
-// (issue_id, target), not a random UUID — otherwise the table is merge-unsafe and,
-// after the DEFAULT (UUID()) is dropped, the insert fails outright.
-func (s *testSuite) depInsertUsesDeterministicID() {
-	s.seedIssueRow("bd-dep-det-a")
-	s.seedIssueRow("bd-dep-det-b")
-	s.Require().NoError(s.depRepo().Insert(s.Ctx(),
-		newDep("bd-dep-det-a", "bd-dep-det-b", types.DepBlocks), "tester", domain.DepInsertOpts{}))
-
-	var gotID string
-	s.Require().NoError(s.Runner().QueryRowContext(s.Ctx(),
-		"SELECT id FROM dependencies WHERE issue_id = ? AND depends_on_issue_id = ?",
-		"bd-dep-det-a", "bd-dep-det-b").Scan(&gotID))
-	s.Equal(depid.New("bd-dep-det-a", "bd-dep-det-b"), gotID)
 }
 
 func (s *testSuite) depInsertRoundTrip() {
@@ -401,8 +391,8 @@ func (s *testSuite) depWispHasCycleCrossTable() {
 	// with depends_on_wisp_id set. We need to insert via raw SQL because our
 	// Insert path writes to depends_on_issue_id only.
 	_, err := s.Runner().ExecContext(s.Ctx(), `
-		INSERT INTO dependencies (id, issue_id, depends_on_wisp_id, type, created_at, created_by, metadata)
-		VALUES (UUID(), ?, ?, 'blocks', NOW(), 'tester', '{}')
+		INSERT INTO dependencies (issue_id, depends_on_wisp_id, type, created_at, created_by, metadata)
+		VALUES (?, ?, 'blocks', NOW(), 'tester', '{}')
 	`, "bd-dep-cx-a", "bd-dep-cx-s")
 	s.Require().NoError(err)
 	// s -> b: source s is wisp, target is permanent. Stored in wisp_dependencies.
@@ -417,6 +407,87 @@ func (s *testSuite) depWispHasCycleCrossTable() {
 	cycle, err := r.HasCycle(s.Ctx(), "bd-dep-cx-b", "bd-dep-cx-a")
 	s.Require().NoError(err)
 	s.False(cycle, "wisp-target edges are intentionally not followed in cycle detection")
+}
+
+func (s *testSuite) depGetAllKeyedByIssueID() {
+	s.seedIssueRow("bd-getall-a")
+	s.seedIssueRow("bd-getall-b")
+	s.seedIssueRow("bd-getall-c")
+	r := s.depRepo()
+	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-getall-a", "bd-getall-b", types.DepBlocks), "tester", domain.DepInsertOpts{}))
+	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-getall-a", "bd-getall-c", types.DepRelated), "tester", domain.DepInsertOpts{}))
+
+	out, err := r.GetAll(s.Ctx(), domain.DepListOpts{})
+	s.Require().NoError(err)
+	s.Require().Len(out["bd-getall-a"], 2)
+}
+
+func (s *testSuite) depGetAllTypeFilter() {
+	s.seedIssueRow("bd-getall-tf-a")
+	s.seedIssueRow("bd-getall-tf-b")
+	s.seedIssueRow("bd-getall-tf-c")
+	r := s.depRepo()
+	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-getall-tf-a", "bd-getall-tf-b", types.DepBlocks), "tester", domain.DepInsertOpts{}))
+	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-getall-tf-a", "bd-getall-tf-c", types.DepRelated), "tester", domain.DepInsertOpts{}))
+
+	out, err := r.GetAll(s.Ctx(), domain.DepListOpts{Types: []types.DependencyType{types.DepBlocks}})
+	s.Require().NoError(err)
+	s.Require().Len(out["bd-getall-tf-a"], 1)
+	s.Equal(types.DepBlocks, out["bd-getall-tf-a"][0].Type)
+}
+
+func (s *testSuite) depGetAllWispRouting() {
+	s.seedWispRow("bd-getall-w-src")
+	s.seedIssueRow("bd-getall-w-tgt")
+	r := s.depRepo()
+	s.Require().NoError(r.Insert(s.Ctx(),
+		newDep("bd-getall-w-src", "bd-getall-w-tgt", types.DepBlocks), "tester",
+		domain.DepInsertOpts{UseWispsTable: true}))
+
+	wispOut, err := r.GetAll(s.Ctx(), domain.DepListOpts{UseWispsTable: true})
+	s.Require().NoError(err)
+	s.Require().Len(wispOut["bd-getall-w-src"], 1)
+
+	permOut, err := r.GetAll(s.Ctx(), domain.DepListOpts{})
+	s.Require().NoError(err)
+	s.Empty(permOut["bd-getall-w-src"], "perm-table GetAll must not see wisp_dependencies rows")
+}
+
+func (s *testSuite) depGetAllAcrossUnions() {
+	s.seedIssueRow("bd-getall-x-a")
+	s.seedIssueRow("bd-getall-x-b")
+	s.seedWispRow("bd-getall-x-w")
+	s.seedIssueRow("bd-getall-x-wtgt")
+	r := s.depRepo()
+	s.Require().NoError(r.Insert(s.Ctx(),
+		newDep("bd-getall-x-a", "bd-getall-x-b", types.DepBlocks), "tester",
+		domain.DepInsertOpts{}))
+	s.Require().NoError(r.Insert(s.Ctx(),
+		newDep("bd-getall-x-w", "bd-getall-x-wtgt", types.DepBlocks), "tester",
+		domain.DepInsertOpts{UseWispsTable: true}))
+
+	out, err := r.GetAllAcrossIssuesAndWisps(s.Ctx(), domain.DepListOpts{})
+	s.Require().NoError(err)
+	s.Require().Len(out["bd-getall-x-a"], 1, "perm-table row present")
+	s.Require().Len(out["bd-getall-x-w"], 1, "wisp-table row present")
+}
+
+func (s *testSuite) depGetAllAcrossIgnoresUseWispsOpt() {
+	s.seedIssueRow("bd-getall-ig-a")
+	s.seedIssueRow("bd-getall-ig-b")
+	s.seedWispRow("bd-getall-ig-w")
+	s.seedIssueRow("bd-getall-ig-wtgt")
+	r := s.depRepo()
+	s.Require().NoError(r.Insert(s.Ctx(),
+		newDep("bd-getall-ig-a", "bd-getall-ig-b", types.DepBlocks), "tester",
+		domain.DepInsertOpts{}))
+	s.Require().NoError(r.Insert(s.Ctx(),
+		newDep("bd-getall-ig-w", "bd-getall-ig-wtgt", types.DepBlocks), "tester",
+		domain.DepInsertOpts{UseWispsTable: true}))
+	out, err := r.GetAllAcrossIssuesAndWisps(s.Ctx(), domain.DepListOpts{UseWispsTable: true})
+	s.Require().NoError(err)
+	s.Require().Len(out["bd-getall-ig-a"], 1)
+	s.Require().Len(out["bd-getall-ig-w"], 1)
 }
 
 func (s *testSuite) depBlockingInfoEmpty() {
@@ -481,8 +552,8 @@ func (s *testSuite) depBlockingInfoAcrossUnions() {
 		newDep("bd-bi-x-target", "bd-bi-x-permblocker", types.DepBlocks), "tester",
 		domain.DepInsertOpts{}))
 	_, err := s.Runner().ExecContext(s.Ctx(), `
-		INSERT INTO wisp_dependencies (id, issue_id, depends_on_wisp_id, type, created_at, created_by, metadata)
-		VALUES (UUID(), ?, ?, 'blocks', NOW(), 'tester', '{}')
+		INSERT INTO wisp_dependencies (issue_id, depends_on_wisp_id, type, created_at, created_by, metadata)
+		VALUES (?, ?, 'blocks', NOW(), 'tester', '{}')
 	`, "bd-bi-x-target", "bd-bi-x-wispblocker")
 	s.Require().NoError(err)
 

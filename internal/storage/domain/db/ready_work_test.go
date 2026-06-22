@@ -214,7 +214,7 @@ func (s *testSuite) readyLimitRespected() {
 	pri := 1
 	out, err := r.GetReadyWork(s.Ctx(), types.WorkFilter{Priority: &pri, Limit: 3, SortPolicy: types.SortPolicyPriority})
 	s.Require().NoError(err)
-	s.Len(out.Items, 3)
+	s.Len(out, 3)
 }
 
 func (s *testSuite) readySortByPriority() {
@@ -253,17 +253,9 @@ func (s *testSuite) readyCollisionError() {
 	s.Contains(err.Error(), "exists in both issues and wisps")
 }
 
-func issueIDsFrom(page domain.SearchPage) []string {
-	out := make([]string, 0, len(page.Items))
-	for _, iss := range page.Items {
-		out = append(out, iss.ID)
-	}
-	return out
-}
-
-func issueIDsFromCounts(page domain.SearchCountsPage) []string {
-	out := make([]string, 0, len(page.Items))
-	for _, iss := range page.Items {
+func issueIDsFrom(issues []*types.Issue) []string {
+	out := make([]string, 0, len(issues))
+	for _, iss := range issues {
 		out = append(out, iss.ID)
 	}
 	return out
