@@ -101,7 +101,7 @@ func TestSpike_HandshakeCarriesDatabase(t *testing.T) {
 		"session current database must be the handshake db, got %v", cur)
 	require.NoError(t, c1.Close())
 
-	require.Eventually(t, func() bool { return pool.idleCount() >= 1 }, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return pool.idleCountFor("rig_h") >= 1 }, 5*time.Second, 20*time.Millisecond)
 
 	// Reused backend must still report rig_h (reset restores the handshake db).
 	c2 := openThroughProxy(t, addr, "rig_h")

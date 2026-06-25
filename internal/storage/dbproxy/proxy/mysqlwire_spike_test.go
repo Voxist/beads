@@ -201,8 +201,10 @@ func TestSpike_SessionIsolation(t *testing.T) {
 	require.NoError(t, conn1.Close())
 	require.NoError(t, c1.Close()) // returns backend to pool (reset)
 
-	// Give the pool a moment to reset+return the single backend.
-	require.Eventually(t, func() bool { return pool.idleCount() == 1 }, 5*time.Second, 20*time.Millisecond)
+	// Wait for the isodb backend specifically to be reset+returned to the pool.
+	// idleCount()==1 is unreliable: the admin backend (key.db="") may satisfy it
+	// before the isodb put completes. idleCountFor("isodb")>=1 is per-key precise.
+	require.Eventually(t, func() bool { return pool.idleCountFor("isodb") >= 1 }, 5*time.Second, 20*time.Millisecond)
 
 	// Borrower #2: must reuse the SAME backend and see a clean session.
 	c2 := openThroughProxy(t, addr, "isodb")
