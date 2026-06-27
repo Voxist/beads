@@ -21,7 +21,17 @@ func isSerializationError(err error) bool {
 
 // isInvalidConnectionError returns true if the error is a transient MySQL
 // driver connection failure (the dolt sql-server reaped an idle pooled
-// connection, the server restarted, the pipe broke, etc.).
+// connection, the server restarted, the pipe broke, a brief network blip, etc.).
+//
+// This deliberately mirrors the connection-failure substrings recognized by the
+// DoltStore-layer classifier (internal/storage/dolt isRetryableError). The two
+// retry layers run over independent *sql.DB handles on parallel write paths —
+// uow.RunInTx backs the proxied-server create/init writes, withRetryTx backs the
+// DoltStore API writes — so they must agree on what "transient connection
+// failure" means, or the same server restart would retry on one path and surface
+// on the other. Storage-state transients that are NOT connection failures
+// (e.g. "database is read only", migration-lock) stay a DoltStore-layer concern
+// and are intentionally out of scope here.
 //
 // Whether retrying is SAFE depends on WHEN this fires, not just that it did:
 //   - Before commit (pinning a connection, starting the tx, or a write inside
@@ -34,12 +44,6 @@ func isInvalidConnectionError(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	// These substrings must stay in lock-step with the direct DoltStore-layer
-	// classifier (internal/storage/dolt.isRetryableError): the two retry layers
-	// have to agree on what "transient connection failure" means, or the same
-	// dolt-server/db-proxy restart retries on one path and FatalErrors on the
-	// other. "connection reset"/"connection refused" cover the server-restart
-	// window the direct path already treats as transient.
 	return strings.Contains(s, "invalid connection") ||
 		strings.Contains(s, "driver: bad connection") ||
 		strings.Contains(s, "lost connection") ||
