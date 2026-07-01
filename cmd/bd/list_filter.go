@@ -314,7 +314,14 @@ func buildListFilter(in listInput, cfg listFilterConfig) (types.IssueFilter, err
 		filter.HasMetadataKey = in.hasMetadataKey
 	}
 
-	if !in.includeInfra && (in.issueType == "" || !cfg.isInfra(in.issueType)) {
+	// Default to skipping the wisps (ephemeral) table for perf (Q2 escape
+	// hatch) and to keep routine `bd list` output uncluttered. Any explicit
+	// --type opts back in unconditionally: a type filter that can never
+	// match wisps-table rows (molecules, or any other type parked there) is
+	// silently incomplete rather than filtered (va-k0e). --include-infra and
+	// --include-ephemeral remain explicit escape hatches for the unfiltered
+	// case, mirroring --include-gates/--include-templates.
+	if !in.includeInfra && !in.includeEphemeral && in.issueType == "" {
 		filter.SkipWisps = true
 	}
 
