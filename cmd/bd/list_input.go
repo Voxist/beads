@@ -61,6 +61,7 @@ type listInput struct {
 	includeTemplates bool
 	includeGates     bool
 	includeInfra     bool
+	includeEphemeral bool
 	excludeTypeStrs  []string
 
 	parentID string
@@ -185,6 +186,7 @@ func gatherListInput(cmd *cobra.Command) (listInput, error) {
 	in.includeTemplates, _ = cmd.Flags().GetBool("include-templates")
 	in.includeGates, _ = cmd.Flags().GetBool("include-gates")
 	in.includeInfra, _ = cmd.Flags().GetBool("include-infra")
+	in.includeEphemeral, _ = cmd.Flags().GetBool("include-ephemeral")
 	in.excludeTypeStrs, _ = cmd.Flags().GetStringSlice("exclude-type")
 
 	in.parentID, _ = cmd.Flags().GetString("parent")
