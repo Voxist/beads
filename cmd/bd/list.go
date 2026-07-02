@@ -724,6 +724,11 @@ func init() {
 	// Infra type filtering: exclude agent/role/message by default
 	listCmd.Flags().Bool("include-infra", false, "Include infrastructure beads (agent/role/message) in output")
 
+	// Ephemeral (wisps table) filtering: exclude ephemeral issues/wisps by
+	// default, mirroring --include-gates/--include-templates/--include-infra
+	// (va-k0e). An explicit --type already searches the wisps table too.
+	listCmd.Flags().Bool("include-ephemeral", false, "Include ephemeral issues/wisps in output (normally hidden)")
+
 	// Explicit type exclusion
 	listCmd.Flags().StringSlice("exclude-type", nil, "Exclude issue types from results (comma-separated or repeatable, e.g., --exclude-type=convoy,epic)")
 
