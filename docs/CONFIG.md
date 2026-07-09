@@ -146,11 +146,18 @@ The actor name (used for `created_by` in issues and audit trails) is resolved in
 1. `--actor` flag (explicit override)
 2. `BEADS_ACTOR` environment variable
 3. `BD_ACTOR` environment variable (deprecated alias, kept for backwards compatibility)
-4. `git config user.name`
-5. `$USER` environment variable (system username fallback)
-6. `"unknown"` (final fallback)
+4. `GC_AGENT` environment variable (gc/gastown orchestration agent identity)
+5. `git config user.name`
+6. `$USER` environment variable (system username fallback)
+7. `"unknown"` (final fallback)
 
 For most developers, no configuration is needed - beads will use your git identity automatically. This ensures your issue authorship matches your commit authorship.
+
+Under gc/gastown orchestration, `GC_AGENT` is normally already set in the
+environment and needs no configuration either: it lets `bd update --claim`
+resolve to the same identity a formula used for an earlier `--assignee=$GC_AGENT`,
+so re-claiming an already-self-assigned issue is idempotent instead of
+failing with "already claimed" against a different (git/$USER) identity.
 
 To override, set `BEADS_ACTOR` in your shell profile:
 ```bash
