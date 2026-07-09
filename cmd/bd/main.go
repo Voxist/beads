@@ -464,7 +464,7 @@ func resolveCommandBeadsDir(dbPath string) string {
 }
 
 // getActorWithGit returns the actor for audit trails with git config fallback.
-// Priority: --actor flag > BEADS_ACTOR env > BD_ACTOR env (deprecated) > git config user.name > $USER > "unknown"
+// Priority: --actor flag > BEADS_ACTOR env > BD_ACTOR env (deprecated) > GC_AGENT env > git config user.name > $USER > "unknown"
 // This provides a sensible default for developers: their git identity is used unless
 // explicitly overridden
 func getActorWithGit() string {
@@ -481,6 +481,18 @@ func getActorWithGit() string {
 	// Check BD_ACTOR env var (deprecated alias, kept for backwards compatibility)
 	if bdActor := os.Getenv("BD_ACTOR"); bdActor != "" {
 		return bdActor
+	}
+
+	// Check GC_AGENT env var - the gc/gastown orchestration layer's agent
+	// identity. When bd runs under gc orchestration, formulas assign wisps
+	// via `--assignee=$GC_AGENT`; without this check, a later `--claim` by
+	// the same agent resolved its actor from git config user.name/$USER
+	// instead (identical for every agent sharing a checkout), so the
+	// claim's compare-and-swap saw a mismatched assignee and failed with
+	// "already claimed" even though it was the same agent resuming its own
+	// wisp (vg-5kv).
+	if gcAgent := os.Getenv("GC_AGENT"); gcAgent != "" {
+		return gcAgent
 	}
 
 	// Try git config user.name - the natural default for a git-native tool
@@ -528,7 +540,7 @@ func init() {
 	// Register persistent flags
 	rootCmd.PersistentFlags().StringVarP(&changeDir, "directory", "C", "", "Change to this directory before running the command (like git -C)")
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "Database path (default: auto-discover .beads/*.db)")
-	rootCmd.PersistentFlags().StringVar(&actor, "actor", "", "Actor name for audit trail (default: $BEADS_ACTOR, git user.name, $USER)")
+	rootCmd.PersistentFlags().StringVar(&actor, "actor", "", "Actor name for audit trail (default: $BEADS_ACTOR, $GC_AGENT, git user.name, $USER)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	rootCmd.PersistentFlags().String("format", "", "Output format (json). Alias for --json")
 	_ = rootCmd.PersistentFlags().MarkHidden("format") // Hidden alias for CLI ergonomics

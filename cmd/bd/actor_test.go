@@ -8,12 +8,13 @@ import (
 )
 
 // TestGetActorWithGit tests the actor resolution fallback chain.
-// Priority: --actor flag > BEADS_ACTOR env > BD_ACTOR env (deprecated) > git config user.name > $USER > "unknown"
+// Priority: --actor flag > BEADS_ACTOR env > BD_ACTOR env (deprecated) > GC_AGENT env (gc/gastown orchestration identity) > git config user.name > $USER > "unknown"
 func TestGetActorWithGit(t *testing.T) {
 	// Save original environment and actor variable
 	origActor := actor
 	origBdActor, bdActorSet := os.LookupEnv("BD_ACTOR")
 	origBeadsActor, beadsActorSet := os.LookupEnv("BEADS_ACTOR")
+	origGCAgent, gcAgentSet := os.LookupEnv("GC_AGENT")
 	origUser, userSet := os.LookupEnv("USER")
 
 	// Cleanup after test
@@ -28,6 +29,11 @@ func TestGetActorWithGit(t *testing.T) {
 			os.Setenv("BEADS_ACTOR", origBeadsActor)
 		} else {
 			os.Unsetenv("BEADS_ACTOR")
+		}
+		if gcAgentSet {
+			os.Setenv("GC_AGENT", origGCAgent)
+		} else {
+			os.Unsetenv("GC_AGENT")
 		}
 		if userSet {
 			os.Setenv("USER", origUser)
@@ -52,6 +58,7 @@ func TestGetActorWithGit(t *testing.T) {
 		actorFlag   string
 		bdActor     string
 		beadsActor  string
+		gcAgent     string
 		user        string
 		expected    string
 		skipIfNoGit bool // Skip if git user.name is not configured
@@ -61,6 +68,7 @@ func TestGetActorWithGit(t *testing.T) {
 			actorFlag:  "flag-actor",
 			bdActor:    "bd-actor",
 			beadsActor: "beads-actor",
+			gcAgent:    "voxlingo/gastown.witness",
 			user:       "system-user",
 			expected:   "flag-actor",
 		},
@@ -69,6 +77,7 @@ func TestGetActorWithGit(t *testing.T) {
 			actorFlag:  "",
 			bdActor:    "bd-actor",
 			beadsActor: "beads-actor",
+			gcAgent:    "voxlingo/gastown.witness",
 			user:       "system-user",
 			expected:   "beads-actor",
 		},
@@ -77,14 +86,25 @@ func TestGetActorWithGit(t *testing.T) {
 			actorFlag:  "",
 			bdActor:    "bd-actor",
 			beadsActor: "",
+			gcAgent:    "voxlingo/gastown.witness",
 			user:       "system-user",
 			expected:   "bd-actor",
+		},
+		{
+			name:       "GC_AGENT used as fallback when no BEADS_ACTOR/BD_ACTOR",
+			actorFlag:  "",
+			bdActor:    "",
+			beadsActor: "",
+			gcAgent:    "voxlingo/gastown.witness",
+			user:       "system-user",
+			expected:   "voxlingo/gastown.witness",
 		},
 		{
 			name:        "git config user.name used when no env vars",
 			actorFlag:   "",
 			bdActor:     "",
 			beadsActor:  "",
+			gcAgent:     "",
 			user:        "system-user",
 			expected:    gitUserName, // Will be git user.name if configured
 			skipIfNoGit: true,
@@ -94,6 +114,7 @@ func TestGetActorWithGit(t *testing.T) {
 			actorFlag:  "",
 			bdActor:    "",
 			beadsActor: "",
+			gcAgent:    "",
 			user:       "fallback-user",
 			expected:   "fallback-user",
 			// Note: This test may fail if git user.name is configured
@@ -104,6 +125,7 @@ func TestGetActorWithGit(t *testing.T) {
 			actorFlag:  "",
 			bdActor:    "",
 			beadsActor: "",
+			gcAgent:    "",
 			user:       "",
 			expected:   "unknown",
 			// Note: This test may get git user.name instead if configured
@@ -119,7 +141,7 @@ func TestGetActorWithGit(t *testing.T) {
 
 			// For tests expecting USER or unknown, skip if git user.name is configured
 			// because git takes priority over USER
-			if (tt.expected == tt.user || tt.expected == "unknown") && gitUserName != "" && tt.bdActor == "" && tt.beadsActor == "" && tt.actorFlag == "" {
+			if (tt.expected == tt.user || tt.expected == "unknown") && gitUserName != "" && tt.bdActor == "" && tt.beadsActor == "" && tt.gcAgent == "" && tt.actorFlag == "" {
 				t.Skipf("Skipping: git config user.name (%s) takes priority over expected %s", gitUserName, tt.expected)
 			}
 
@@ -136,6 +158,12 @@ func TestGetActorWithGit(t *testing.T) {
 				os.Setenv("BEADS_ACTOR", tt.beadsActor)
 			} else {
 				os.Unsetenv("BEADS_ACTOR")
+			}
+
+			if tt.gcAgent != "" {
+				os.Setenv("GC_AGENT", tt.gcAgent)
+			} else {
+				os.Unsetenv("GC_AGENT")
 			}
 
 			if tt.user != "" {
@@ -161,6 +189,7 @@ func TestGetActorWithGit_PriorityOrder(t *testing.T) {
 	origActor := actor
 	origBdActor, bdActorSet := os.LookupEnv("BD_ACTOR")
 	origBeadsActor, beadsActorSet := os.LookupEnv("BEADS_ACTOR")
+	origGCAgent, gcAgentSet := os.LookupEnv("GC_AGENT")
 
 	defer func() {
 		actor = origActor
@@ -174,12 +203,18 @@ func TestGetActorWithGit_PriorityOrder(t *testing.T) {
 		} else {
 			os.Unsetenv("BEADS_ACTOR")
 		}
+		if gcAgentSet {
+			os.Setenv("GC_AGENT", origGCAgent)
+		} else {
+			os.Unsetenv("GC_AGENT")
+		}
 	}()
 
-	// Test: flag > BEADS_ACTOR > BD_ACTOR
+	// Test: flag > BEADS_ACTOR > BD_ACTOR > GC_AGENT
 	actor = "from-flag"
 	os.Setenv("BD_ACTOR", "from-bd-actor")
 	os.Setenv("BEADS_ACTOR", "from-beads-actor")
+	os.Setenv("GC_AGENT", "from-gc-agent")
 
 	result := getActorWithGit()
 	if result != "from-flag" {
@@ -193,10 +228,22 @@ func TestGetActorWithGit_PriorityOrder(t *testing.T) {
 		t.Errorf("Expected BEADS_ACTOR to take priority over BD_ACTOR, got %q", result)
 	}
 
-	// Test: BD_ACTOR as fallback when BEADS_ACTOR is empty
+	// Test: BD_ACTOR > GC_AGENT (BEADS_ACTOR empty)
 	os.Unsetenv("BEADS_ACTOR")
 	result = getActorWithGit()
 	if result != "from-bd-actor" {
-		t.Errorf("Expected BD_ACTOR to be used as fallback, got %q", result)
+		t.Errorf("Expected BD_ACTOR to take priority over GC_AGENT, got %q", result)
+	}
+
+	// Test: GC_AGENT used as fallback when BEADS_ACTOR/BD_ACTOR are both empty.
+	// This is the gastown/gc orchestration identity — it must be honored so that
+	// a wisp resumed via `--assignee=$GC_AGENT` can later be claimed via
+	// `--claim` (no explicit --actor) and resolve to the SAME identity, instead
+	// of falling through to git config user.name/$USER and looking like a
+	// different actor already owns the issue.
+	os.Unsetenv("BD_ACTOR")
+	result = getActorWithGit()
+	if result != "from-gc-agent" {
+		t.Errorf("Expected GC_AGENT to be used as fallback, got %q", result)
 	}
 }
