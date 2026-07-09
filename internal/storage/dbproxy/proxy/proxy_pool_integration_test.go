@@ -44,7 +44,7 @@ func startManagedPooledProxy(t *testing.T, poolSize int) (proxyAddr string, dolt
 	require.NoError(t, os.WriteFile(cfgPath, []byte(body), 0o600))
 	logPath := filepath.Join(t.TempDir(), "server.log")
 
-	srv, err := server.NewDoltServer(bin, rootDir, cfgPath, logPath, 0)
+	srv, err := server.NewDoltServer(bin, rootDir, cfgPath, logPath, 0, "")
 	require.NoError(t, err)
 
 	proxyPort := freeTCPPort(t)
@@ -214,7 +214,7 @@ func benchChurn(b *testing.B, poolSize int) {
 	cfgPath := filepath.Join(b.TempDir(), "config.yaml")
 	body := fmt.Sprintf("log_level: warning\nlistener:\n  host: 127.0.0.1\n  port: %d\n", doltPort)
 	require.NoError(b, os.WriteFile(cfgPath, []byte(body), 0o600))
-	srv, err := server.NewDoltServer(bin, rootDir, cfgPath, filepath.Join(b.TempDir(), "s.log"), 0)
+	srv, err := server.NewDoltServer(bin, rootDir, cfgPath, filepath.Join(b.TempDir(), "s.log"), 0, "")
 	require.NoError(b, err)
 
 	proxyPort := benchFreePort(b)

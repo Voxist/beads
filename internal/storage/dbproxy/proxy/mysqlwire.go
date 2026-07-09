@@ -548,7 +548,7 @@ func nativeScramble(password string, salt []byte) []byte {
 	mixed := h.Sum(nil)
 	out := make([]byte, len(h1))
 	for i := range h1 {
-		out[i] = h1[i] ^ mixed[i]
+		out[i] = h1[i] ^ mixed[i] //nolint:gosec // G602: h1 and mixed are equal-length SHA1 digests
 	}
 	return out
 }
