@@ -55,6 +55,8 @@ type OpenOpts struct {
 	ConfigFilePath string
 	LogFilePath    string
 	DoltBinPath    string
+	Database       string
+	Port           int
 	External       configfile.ExternalDoltConfig
 	// PoolSize, when > 0, makes the spawned proxy pool backend connections
 	// (see ProxyOpts.PoolSize). BackendUser is the user the proxy uses to
@@ -183,6 +185,9 @@ func GetCreateDatabaseProxyServerEndpoint(rootDir string, opts OpenOpts) (Endpoi
 	if err := opts.Backend.Validate(); err != nil {
 		return Endpoint{}, fmt.Errorf("OpenOpts.Backend: %w", err)
 	}
+	if opts.Port != 0 && (opts.Port < 1 || opts.Port > 65535) {
+		return Endpoint{}, fmt.Errorf("OpenOpts.Port: must be 0 or 1-65535, got %d", opts.Port)
+	}
 	switch opts.Backend {
 	case BackendLocalServer:
 		if opts.ConfigFilePath == "" {
@@ -273,9 +278,12 @@ func spawnAndHandoff(rootDir string, opts OpenOpts, deadline time.Time, lock *ut
 		}
 	}
 
-	port, err := PickFreePort()
-	if err != nil {
-		return Endpoint{}, fmt.Errorf("pick port: %w", err)
+	port := opts.Port
+	if port == 0 {
+		var err error
+		if port, err = PickFreePort(); err != nil {
+			return Endpoint{}, fmt.Errorf("pick port: %w", err)
+		}
 	}
 
 	handedOff = true
@@ -341,6 +349,9 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 	}
 	if opts.DoltBinPath != "" {
 		args = append(args, "--dolt-bin", opts.DoltBinPath)
+	}
+	if opts.Database != "" {
+		args = append(args, "--database", opts.Database)
 	}
 	if opts.PoolSize > 0 {
 		args = append(args, "--pool-size", strconv.Itoa(opts.PoolSize))

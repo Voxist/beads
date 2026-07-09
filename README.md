@@ -156,6 +156,31 @@ access control is simpler than network allowlists. The Dolt server must be
 started with `dolt sql-server --socket <path>`. Auto-start is not supported
 in socket mode.
 
+### Maintenance — `bd prune` and `bd purge`
+
+`bd prune` permanently deletes closed non-ephemeral beads to reclaim storage
+and shrink auto-exports. `bd purge` does the same for ephemeral beads (wisps,
+transient molecules). Both require `--force` to execute.
+
+```bash
+bd prune --older-than 30d              # Preview closed beads >30d old
+bd prune --older-than 30d --force      # Delete them
+bd prune --older-than 90d --dry-run    # Detailed preview with stats
+bd purge --force                       # Delete all closed ephemeral beads
+```
+
+**Reference-aware protection:** `bd prune` automatically skips closed beads
+whose ID appears in the description, notes, or comments of any open or
+in-progress bead. This prevents accidental deletion of ADR, decision, and
+verification beads that downstream work still cites. Use `--ignore-references`
+to override when cleaning up known-stale references:
+
+```bash
+bd prune --older-than 90d --ignore-references --force
+```
+
+`bd purge` is unaffected — ephemeral beads' references are themselves transient.
+
 ### Backup & Migration
 
 Back up your database and migrate between modes using `bd backup`:
@@ -181,6 +206,8 @@ branches, commit history, working-set state, or non-issue tables. Use
 ## 🌐 Community Tools
 
 See [docs/COMMUNITY_TOOLS.md](docs/COMMUNITY_TOOLS.md) for a curated list of community-built UIs, extensions, and integrations—including terminal interfaces, web UIs, editor extensions, and native apps.
+
+See [docs/RELATED_PROJECTS.md](docs/RELATED_PROJECTS.md) for adjacent or complementary projects that solve different problems in the same neighborhood.
 
 ## 🚀 Git-Free Usage
 

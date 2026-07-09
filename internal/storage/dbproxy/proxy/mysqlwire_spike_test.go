@@ -52,7 +52,7 @@ func spikeDolt(t *testing.T) (srv *server.DoltServer, port int) {
 	body := fmt.Sprintf("log_level: warning\nlistener:\n  host: 127.0.0.1\n  port: %d\n", port)
 	require.NoError(t, os.WriteFile(cfgPath, []byte(body), 0o600))
 	logPath := filepath.Join(t.TempDir(), "server.log")
-	srv, err = server.NewDoltServer(bin, rootDir, cfgPath, logPath, 0)
+	srv, err = server.NewDoltServer(bin, rootDir, cfgPath, logPath, 0, "")
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
