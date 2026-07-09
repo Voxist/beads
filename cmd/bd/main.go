@@ -1257,7 +1257,7 @@ var rootCmd = &cobra.Command{
 			// validateWorkspaceIdentity reads _project_id over the routed store
 			// and no-ops when the store is nil, so it is safe in best-effort mode.
 			if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
-				validateWorkspaceIdentity(rootCtx, beadsDir)
+				_ = validateWorkspaceIdentity(rootCtx, beadsDir) //nolint:errcheck // best-effort identity check; no-ops on nil store
 			}
 
 			syncCommandContext()
