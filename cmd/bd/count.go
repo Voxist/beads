@@ -215,7 +215,7 @@ Examples:
 			}
 			applyCountIncludeInfra(&filter, issueType, cfg)
 		} else {
-			filter.SkipWisps = true // durable tier only; bd count's historical default
+			applyCountSkipWispsDefault(&filter, issueType)
 		}
 
 		if groupBy == "" {
@@ -291,8 +291,8 @@ Examples:
 //   - counting an infra type (agent/role/message, or the store-configured
 //     set) routes to the ephemeral wisps tier, like list's infra-type listing.
 //
-// The non-flag path never calls this function: bd count without
-// --include-infra keeps its historical durable-only semantics.
+// The path without --include-infra never calls this function; see
+// applyCountSkipWispsDefault for that path's SkipWisps handling.
 func applyCountIncludeInfra(filter *types.IssueFilter, issueType string, cfg listFilterConfig) {
 	filter.SkipWisps = false
 
@@ -306,6 +306,19 @@ func applyCountIncludeInfra(filter *types.IssueFilter, issueType string, cfg lis
 	if issueType != "" && cfg.isInfra(issueType) {
 		ephemeral := true
 		filter.Ephemeral = &ephemeral
+	}
+}
+
+// applyCountSkipWispsDefault sets bd count's SkipWisps default when
+// --include-infra is not passed: skip the ephemeral wisps tier for perf and
+// to keep an unfiltered count durable-tier-only (bd count's historical
+// default), unless an explicit --type is given. A --type filter that can
+// only ever match wisps-table rows (molecules, or any other type parked
+// there) must not be silently incomplete — mirrors buildListFilter's
+// SkipWisps opt-out (va-k0e/vg-3kn) on the list side (vg-8db).
+func applyCountSkipWispsDefault(filter *types.IssueFilter, issueType string) {
+	if issueType == "" {
+		filter.SkipWisps = true
 	}
 }
 

@@ -91,18 +91,97 @@ func TestApplyCountIncludeInfraCustomInfraTypes(t *testing.T) {
 }
 
 // TestApplyCountIncludeInfraDefaultUntouched documents that the helper is only
-// invoked under --include-infra: the no-flag path must keep today's
-// durable-only semantics (SkipWisps=true, no template/gate exclusion).
+// invoked under --include-infra: without that flag, an unfiltered count
+// keeps today's durable-only semantics (SkipWisps=true, no template/gate
+// exclusion). An explicit --type instead goes through
+// applyCountSkipWispsDefault (vg-8db) — see TestApplyCountSkipWispsDefault.
 func TestApplyCountIncludeInfraDefaultUntouched(t *testing.T) {
-	// The default path in count.go does not call applyCountIncludeInfra; it
-	// sets SkipWisps=true and nothing else. Pin the flag's existence and
-	// default value so scripted callers keep byte-identical behavior.
+	// Without --include-infra, count.go delegates to
+	// applyCountSkipWispsDefault rather than calling this helper. Pin the
+	// flag's existence and default value so scripted callers keep
+	// byte-identical behavior.
 	flag := countCmd.Flags().Lookup("include-infra")
 	if flag == nil {
 		t.Fatal("bd count must expose an --include-infra flag (GH#4387)")
 	}
 	if flag.DefValue != "false" {
 		t.Fatalf("--include-infra must default to false, got %q", flag.DefValue)
+	}
+}
+
+// TestApplyCountSkipWispsDefault pins bd count's SkipWisps decision on the
+// path that does not pass --include-infra.
+//
+// vg-8db (sibling of va-k0e/vg-3kn): `bd count` and especially
+// `bd count --type=<T>` undercounted wisps-table (ephemeral) rows, because
+// this path unconditionally set SkipWisps=true regardless of an explicit
+// --type. A --type filter that can only ever match wisps-table rows
+// (molecules, or any other type parked there) returned a silently-low count
+// instead of the matching rows.
+func TestApplyCountSkipWispsDefault(t *testing.T) {
+	cases := []struct {
+		name      string
+		issueType string
+		want      bool
+	}{
+		{
+			name:      "default unfiltered count still skips wisps (perf default preserved)",
+			issueType: "",
+			want:      true,
+		},
+		{
+			name:      "explicit --type=molecule must not skip wisps",
+			issueType: "molecule",
+			want:      false,
+		},
+		{
+			name:      "explicit --type=task must not skip wisps (same root cause, any type)",
+			issueType: "task",
+			want:      false,
+		},
+		{
+			name:      "explicit --type=message (infra type) still does not skip wisps",
+			issueType: "message",
+			want:      false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			filter := types.IssueFilter{}
+			applyCountSkipWispsDefault(&filter, tc.issueType)
+			if filter.SkipWisps != tc.want {
+				t.Errorf("SkipWisps = %v, want %v", filter.SkipWisps, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyCountSkipWispsDefaultMirrorsListFilter cross-checks
+// applyCountSkipWispsDefault's SkipWisps decision against buildListFilter's
+// for the equivalent input (no --include-infra, --all, or
+// --include-ephemeral), so the two independently-implemented paths cannot
+// silently diverge again (vg-8db).
+func TestApplyCountSkipWispsDefaultMirrorsListFilter(t *testing.T) {
+	cfg := listFilterConfig{}
+	for _, issueType := range []string{"", "task", "molecule", "message"} {
+		name := issueType
+		if name == "" {
+			name = "none"
+		}
+		t.Run("type_"+name, func(t *testing.T) {
+			want, err := buildListFilter(listInput{issueType: issueType}, cfg)
+			if err != nil {
+				t.Fatalf("buildListFilter(%q): %v", issueType, err)
+			}
+
+			got := types.IssueFilter{}
+			applyCountSkipWispsDefault(&got, issueType)
+
+			if got.SkipWisps != want.SkipWisps {
+				t.Errorf("SkipWisps = %v, list (no --include-infra/--all/--include-ephemeral) uses %v", got.SkipWisps, want.SkipWisps)
+			}
+		})
 	}
 }
 
