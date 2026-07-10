@@ -507,9 +507,13 @@ func TestEmbeddedCountIncludeInfra(t *testing.T) {
 		return len(bdListJSON(t, bd, dir, fullArgs...))
 	}
 
-	t.Run("default_stays_durable_only", func(t *testing.T) {
-		if got := countOf("--type", "task"); got != 3 {
-			t.Errorf("bd count --type task = %d, want 3 (durable tasks only; default must stay byte-identical)", got)
+	t.Run("type_filter_includes_wisps_tier_without_include_infra", func(t *testing.T) {
+		// An explicit --type must not undercount even without --include-infra:
+		// a type filter that can only match wisps-table rows would otherwise
+		// go silently low (vg-8db). 3 durable tasks + 2 no_history tasks + 1
+		// ephemeral task.
+		if got := countOf("--type", "task"); got != 6 {
+			t.Errorf("bd count --type task = %d, want 6 (wisps tier included even without --include-infra)", got)
 		}
 	})
 
