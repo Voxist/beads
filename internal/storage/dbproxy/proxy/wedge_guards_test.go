@@ -183,6 +183,11 @@ func TestProxyLogWriterRotates(t *testing.T) {
 	path := filepath.Join(dir, LogFileName)
 	w := newProxyLogWriter(path)
 	w.MaxSize = 1 // MB; test seam — lumberjack exposes the field
+	// Disable background gzip: lumberjack compresses rotated backups on a
+	// goroutine that outlives Close(), and it races t.TempDir()'s RemoveAll
+	// ("directory not empty" on macOS CI). Rotation itself — the behavior
+	// under test — is independent of compression.
+	w.Compress = false
 	defer func() { _ = w.Close() }()
 
 	line := bytes.Repeat([]byte("x"), 64*1024-1)
@@ -205,8 +210,8 @@ func TestProxyLogWriterRotates(t *testing.T) {
 		t.Fatalf("live log = %d bytes, want bounded near the 1 MB cap (rotation did not happen)", fi.Size())
 	}
 
-	// Backups land beside the live file as proxy-<timestamp>.log, then are
-	// compressed to .gz in the background; accept either form.
+	// Backups land beside the live file as proxy-<timestamp>.log (compression
+	// is disabled above, so they stay uncompressed).
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read dir: %v", err)
