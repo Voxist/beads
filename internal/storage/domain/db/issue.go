@@ -101,6 +101,9 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 	// transition, the audit event type is derived from the transition, and
 	// is_blocked is recomputed for neighbors. Read the full old issue once so
 	// all four use the same snapshot; the ErrNoRows contract is preserved.
+	// The no-op-commit gate below also needs this snapshot — via
+	// UpdateWouldSideEffect — to tell a genuine no-op apart from a status
+	// re-stamp that must still fire ManageClosedAt/ManageStartedAt.
 	var oldIssue *types.Issue
 	if statusChanging {
 		var err error
@@ -113,8 +116,9 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 		}
 	}
 
-	setClauses := make([]string, 0, len(updates)+3)
-	args := make([]any, 0, len(updates)+4)
+	// Build the column/value pairs once — the no-change probe and the UPDATE
+	// must see identical driver arguments.
+	cols := make([]issueops.UpdateColumn, 0, len(updates))
 	for key, value := range updates {
 		if _, ok := allowedUpdateFields[key]; !ok {
 			return fmt.Errorf("db: Update: field %q is not allowed", key)
@@ -123,8 +127,35 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 		if renamed, ok := updateFieldColumnRename[key]; ok {
 			column = renamed
 		}
-		setClauses = append(setClauses, fmt.Sprintf("`%s` = ?", column))
-		args = append(args, normalizeUpdateValue(key, value))
+		cols = append(cols, issueops.UpdateColumn{Column: column, Value: normalizeUpdateValue(key, value)})
+	}
+
+	// No-op-commit gate (va-v1i9 / ADR-0023 L-A), parity with
+	// issueops.updateIssueInTx: skip the write only when every requested
+	// column already holds the requested value AND no auto-managed stamp
+	// would still fire. UpdateWouldSideEffect must run before the equality
+	// probe: a status-only "no-op" transition (e.g. closed -> closed) still
+	// needs closed_at re-stamped and EventClosed re-emitted, and a legacy
+	// row with started_at IS NULL still needs it stamped on the
+	// in_progress transition — both are real side effects even though
+	// every explicitly requested column already compares equal. The probe
+	// also proves the row exists, preserving this method's sql.ErrNoRows
+	// contract; other probe errors fall through to the legacy write path
+	// (assume changed).
+	if !issueops.UpdateWouldSideEffect(oldIssue, updates) {
+		switch equal, probeErr := issueops.AllColumnsEqualInTx(ctx, r.runner, table, id, cols); {
+		case errors.Is(probeErr, sql.ErrNoRows):
+			return fmt.Errorf("db: Update %s: %w", id, sql.ErrNoRows)
+		case probeErr == nil && equal:
+			return nil
+		}
+	}
+
+	setClauses := make([]string, 0, len(cols)+1)
+	args := make([]any, 0, len(cols)+2)
+	for _, c := range cols {
+		setClauses = append(setClauses, fmt.Sprintf("`%s` = ?", c.Column))
+		args = append(args, c.Value)
 	}
 	setClauses = append(setClauses, "updated_at = ?")
 	args = append(args, time.Now().UTC())

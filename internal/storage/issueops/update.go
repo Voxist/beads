@@ -220,10 +220,9 @@ func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string
 		}
 	}
 
-	// Build SET clauses.
-	setClauses := []string{"updated_at = ?"}
-	args := []interface{}{time.Now().UTC()}
-
+	// Build the requested column/value pairs once — the no-change probe and
+	// the UPDATE must see identical driver arguments.
+	cols := make([]UpdateColumn, 0, len(updates))
 	for key, value := range updates {
 		if !IsAllowedUpdateField(key) {
 			return nil, fmt.Errorf("invalid field for update: %s", key)
@@ -233,21 +232,40 @@ func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string
 		if key == "wisp" {
 			columnName = "ephemeral"
 		}
-		setClauses = append(setClauses, fmt.Sprintf("`%s` = ?", columnName))
 
 		// Handle JSON serialization for array fields stored as TEXT.
 		if key == "waiters" {
 			waitersJSON, _ := json.Marshal(value)
-			args = append(args, string(waitersJSON))
+			cols = append(cols, UpdateColumn{Column: columnName, Value: string(waitersJSON)})
 		} else if key == "metadata" {
 			metadataStr, err := storage.NormalizeMetadataValue(value)
 			if err != nil {
 				return nil, fmt.Errorf("invalid metadata: %w", err)
 			}
-			args = append(args, metadataStr)
+			cols = append(cols, UpdateColumn{Column: columnName, Value: metadataStr})
 		} else {
-			args = append(args, value)
+			cols = append(cols, UpdateColumn{Column: columnName, Value: value})
 		}
+	}
+
+	// No-op-commit gate (va-v1i9): when every requested field already holds
+	// the requested value and no auto-managed stamp would fire, skip the
+	// write entirely — no updated_at bump, no event row — so the working
+	// set stays clean and the enclosing Dolt auto-commit has nothing to
+	// mint. Probe errors fall through to the legacy write path (assume
+	// changed); only a positive "unchanged" may suppress the write.
+	if !UpdateWouldSideEffect(oldIssue, updates) {
+		if equal, err := AllColumnsEqualInTx(ctx, tx, issueTable, id, cols); err == nil && equal {
+			return &UpdateResult{OldIssue: oldIssue, IsWisp: isWisp}, nil
+		}
+	}
+
+	// Build SET clauses.
+	setClauses := []string{"updated_at = ?"}
+	args := []interface{}{time.Now().UTC()}
+	for _, c := range cols {
+		setClauses = append(setClauses, fmt.Sprintf("`%s` = ?", c.Column))
+		args = append(args, c.Value)
 	}
 
 	// Auto-clear pinned column when status transitions away from "pinned".

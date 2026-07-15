@@ -299,6 +299,22 @@ gate that rc.1 introduced, and ships the validated upgrade documentation.
 
 ### Fixed
 
+- **No-op `bd update` no longer mints a Dolt commit.** A value-identical
+  update (re-stamping a status, assignee, or `--set-metadata` value the row
+  already holds) used to bump `updated_at` and insert an event row, so every
+  enclosing `DOLT_COMMIT` minted a real commit — measured live at 1403/1403
+  (100%) of one store's daily `bd: update` commits, each doubling as a
+  stale-snapshot race window that could clobber a concurrent claim
+  (va-v1i9 / ADR-0023 L-A). Both update paths (direct and proxied/uow) now
+  probe the row in-transaction with NULL-safe equality — metadata compared
+  as JSON, so key order and whitespace are not deltas — and skip the write
+  entirely when nothing would change: no `updated_at` bump, no event row,
+  zero new `dolt_log` commits. Only a positive "unchanged" answer suppresses
+  the write: probe errors fall back to writing, real and mixed changes still
+  commit exactly once, case-only changes still write (binary collation), and
+  auto-managed stamps (`closed_at`, `started_at`, pinned auto-clear) are
+  never suppressed. (vp-5u7i)
+
 - **Cross-clone issue-delete vs child-row-insert merges now converge.** The
   synced child tables (`dependencies`, `labels`, `comments`, `events`,
   snapshots) carry `FOREIGN KEY ... ON DELETE CASCADE` to `issues` (migrations
