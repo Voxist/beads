@@ -81,6 +81,9 @@ Examples:
   bd compact --stats                       # Show statistics
 `,
 	RunE: func(_ *cobra.Command, _ []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("admin compact is not supported in proxied-server mode")
+		}
 		// Block mutating operations in embedded mode; allow --stats, --analyze, --dry-run read-only paths.
 		if !compactStats && !compactAnalyze && !compactDryRun {
 			// S5: compaction rewrites Dolt history and needs exclusive direct

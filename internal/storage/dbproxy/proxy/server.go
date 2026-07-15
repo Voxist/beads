@@ -26,6 +26,8 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dbproxy/util"
 )
 
+const IdleTimeoutNever time.Duration = -1
+
 type ProxyOpts struct {
 	RootDir     string
 	Port        int
