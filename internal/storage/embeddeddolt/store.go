@@ -712,6 +712,20 @@ func (s *EmbeddedDoltStore) CommitPending(ctx context.Context, actor string) (bo
 	return true, nil
 }
 
+// WorkingSetIsOperationalNoOp reports whether the pending Dolt working set is a
+// lease/heartbeat no-op — only operational columns (updated_at, heartbeat_at,
+// lease_expires_at, row_lock) changed on issues/wisps rows. The auto-commit path
+// uses a true result to skip creating an empty-content Dolt commit (vp-on8s).
+func (s *EmbeddedDoltStore) WorkingSetIsOperationalNoOp(ctx context.Context) (bool, error) {
+	var noop bool
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		noop, err = issueops.WorkingSetIsOperationalNoOp(ctx, tx)
+		return err
+	})
+	return noop, err
+}
+
 // CommitExists is implemented in version_control.go via versioncontrolops.
 
 func (s *EmbeddedDoltStore) GetCurrentCommit(ctx context.Context) (string, error) {
