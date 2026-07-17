@@ -38,7 +38,10 @@ func TestDependencyKeys_RekeysAndRemovesLeftovers(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 
-	// Unique database name: the test Dolt container may outlive a single run.
+	// Unique database name: the test Dolt server may outlive a single run
+	// (and may be shared — env port resolution can land this on whatever
+	// server BEADS_DOLT_SERVER_PORT points at), so the name avoids clashes
+	// and the deferred DROP below removes the DB from that server's root.
 	buf := make([]byte, 6)
 	if _, err := rand.Read(buf); err != nil {
 		t.Fatalf("rand: %v", err)
@@ -56,6 +59,12 @@ func TestDependencyKeys_RekeysAndRemovesLeftovers(t *testing.T) {
 		t.Skipf("skipping: Dolt server not available: %v", err)
 	}
 	defer func() { _ = store.Close() }()
+	// LIFO: drop runs before the Close above releases the connection.
+	defer func() {
+		if _, err := store.UnderlyingDB().ExecContext(ctx, "DROP DATABASE `"+dbName+"`"); err != nil {
+			t.Logf("drop scratch database %s: %v", dbName, err)
+		}
+	}()
 
 	if err := store.SetConfig(ctx, "issue_prefix", "tst"); err != nil {
 		t.Fatalf("SetConfig(issue_prefix): %v", err)
