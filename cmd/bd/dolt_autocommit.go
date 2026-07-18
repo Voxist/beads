@@ -99,6 +99,25 @@ func maybeAutoCommitStore(ctx context.Context, st storage.DoltStorage, p doltAut
 		return nil
 	}
 
+	// vp-on8s: skip the Dolt version commit when the working set is a
+	// lease/heartbeat no-op — only operational columns (updated_at, heartbeat_at,
+	// lease_expires_at, row_lock) changed on issues/wisps. Without this, every
+	// heartbeat produced a commit with identical issue content (923 on one bead),
+	// flooding history and stalling the fleet via spawner timeouts. The SQL
+	// working-set write already persisted; only the version commit is skipped, and
+	// the next real change carries these columns along.
+	if noop, ok := storage.UnwrapStore(st).(interface {
+		WorkingSetIsOperationalNoOp(context.Context) (bool, error)
+	}); ok {
+		skip, err := noop.WorkingSetIsOperationalNoOp(ctx)
+		if err != nil {
+			return err
+		}
+		if skip {
+			return nil
+		}
+	}
+
 	msg := p.MessageOverride
 	if strings.TrimSpace(msg) == "" {
 		msg = formatDoltAutoCommitMessage(p.Command, getActor(), p.IssueIDs)

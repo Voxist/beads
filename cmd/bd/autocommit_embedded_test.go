@@ -55,6 +55,39 @@ func setupRoutedEmbeddedRepo(t *testing.T, bd string, sourcePrefix, targetPrefix
 	return sourceDir, targetDir, filepath.Join(targetDir, ".beads")
 }
 
+// TestEmbeddedHeartbeatAutoCommitDoesNotAdvanceHead pins the vp-on8s fix: with
+// Dolt auto-commit ON, a bd heartbeat rewrites only lease/liveness columns and
+// must NOT create a Dolt commit (the flood that produced 923 identical-content
+// commits on one bead and stalled the fleet). A subsequent real content change
+// must still advance HEAD, proving the no-op guard does not suppress real writes.
+func TestEmbeddedHeartbeatAutoCommitDoesNotAdvanceHead(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt auto-commit tests")
+	}
+	t.Parallel()
+
+	bd := buildEmbeddedBD(t)
+
+	dir, beadsDir, _ := bdInit(t, bd, "--prefix", "hbn")
+	issue := bdCreate(t, bd, dir, "Heartbeat flood target")
+
+	// Claim (status=in_progress, assignee=alice) with auto-commit on so HEAD settles.
+	bdCommand(t, bd, dir, "--dolt-auto-commit", "on", "update", issue.ID, "--actor", "alice", "--claim")
+	before := embeddedCurrentCommit(t, beadsDir, "hbn")
+
+	// Several heartbeats: each bumps only updated_at/heartbeat_at/lease_expires_at/
+	// row_lock, so none should advance HEAD.
+	for i := 0; i < 3; i++ {
+		bdCommand(t, bd, dir, "--dolt-auto-commit", "on", "heartbeat", issue.ID, "--actor", "alice")
+	}
+	assertEmbeddedHeadUnchanged(t, beadsDir, "hbn", before, "heartbeat")
+
+	// A real content change must still advance HEAD (and carries the pending
+	// lease columns along with it).
+	bdCommand(t, bd, dir, "--dolt-auto-commit", "on", "update", issue.ID, "--actor", "alice", "--title", "Renamed")
+	assertEmbeddedHeadAdvanced(t, beadsDir, "hbn", before, "update title")
+}
+
 func TestEmbeddedDepAndLinkBatchAutoCommitDoesNotAdvanceHead(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt auto-commit tests")
