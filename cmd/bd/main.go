@@ -2315,6 +2315,9 @@ func main() {
 	rootCmd.InitDefaultHelpCmd()
 	registerHelpAllFlag()
 
+	// Add the monitor commit rate command
+	rootCmd.AddCommand(monitorCommitRateCmd)
+
 	executedCmd, err := rootCmd.ExecuteC()
 
 	// Let this command's fire-and-forget hooks finish, for the same
