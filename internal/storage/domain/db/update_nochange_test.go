@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 // These tests pin the no-op-commit gate (va-v1i9 / ADR-0023 L-A): an Update
@@ -24,6 +25,8 @@ func (s *testSuite) TestIssueSQLRepositoryUpdateNoOpGate() {
 	s.Run("NullableClearToNullIsNoOpWhenAlreadyNull", s.nullableClearToNullIsNoOpWhenAlreadyNull)
 	s.Run("MissingIDStillErrNoRows", s.updateMissingIDStillErrNoRows)
 	s.Run("NoOpUpdateOnWispSkipsEvent", s.noopUpdateOnWispSkipsEvent)
+	s.Run("AlreadyClosedStatusReStampsClosedAtAndEmitsEvent", s.alreadyClosedStatusReStampsClosedAtAndEmitsEvent)
+	s.Run("InProgressWithNullStartedAtStillStampsStartedAt", s.inProgressWithNullStartedAtStillStampsStartedAt)
 }
 
 // checkpointDolt commits the current working set so later dirty-checks are
@@ -201,4 +204,70 @@ func (s *testSuite) noopUpdateOnWispSkipsEvent() {
 
 	s.Equal(evtBefore, s.eventRows("wisp_events", "bd-noop-wisp"), "no-op wisp update must not record an event")
 	s.Equal(tsBefore, s.issueUpdatedAtRaw("wisps", "bd-noop-wisp"), "no-op wisp update must not bump updated_at")
+}
+
+// closedEventCount counts EventClosed events, distinct from eventRows' total
+// count, so a re-close can be pinned as "still emitted EventClosed" rather
+// than just "recorded some event".
+func (s *testSuite) closedEventCount(id string) int {
+	var n int
+	s.Require().NoError(s.Runner().QueryRowContext(s.Ctx(),
+		"SELECT COUNT(*) FROM events WHERE issue_id = ? AND event_type = ?",
+		id, string(types.EventClosed)).Scan(&n))
+	return n
+}
+
+// Pins UpdateWouldSideEffect's closed_at branch: ManageClosedAt re-stamps
+// closed_at and DetermineEventType still emits EventClosed on EVERY implicit
+// close, even when the row is already closed. Without the side-effect check
+// ahead of the equality probe, a redundant `status: closed` compares equal on
+// every requested column and the gate would suppress the write, silently
+// dropping the closed_at re-stamp and the EventClosed emission.
+func (s *testSuite) alreadyClosedStatusReStampsClosedAtAndEmitsEvent() {
+	s.seedIssueRow("bd-reclose")
+	r := NewIssueSQLRepository(s.Runner())
+
+	// Real transition: open -> closed.
+	s.Require().NoError(r.Update(s.Ctx(), "bd-reclose", map[string]any{
+		"status": "closed",
+	}, "tester", domain.IssueTableOpts{}))
+	s.checkpointDolt()
+	closedBefore := s.closedEventCount("bd-reclose")
+	s.Equal(1, closedBefore, "sanity: the real close must have recorded one EventClosed")
+
+	// Redundant re-close: every requested column (just "status") already
+	// matches the stored row, but the re-close side effect must still fire.
+	s.Require().NoError(r.Update(s.Ctx(), "bd-reclose", map[string]any{
+		"status": "closed",
+	}, "tester", domain.IssueTableOpts{}))
+
+	s.Equal(closedBefore+1, s.closedEventCount("bd-reclose"), "re-close must still emit EventClosed, not be suppressed as a no-op")
+	s.Positive(s.workingSetDirtyRows(), "re-close must still dirty the working set (closed_at re-stamp)")
+}
+
+// Pins UpdateWouldSideEffect's started_at branch: a legacy/migrated row can
+// have status=in_progress with started_at still NULL (e.g. from before the
+// lease columns existed). Re-requesting the same in_progress status must
+// still let ManageStartedAt stamp started_at rather than being suppressed
+// because the "status" column alone already compares equal.
+func (s *testSuite) inProgressWithNullStartedAtStillStampsStartedAt() {
+	s.seedIssueRow("bd-legacy-started")
+	// Force the legacy precondition directly, bypassing Update/ManageStartedAt:
+	// status already in_progress, started_at never stamped.
+	_, err := s.Runner().ExecContext(s.Ctx(),
+		"UPDATE issues SET status = 'in_progress', started_at = NULL WHERE id = ?",
+		"bd-legacy-started")
+	s.Require().NoError(err)
+	s.checkpointDolt()
+
+	r := NewIssueSQLRepository(s.Runner())
+	s.Require().NoError(r.Update(s.Ctx(), "bd-legacy-started", map[string]any{
+		"status": "in_progress",
+	}, "tester", domain.IssueTableOpts{}))
+
+	var startedAt sql.NullString
+	s.Require().NoError(s.Runner().QueryRowContext(s.Ctx(),
+		"SELECT CAST(started_at AS CHAR) FROM issues WHERE id = ?", "bd-legacy-started").Scan(&startedAt))
+	s.True(startedAt.Valid, "in_progress re-stamp on a legacy NULL started_at row must stamp started_at, not be suppressed as a no-op")
+	s.Positive(s.workingSetDirtyRows(), "must still dirty the working set")
 }

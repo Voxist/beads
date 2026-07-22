@@ -180,7 +180,15 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 	if err != nil {
 		return fmt.Errorf("db: Update %s: rows affected: %w", id, err)
 	}
-	if rows == 0 {
+	// RowsAffected reports rows the driver considers CHANGED, not just
+	// matched — a redundant re-close within the same DATETIME-precision
+	// second (status unchanged, and closed_at/updated_at round-trip to the
+	// same stored second) can report 0 even though the row exists and the
+	// side-effect gate above deliberately let the write through. oldIssue
+	// being set means the read above already proved the row exists, so only
+	// fall back to RowsAffected as an existence check when there was no such
+	// read (a non-status-changing update, or one where the read never ran).
+	if rows == 0 && oldIssue == nil {
 		return fmt.Errorf("db: Update %s: %w", id, sql.ErrNoRows)
 	}
 

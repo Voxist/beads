@@ -68,6 +68,10 @@ func AllColumnsEqualInTx(ctx context.Context, tx DBTX, table, id string, cols []
 // returning true, which implies any requested status equals the stored value
 // — so the reopen branch of ManageClosedAt (old closed, new not closed) can
 // never apply on a suppressed update.
+//
+// Deliberately does not account for ManageLeaseOnUpdate: leaving a stale
+// lease_expires_at/heartbeat_at on a suppressed no-op is harmless because
+// reclaiming a stale lease is ReclaimExpiredLeases' job, not this gate's.
 func UpdateWouldSideEffect(oldIssue *types.Issue, updates map[string]interface{}) bool {
 	rawStatus, hasStatus := updates["status"]
 	if !hasStatus {
