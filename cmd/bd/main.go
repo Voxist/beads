@@ -1794,6 +1794,9 @@ func main() {
 	rootCmd.InitDefaultHelpCmd()
 	registerHelpAllFlag()
 
+	// Add the monitor commit rate command
+	rootCmd.AddCommand(monitorCommitRateCmd)
+
 	executedCmd, err := rootCmd.ExecuteC()
 
 	// Finalize queued metrics and detach the uploader. Shared with the os.Exit
