@@ -7,7 +7,7 @@ description: Generated reference for every bd command
 
 Generated from `bd help --docs-root`.
 
-This reference covers all 112 live top-level `bd` commands. Regenerate it with:
+This reference covers all 113 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
@@ -99,6 +99,7 @@ These flags apply to all commands:
 - [`bd migrate`](/cli-reference/migrate)
 - [`bd migrate-personal`](/cli-reference/migrate-personal)
 - [`bd mol`](/cli-reference/mol)
+- [`bd monitor-commit-rate`](/cli-reference/monitor-commit-rate)
 - [`bd note`](/cli-reference/note)
 - [`bd notion`](/cli-reference/notion)
 - [`bd onboard`](/cli-reference/onboard)

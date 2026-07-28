@@ -396,6 +396,7 @@
               "cli-reference/migrate-personal",
               "cli-reference/migrate",
               "cli-reference/mol",
+              "cli-reference/monitor-commit-rate",
               "cli-reference/note",
               "cli-reference/notion",
               "cli-reference/onboard",

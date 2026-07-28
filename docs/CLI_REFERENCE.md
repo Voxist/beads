@@ -284,6 +284,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd mol squash](#bd-mol-squash) — Compress molecule execution into a digest
   - [bd mol stale](#bd-mol-stale) — Detect complete-but-unclosed molecules
   - [bd mol wisp](#bd-mol-wisp) — Create or manage wisps (ephemeral molecules)
+- [bd monitor-commit-rate](#bd-monitor-commit-rate) — Monitor Dolt commit rate and alert on excessive no-op commits (vp-5u7i deliverable 2)
 - [bd notion](#bd-notion) — Notion integration commands
   - [bd notion connect](#bd-notion-connect) — Connect bd to an existing Notion database or data source
   - [bd notion init](#bd-notion-init) — Create a dedicated Beads database in Notion
@@ -6991,6 +6992,28 @@ bd mol wisp list [flags]
 ```
       --all           Include closed wisps
       --type string   Filter by issue type (e.g., agent, task, patrol)
+```
+
+### bd monitor-commit-rate
+
+Monitor Dolt commit rate to detect excessive no-op commits that indicate the storm pattern.
+
+This command samples dolt_log per DB and alerts when any DB exceeds N no-op commits/min
+with a flat distinct-bead count (signature: many commits, few beads, identical content_hash).
+
+This implements deliverable 2 from bead vp-5u7i.
+
+```
+bd monitor-commit-rate [flags]
+```
+
+**Flags:**
+
+```
+      --alert-only    Only alert when thresholds are exceeded (don't auto-take action) (default true)
+      --commits int   Alert threshold: number of commits in the time window that triggers an alert (default 10)
+      --dry-run       Perform a dry run without taking any actions
+      --minutes int   Time window in minutes to monitor for commit rate (default 1)
 ```
 
 ### bd notion
