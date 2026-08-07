@@ -22,7 +22,12 @@ import (
 // The embedded Dolt driver can be slow, especially for complex JOIN queries.
 // If tests are timing out, it may indicate an issue with the embedded Dolt
 // driver's async operations rather than with the DoltStore implementation.
-const testTimeout = 30 * time.Second
+// testTimeout bounds each test's context. It must cover a cold store setup —
+// container-assisted connect plus the FULL migration chain (every versioned +
+// ignored migration, each Dolt-committed), which grows as migrations
+// accumulate — with headroom for a loaded machine; some tests set up two
+// stores under one context.
+const testTimeout = 45 * time.Second
 
 // testSem limits concurrent database-touching tests to avoid overwhelming the
 // shared Dolt testcontainer. Without this, 200+ parallel tests cause a
@@ -79,6 +84,48 @@ func uniqueTestDBName(t *testing.T) string {
 		t.Fatalf("failed to generate random bytes: %v", err)
 	}
 	return "testdb_" + hex.EncodeToString(buf)
+}
+
+// doltCommitCount reports how many commits the test branch has. Tests that
+// care whether an operation recorded history take it before and after rather
+// than reading the top of dolt_log, because two commits made inside one second
+// tie on date and the ordering between them is not something to rely on.
+func doltCommitCount(ctx context.Context, t *testing.T, store *DoltStore) int {
+	t.Helper()
+	var n int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dolt_log").Scan(&n); err != nil {
+		t.Fatalf("count dolt_log: %v", err)
+	}
+	return n
+}
+
+// doltHasCommitMessage reports whether the test branch has a commit with
+// exactly this message.
+func doltHasCommitMessage(ctx context.Context, t *testing.T, store *DoltStore, message string) bool {
+	t.Helper()
+	var n int
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM dolt_log WHERE message = ?", message).Scan(&n); err != nil {
+		t.Fatalf("query dolt_log for %q: %v", message, err)
+	}
+	return n > 0
+}
+
+// requireCleanTables fails when any named table is still dirty in the working
+// set. It is how a test says "the operation staged and committed what it
+// wrote", which is the half of the staging contract a data read cannot see.
+func requireCleanTables(ctx context.Context, t *testing.T, store *DoltStore, tables ...string) {
+	t.Helper()
+	for _, table := range tables {
+		var dirty int
+		if err := store.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM dolt_status WHERE table_name = ?", table).Scan(&dirty); err != nil {
+			t.Fatalf("query dolt_status for %s: %v", table, err)
+		}
+		if dirty != 0 {
+			t.Fatalf("%s is still dirty in the working set after the operation committed", table)
+		}
+	}
 }
 
 // setupTestStore creates a test store on the shared database with branch isolation.

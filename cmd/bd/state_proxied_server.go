@@ -2,20 +2,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
+	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/workapi"
 )
 
 func proxiedStateLabels(ctx context.Context, uw uow.UnitOfWork, issueID string) (string, []string, error) {
-	issue, isWisp, err := proxiedGetIssueOrWisp(ctx, uw, issueID)
+	issue, isWisp, err := workapi.GetIssueOrWisp(ctx, workapi.NewUOWDetailSource(uw), issueID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return "", nil, HandleErrorRespectJSON("resolving %s: not found", issueID)
+	}
 	if err != nil {
 		return "", nil, HandleErrorRespectJSON("resolving %s: %v", issueID, err)
-	}
-	if issue == nil {
-		return "", nil, HandleErrorRespectJSON("resolving %s: not found", issueID)
 	}
 	var labels []string
 	if isWisp {
@@ -67,6 +72,159 @@ func runStateProxiedServer(ctx context.Context, issueID, dimension string) error
 	} else {
 		fmt.Println(value)
 	}
+	return nil
+}
+
+type setStateResult struct {
+	fullID     string
+	oldValue   string
+	eventID    string
+	changed    bool
+	removeWarn string
+}
+
+func runSetStateProxiedServer(ctx context.Context, issueID, dimension, newValue, reason string) error {
+	if uowProvider == nil {
+		return HandleErrorRespectJSON("proxied-server UOW provider not initialized")
+	}
+
+	newLabel := dimension + ":" + newValue
+
+	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (setStateResult, string, error) {
+		issue, isWisp, rerr := workapi.GetIssueOrWisp(ctx, workapi.NewUOWDetailSource(uw), issueID)
+		if errors.Is(rerr, storage.ErrNotFound) {
+			return setStateResult{}, "", fmt.Errorf("issue %s not found", issueID)
+		}
+		if rerr != nil {
+			return setStateResult{}, "", fmt.Errorf("resolving %s: %w", issueID, rerr)
+		}
+		fullID := issue.ID
+
+		var labels []string
+		var lerr error
+		if isWisp {
+			labels, lerr = uw.LabelUseCase().GetWispLabels(ctx, fullID)
+		} else {
+			labels, lerr = uw.LabelUseCase().GetLabels(ctx, fullID)
+		}
+		if lerr != nil {
+			return setStateResult{}, "", lerr
+		}
+
+		prefix := dimension + ":"
+		var oldLabel, oldValue string
+		for _, label := range labels {
+			if strings.HasPrefix(label, prefix) {
+				oldLabel = label
+				oldValue = strings.TrimPrefix(label, prefix)
+				break
+			}
+		}
+
+		if oldLabel == newLabel {
+			return setStateResult{fullID: fullID, oldValue: oldValue, changed: false}, "", nil
+		}
+
+		eventDesc := fmt.Sprintf("Set %s to %s", dimension, newValue)
+		if oldValue != "" {
+			eventDesc = fmt.Sprintf("Changed %s from %s to %s", dimension, oldValue, newValue)
+		}
+		if reason != "" {
+			eventDesc += "\n\nReason: " + reason
+		}
+
+		event := &types.Issue{
+			Title:       fmt.Sprintf("State change: %s → %s", dimension, newValue),
+			Description: eventDesc,
+			Status:      types.StatusClosed,
+			Priority:    4,
+			IssueType:   types.TypeEvent,
+			CreatedBy:   getActorWithGit(),
+		}
+		params := domain.CreateIssueParams{Issue: event, ParentID: fullID}
+
+		var eventID string
+		if isWisp {
+			cr, cerr := uw.IssueUseCase().CreateWisp(ctx, params, actor)
+			if cerr != nil {
+				return setStateResult{}, "", fmt.Errorf("creating event: %w", cerr)
+			}
+			eventID = cr.Issue.ID
+		} else {
+			cr, cerr := uw.IssueUseCase().CreateIssue(ctx, params, actor)
+			if cerr != nil {
+				return setStateResult{}, "", fmt.Errorf("creating event: %w", cerr)
+			}
+			eventID = cr.Issue.ID
+		}
+
+		var removeWarn string
+		if oldLabel != "" {
+			var rerr error
+			if isWisp {
+				rerr = uw.LabelUseCase().RemoveWispLabel(ctx, fullID, oldLabel, actor)
+			} else {
+				rerr = uw.LabelUseCase().RemoveLabel(ctx, fullID, oldLabel, actor)
+			}
+			if rerr != nil {
+				removeWarn = fmt.Sprintf("failed to remove old label %s: %v", oldLabel, rerr)
+			}
+		}
+		if isWisp {
+			if aerr := uw.LabelUseCase().AddWispLabel(ctx, fullID, newLabel, actor); aerr != nil {
+				return setStateResult{}, "", fmt.Errorf("adding label: %w", aerr)
+			}
+		} else {
+			if aerr := uw.LabelUseCase().AddLabel(ctx, fullID, newLabel, actor); aerr != nil {
+				return setStateResult{}, "", fmt.Errorf("adding label: %w", aerr)
+			}
+		}
+
+		return setStateResult{fullID: fullID, oldValue: oldValue, eventID: eventID, changed: true, removeWarn: removeWarn}, "bd: set-state " + fullID, nil
+	})
+	if err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
+
+	if res.removeWarn != "" {
+		WarnError("%s", res.removeWarn)
+	}
+
+	if !res.changed {
+		if jsonOutput {
+			return outputJSON(map[string]interface{}{
+				"issue_id":  res.fullID,
+				"dimension": dimension,
+				"value":     newValue,
+				"changed":   false,
+			})
+		}
+		fmt.Printf("(no change: %s already set to %s)\n", dimension, newValue)
+		return nil
+	}
+
+	commandDidWrite.Store(true)
+
+	if jsonOutput {
+		result := map[string]interface{}{
+			"issue_id":  res.fullID,
+			"dimension": dimension,
+			"old_value": res.oldValue,
+			"new_value": newValue,
+			"event_id":  res.eventID,
+			"changed":   true,
+		}
+		if res.oldValue == "" {
+			result["old_value"] = nil
+		}
+		return outputJSON(result)
+	}
+
+	fmt.Printf("%s Set %s = %s on %s\n", ui.RenderPass("✓"), dimension, newValue, res.fullID)
+	if res.oldValue != "" {
+		fmt.Printf("  Previous: %s\n", res.oldValue)
+	}
+	fmt.Printf("  Event: %s\n", res.eventID)
 	return nil
 }
 

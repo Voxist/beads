@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -26,10 +27,8 @@ var (
 	dbProxyChildExternalHost        string
 	dbProxyChildExternalPort        int
 	dbProxyChildExternalSocketPath  string
-	dbProxyChildExternalTLS         bool
-	dbProxyChildExternalTLSCertPath string
-	dbProxyChildExternalTLSKeyPath  string
 	dbProxyChildExternalKeepAlive   time.Duration
+	dbProxyChildStopEpoch           string
 	dbProxyChildPoolSize            int
 	dbProxyChildBackendUser         string
 	dbProxyChildPoolConnMaxLifetime time.Duration
@@ -57,9 +56,6 @@ not intended to be invoked directly by users.`,
 			Host:            dbProxyChildExternalHost,
 			Port:            dbProxyChildExternalPort,
 			Socket:          dbProxyChildExternalSocketPath,
-			TLSRequired:     dbProxyChildExternalTLS,
-			TLSCert:         dbProxyChildExternalTLSCertPath,
-			TLSKey:          dbProxyChildExternalTLSKeyPath,
 			KeepAlivePeriod: dbProxyChildExternalKeepAlive,
 		}
 
@@ -67,6 +63,7 @@ not intended to be invoked directly by users.`,
 		if err != nil {
 			return err
 		}
+		defer func() { _ = srv.Stop(context.Background()) }()
 
 		// Backend credentials for pooled connections. The user arrives via
 		// flag (default root); the password is read from the environment so it
@@ -83,6 +80,7 @@ not intended to be invoked directly by users.`,
 			Port:                dbProxyChildPort,
 			IdleTimeout:         dbProxyChildIdleTimeout,
 			Server:              srv,
+			StopEpoch:           dbProxyChildStopEpoch,
 			PoolSize:            dbProxyChildPoolSize,
 			BackendUser:         dbProxyChildBackendUser,
 			BackendPassword:     backendPassword,
@@ -124,14 +122,12 @@ func init() {
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildExternalHost, "external-host", "", "external backend: hostname or IP of the dolt sql-server")
 	dbProxyChildCmd.Flags().IntVar(&dbProxyChildExternalPort, "external-port", 0, "external backend: TCP port of the dolt sql-server")
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildExternalSocketPath, "external-socket-path", "", "external backend: absolute path to a unix domain socket (overrides host/port)")
-	dbProxyChildCmd.Flags().BoolVar(&dbProxyChildExternalTLS, "external-tls", false, "external backend: require TLS in the MySQL handshake")
-	dbProxyChildCmd.Flags().StringVar(&dbProxyChildExternalTLSCertPath, "external-tls-cert-path", "", "external backend: absolute path to client TLS certificate (mTLS)")
-	dbProxyChildCmd.Flags().StringVar(&dbProxyChildExternalTLSKeyPath, "external-tls-key-path", "", "external backend: absolute path to client TLS private key (mTLS)")
 	dbProxyChildCmd.Flags().DurationVar(&dbProxyChildExternalKeepAlive, "external-keep-alive", 0, "external backend: TCP keepalive period (default 30s)")
 	dbProxyChildCmd.Flags().IntVar(&dbProxyChildPoolSize, "pool-size", 0, "if >0, pool up to N warm authenticated backend connections instead of dialing one per client")
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildBackendUser, "backend-user", "root", "user the proxy authenticates pooled backend connections as")
 	dbProxyChildCmd.Flags().DurationVar(&dbProxyChildPoolConnMaxLifetime, "pool-conn-max-lifetime", 0, "if >0, retire pooled backend connections after this duration (0 keeps them indefinitely)")
 	dbProxyChildCmd.Flags().BoolVar(&dbProxyChildDebug, "debug", false, "enable per-connection trace logging")
+	dbProxyChildCmd.Flags().StringVar(&dbProxyChildStopEpoch, "stop-epoch", "", "stop epoch the parent observed at spawn; the proxy aborts before publishing if it advances")
 	_ = dbProxyChildCmd.MarkFlagRequired("root")
 	_ = dbProxyChildCmd.MarkFlagRequired("port")
 	_ = dbProxyChildCmd.MarkFlagRequired("backend")

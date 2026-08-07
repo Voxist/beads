@@ -14,9 +14,56 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/issueops"
 )
+
+// addDependencyEdgesDirect asserts edges through the DependencyEditor role on
+// st — the store that owns the source issue.
+//
+// It is addDependencyEdgesProxied's twin, and reaches the role the same way:
+// through the ACCESSOR, never a constructor, because the accessor is where each
+// storage decorator adds its layer. Built per write site rather than once per
+// command, for the reason writeOps gives — a routed source hands back an editor
+// carrying its own stack.
+//
+// skipPerEdgeCycleCheck is a separate argument from the --no-cycle-check flag
+// for the reason the proxied twin states: only the bulk path trades the
+// per-edge probe away.
+func addDependencyEdgesDirect(ctx context.Context, st storage.DoltStorage, edges []issueops.DependencyEdge, skipPerEdgeCycleCheck bool) error {
+	editor, err := st.DependencyEditor()
+	if err != nil {
+		return err
+	}
+	_, err = editor.AddDependencies(ctx, issueops.AddDependenciesRequest{
+		Actor:                 actor,
+		Edges:                 edges,
+		SkipPerEdgeCycleCheck: skipPerEdgeCycleCheck,
+	})
+	return err
+}
+
+// exactDependencyTarget returns the depends_on_id of a raw dependency edge on
+// issueID that equals rawTarget exactly. Used by `bd dep remove` so a bare
+// slug that was stored verbatim (pre-GH#5005 create --deps bug) is removed
+// instead of being resolved to a different, fully-qualified good edge.
+func exactDependencyTarget(ctx context.Context, st storage.DependencyQueryStore, issueID, rawTarget string) (string, bool) {
+	if st == nil || rawTarget == "" {
+		return "", false
+	}
+	records, err := st.GetDependencyRecords(ctx, issueID)
+	if err != nil {
+		return "", false
+	}
+	for _, r := range records {
+		if r != nil && r.DependsOnID == rawTarget {
+			return rawTarget, true
+		}
+	}
+	return "", false
+}
 
 // resolveIDWithRouting resolves a partial issue ID using prefix-based routing.
 // It returns the resolved full ID and the store that contains the issue.
@@ -64,18 +111,36 @@ func resolveIDForMutation(ctx context.Context, localStore storage.DoltStorage, i
 // isChildOf returns true if childID is a hierarchical child of parentID.
 // For example, "bd-abc.1" is a child of "bd-abc", and "bd-abc.1.2" is a child of "bd-abc.1".
 func isChildOf(childID, parentID string) bool {
+	_, isAncestor := hierarchicalParentRelation(childID, parentID)
+	return isAncestor
+}
+
+func hierarchicalParentRelation(childID, targetID string) (immediateParent string, isAncestor bool) {
 	// A child ID has the format "parentID.N" or "parentID.N.M" etc.
 	// Use ParseHierarchicalID to get the actual parent
 	_, actualParentID, depth := types.ParseHierarchicalID(childID)
 	if depth == 0 {
-		return false // Not a hierarchical ID
+		return "", false // Not a hierarchical ID
 	}
 	// Check if the immediate parent matches
-	if actualParentID == parentID {
-		return true
+	if actualParentID == targetID {
+		return actualParentID, true
 	}
-	// Also check if parentID is an ancestor (e.g., "bd-abc" is parent of "bd-abc.1.2")
-	return strings.HasPrefix(childID, parentID+".")
+	// Also check if targetID is an ancestor (e.g., "bd-abc" is an ancestor of "bd-abc.1.2")
+	return actualParentID, strings.HasPrefix(childID, targetID+".")
+}
+
+// isDisallowedHierarchicalDependency reports whether an explicit dependency
+// conflicts with hierarchy encoded in a dotted issue ID. The one allowed match
+// is a parent-child edge to the immediate dotted-ID parent; blocking and other
+// edge types to any parent/ancestor, plus parent-child edges to higher ancestors,
+// remain rejected.
+func isDisallowedHierarchicalDependency(fromID, toID string, depType types.DependencyType) bool {
+	immediateParent, isAncestor := hierarchicalParentRelation(fromID, toID)
+	if !isAncestor {
+		return false
+	}
+	return depType != types.DepParentChild || toID != immediateParent
 }
 
 // warnIfCyclesExist checks for dependency cycles and prints a warning if found.
@@ -174,17 +239,16 @@ Examples:
 			}
 			defer toCleanup()
 
-			if isChildOf(fromID, toID) {
+			if isDisallowedHierarchicalDependency(fromID, toID, types.DepBlocks) {
 				return HandleErrorRespectJSON("cannot add dependency: %s is already a child of %s. Children inherit dependency on parent completion via hierarchy. Adding an explicit dependency would create a deadlock", fromID, toID)
 			}
 
-			dep := &types.Dependency{
-				IssueID:     fromID,
-				DependsOnID: toID,
-				Type:        types.DependencyType(depType),
+			opsCtx, err := issueOpsContext(ctx)
+			if err != nil {
+				return HandleErrorRespectJSON("%v", err)
 			}
-
-			if err := fromStore.AddDependency(ctx, dep, actor); err != nil {
+			edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: types.DependencyType(depType)}
+			if err := addDependencyEdgesDirect(opsCtx, fromStore, []issueops.DependencyEdge{edge}, false); err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
 
@@ -358,22 +422,21 @@ Examples:
 			}
 		}
 
-		if isChildOf(fromID, toID) {
+		dt := canonicalDependencyType(types.DependencyType(depType))
+		if isDisallowedHierarchicalDependency(fromID, toID, dt) {
 			return HandleErrorRespectJSON("cannot add dependency: %s is already a child of %s. Children inherit dependency on parent completion via hierarchy. Adding an explicit dependency would create a deadlock", fromID, toID)
 		}
 
-		dt := types.DependencyType(depType)
-		if !dt.IsValid() {
-			return HandleErrorRespectJSON("invalid dependency type %q: must be non-empty and at most 50 characters", depType)
+		if err := validateDependencyType(dt); err != nil {
+			return HandleErrorRespectJSON("%v", err)
 		}
 
-		dep := &types.Dependency{
-			IssueID:     fromID,
-			DependsOnID: toID,
-			Type:        dt,
+		opsCtx, err := issueOpsContext(ctx)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
 		}
-
-		if err := fromStore.AddDependency(ctx, dep, actor); err != nil {
+		edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
+		if err := addDependencyEdgesDirect(opsCtx, fromStore, []issueops.DependencyEdge{edge}, false); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 
@@ -394,12 +457,12 @@ Examples:
 				"status":        "added",
 				"issue_id":      fromID,
 				"depends_on_id": toID,
-				"type":          depType,
+				"type":          string(dt),
 			})
 		}
 
 		fmt.Printf("%s Added dependency: %s depends on %s (%s)\n",
-			ui.RenderPass("✓"), formatFeedbackIDParen(fromID, lookupTitle(fromID)), formatFeedbackIDParen(toID, lookupTitle(toID)), depType)
+			ui.RenderPass("✓"), formatFeedbackIDParen(fromID, lookupTitle(fromID)), formatFeedbackIDParen(toID, lookupTitle(toID)), dt)
 		return nil
 	},
 }
@@ -410,28 +473,6 @@ type bulkDepInput struct {
 	Type        string `json:"type"`
 	IssueID     string `json:"issue_id"`
 	DependsOnID string `json:"depends_on_id"`
-}
-
-// newCycleThroughEdges runs a whole-graph cycle check inside the bulk-add
-// transaction and returns a rendered scheduling-cycle path when a cycle actually
-// traverses one of the edges being added, or "" when none does. Endpoint
-// membership is not enough: an issue sitting in a pre-existing committed
-// cycle must not block unrelated bulk wiring that merely touches it
-// (bd-578h9.9). Only blocks, conditional-blocks, and parent-child edges
-// participate. A failed check returns an error — the bulk add must roll back
-// rather than commit unverified edges (bd-6dnrw.8).
-func newCycleThroughEdges(ctx context.Context, tx storage.Transaction, edges []bulkDepEdge) (string, error) {
-	pairs := make([][2]string, 0, len(edges))
-	for _, edge := range edges {
-		if edge.Type != types.DepBlocks && edge.Type != types.DepConditionalBlocks && edge.Type != types.DepParentChild {
-			continue
-		}
-		pairs = append(pairs, [2]string{edge.IssueID, edge.DependsOnID})
-	}
-	if len(pairs) == 0 {
-		return "", nil
-	}
-	return tx.CycleThroughEdges(ctx, pairs)
 }
 
 type bulkDepEdge struct {
@@ -474,10 +515,27 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 	}
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
-	commitMsg := fmt.Sprintf("dependency: add %d edges", len(resolved))
-	if err := transact(rootCtx, targetStore, commitMsg, func(tx storage.Transaction) error {
-		return addBulkDependenciesInTx(rootCtx, tx, resolved, noCycleCheck, actor)
-	}); err != nil {
+	depEdges := make([]issueops.DependencyEdge, 0, len(resolved))
+	for _, edge := range resolved {
+		depEdges = append(depEdges, issueops.DependencyEdge{
+			IssueID:     edge.IssueID,
+			DependsOnID: edge.DependsOnID,
+			Type:        edge.Type,
+		})
+	}
+
+	// One request, one transaction, one history entry. The role's
+	// all-or-nothing contract is what the hand-rolled bulk transaction used to
+	// spell out here, down to the parent-child-first ordering and the
+	// whole-graph gate that runs even when the per-edge probe is off — so the
+	// request replaces it rather than wrapping it. The version commit comes
+	// with the role, which is why there is no transact() and no
+	// commitPendingIfEmbedded around this call.
+	opsCtx, err := issueOpsContext(rootCtx)
+	if err != nil {
+		return err
+	}
+	if err := addDependencyEdgesDirect(opsCtx, targetStore, depEdges, noCycleCheck); err != nil {
 		return err
 	}
 
@@ -502,33 +560,6 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 	}
 
 	fmt.Printf("%s Added %d dependencies\n", ui.RenderPass("✓"), len(resolved))
-	return nil
-}
-
-func addBulkDependenciesInTx(ctx context.Context, tx storage.Transaction, edges []bulkDepEdge, noCycleCheck bool, actor string) error {
-	// Make the complete planned hierarchy visible before validating any
-	// blocking edge, independent of input-file order.
-	for phase := 0; phase < 2; phase++ {
-		parentPhase := phase == 0
-		for _, edge := range edges {
-			if (edge.Type == types.DepParentChild) != parentPhase {
-				continue
-			}
-			dep := &types.Dependency{IssueID: edge.IssueID, DependsOnID: edge.DependsOnID, Type: edge.Type}
-			if err := tx.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{SkipCycleCheck: noCycleCheck}); err != nil {
-				return fmt.Errorf("line %d: %w", edge.Line, err)
-			}
-		}
-	}
-	// Always merge both transaction snapshots before commit. Per-edge checks
-	// cannot see uncommitted paths split across regular and wisp storage.
-	cyclePath, cycleErr := newCycleThroughEdges(ctx, tx, edges)
-	if cycleErr != nil {
-		return fmt.Errorf("final cycle check failed (no edges added): %w", cycleErr)
-	}
-	if cyclePath != "" {
-		return fmt.Errorf("dependency cycle would be created: %s (no edges added; run 'bd dep cycles' for analysis)", cyclePath)
-	}
 	return nil
 }
 
@@ -584,11 +615,12 @@ func readBulkDepEdges(file string, defaultType string) ([]bulkDepEdge, error) {
 		if to == "" {
 			errs = append(errs, fmt.Sprintf("line %d: missing to", lineNo))
 		}
-		dt := types.DependencyType(depType)
-		if !dt.IsValid() {
-			errs = append(errs, fmt.Sprintf("line %d: invalid dependency type %q: must be non-empty and at most 50 characters", lineNo, depType))
+		dt := canonicalDependencyType(types.DependencyType(depType))
+		typeErr := validateDependencyType(dt)
+		if typeErr != nil {
+			errs = append(errs, fmt.Sprintf("line %d: %v", lineNo, typeErr))
 		}
-		if from == "" || to == "" || !dt.IsValid() {
+		if from == "" || to == "" || typeErr != nil {
 			continue
 		}
 
@@ -652,7 +684,7 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 			current.DependsOnID = toID
 		}
 
-		if isChildOf(current.IssueID, current.DependsOnID) {
+		if isDisallowedHierarchicalDependency(current.IssueID, current.DependsOnID, current.Type) {
 			errs = append(errs, fmt.Sprintf("line %d: cannot add dependency: %s is already a child of %s", edge.Line, current.IssueID, current.DependsOnID))
 			resolved = append(resolved, current)
 			continue
@@ -777,6 +809,12 @@ Examples:
 			}
 		}()
 
+		// The multi-id edge listing is a different question with a different
+		// answer shape — raw edge records keyed by source, printed per source —
+		// and no role describes it: Relations is anchored on ONE issue and
+		// answers with the issues on the far end of its edges, not with the
+		// edges themselves. It keeps the batched records read, exactly as the
+		// proxied route keeps its own unit of work for the same question.
 		if len(resolved) > 1 && direction == "down" {
 			allSameStore := true
 			firstStore := resolved[0].store
@@ -827,33 +865,36 @@ Examples:
 			}
 		}
 
-		var allIssues []*types.IssueWithDependencyMetadata
+		// The neighbor query is on the Relations role: one call per anchor, each
+		// with an explicit direction, because the role refuses to guess one. The
+		// accessor is taken per resolved anchor rather than once for the command
+		// — a routed anchor answers from its own store, carrying its own
+		// decorator stack.
+		request := issueops.RelatedRequest{Direction: issueops.RelationOut}
+		if direction == "up" {
+			request.Direction = issueops.RelationIn
+		}
+		if typeFilter != "" {
+			request.Types = []types.DependencyType{types.DependencyType(typeFilter)}
+		}
+
+		var allIssues []*issueops.RelatedIssue
 		for _, r := range resolved {
-			var issues []*types.IssueWithDependencyMetadata
-			var err error
-			if direction == "up" {
-				issues, err = r.store.GetDependentsWithMetadata(ctx, r.fullID)
-			} else {
-				issues, err = r.store.GetDependenciesWithMetadata(ctx, r.fullID)
-			}
+			rel, err := r.store.IssueRelations()
 			if err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
-			if typeFilter != "" {
-				var filtered []*types.IssueWithDependencyMetadata
-				for _, iss := range issues {
-					if string(iss.DependencyType) == typeFilter {
-						filtered = append(filtered, iss)
-					}
-				}
-				issues = filtered
+			request.ID = r.fullID
+			issues, err := rel.Related(ctx, request)
+			if err != nil {
+				return HandleErrorRespectJSON("%v", err)
 			}
 			allIssues = append(allIssues, issues...)
 		}
 
 		if jsonOutput {
 			if allIssues == nil {
-				allIssues = []*types.IssueWithDependencyMetadata{}
+				allIssues = []*issueops.RelatedIssue{}
 			}
 			return outputJSON(allIssues)
 		}
@@ -934,6 +975,12 @@ var depRemoveCmd = &cobra.Command{
 			if err := validateExternalRef(toID); err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
+		} else if exact, ok := exactDependencyTarget(ctx, fromStore, fromID, args[1]); ok {
+			// Prefer an exact depends_on_id match against raw edge records
+			// before partial-ID resolution (GH#5005). Otherwise
+			// `bd dep remove X 8vezf` resolves to the qualified good edge and
+			// deletes it while leaving a dangling bare-id row behind.
+			toID = exact
 		} else {
 			var toCleanup func()
 			toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, args[1])
@@ -953,7 +1000,27 @@ var depRemoveCmd = &cobra.Command{
 		fullFromID := fromID
 		fullToID := toID
 
-		if err := fromStore.RemoveDependency(ctx, fullFromID, fullToID, actor); err != nil {
+		// Explicit dep verb: the role records a dependency_removed history entry
+		// for a genuine removal, matching bd dep add's edge event and the
+		// proxied bd dep remove path.
+		//
+		// The role's Removed verdict is not printed, for the reason the proxied
+		// route gives: `bd dep remove` has always confirmed the same way whether
+		// or not an edge was there, and reporting the difference now would
+		// change what every existing script reads.
+		editor, err := fromStore.DependencyEditor()
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		opsCtx, err := issueOpsContext(ctx)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		if _, err := editor.RemoveDependency(opsCtx, issueops.RemoveDependencyRequest{
+			Actor:       actor,
+			IssueID:     fullFromID,
+			DependsOnID: fullToID,
+		}); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 
@@ -992,7 +1059,11 @@ Examples:
   bd dep tree gt-0iqq                    # Show what blocks gt-0iqq
   bd dep tree gt-0iqq --direction=up     # Show what gt-0iqq blocks
   bd dep tree gt-0iqq --status=open      # Only show open issues
-  bd dep tree gt-0iqq --depth=3          # Limit to 3 levels deep`,
+  bd dep tree gt-0iqq --depth=3          # Limit to 3 levels deep
+
+--max-rows / BEADS_MAX_ROWS caveat: the tree walk has no query filter to
+thread the cap through, so the full tree is always built first and the
+node count is checked afterward (post-hoc), not during the walk.`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -1005,6 +1076,9 @@ Examples:
 		}()
 
 		if usesProxiedServer() {
+			if err := rejectMaxRowsUnderProxiedServer(cmd); err != nil {
+				return err
+			}
 			return runDepTreeProxiedServer(cmd, rootCtx, args)
 		}
 
@@ -1066,6 +1140,24 @@ Examples:
 			tree = filterTreeByStatus(tree, types.Status(statusFilter))
 		}
 
+		// Apply defensive row cap (be-x42v) on the final tree-node count.
+		// Tree walks have no IssueFilter to thread through, so the cap is
+		// enforced at the CLI layer instead of in storage.
+		treeMaxRows, treeMaxRowsSource, err := resolveMaxRows(cmd)
+		if err != nil {
+			return err
+		}
+		if treeMaxRows > 0 && len(tree) > treeMaxRows {
+			if capErr := handleMaxRowsError(&storageissueops.ErrTooManyRows{
+				Found:  len(tree),
+				Cap:    treeMaxRows,
+				Source: treeMaxRowsSource,
+			}); capErr != nil {
+				return capErr
+			}
+		}
+
+		// Handle format presets (json handled earlier, near flag read)
 		if formatStr == "mermaid" {
 			outputMermaidTree(tree, args[0])
 			return nil
@@ -1522,7 +1614,7 @@ func init() {
 	depCmd.Flags().StringP("blocks", "b", "", "Issue ID that this issue blocks (shorthand for: bd dep add <blocked> <blocker>)")
 	depCmd.Flags().Bool("no-cycle-check", false, "Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit")
 
-	depAddCmd.Flags().StringP("type", "t", "blocks", "Dependency type (blocks|tracks|related|parent-child|discovered-from|until|caused-by|validates|relates-to|supersedes)")
+	depAddCmd.Flags().StringP("type", "t", "blocks", "Dependency type (blocks|tracks|related|parent-child|discovered-from|until|caused-by|validates|relates-to|supersedes); 'blocked-by' and 'depends-on' are accepted as aliases for 'blocks'")
 	depAddCmd.Flags().String("blocked-by", "", "Issue ID that blocks the first issue (alternative to positional arg)")
 	depAddCmd.Flags().String("depends-on", "", "Issue ID that the first issue depends on (alias for --blocked-by)")
 	depAddCmd.Flags().String("file", "", "Read dependency edges from JSONL file, or '-' for stdin")
@@ -1534,6 +1626,8 @@ func init() {
 	depTreeCmd.Flags().String("direction", "", "Tree direction: 'down' (dependencies), 'up' (dependents), or 'both'")
 	depTreeCmd.Flags().String("status", "", "Filter to only show issues with this status (open, in_progress, blocked, deferred, closed)")
 	depTreeCmd.Flags().String("format", "", "Output format: 'mermaid' for Mermaid.js flowchart")
+	// Defensive row cap (be-x42v): applied to TreeNode count after the tree is built.
+	addMaxRowsFlag(depTreeCmd)
 	// Note: --type flag intentionally omitted from depTreeCmd — TreeNode lacks
 	// dependency type info so filtering is not possible. Use 'bd dep list --type' instead.
 

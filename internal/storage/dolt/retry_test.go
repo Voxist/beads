@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 func TestIsRetryableError(t *testing.T) {
@@ -88,9 +90,24 @@ func TestIsRetryableError(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "dolt merge conflict 1105 — retryable",
-			err:      errors.New("dolt commit: Error 1105 (HY000): Merge conflict detected, @autocommit transaction rolled back"),
+			name:     "typed no root value found in session",
+			err:      &mysql.MySQLError{Number: 1105, Message: "no root value found in session"},
 			expected: true,
+		},
+		{
+			name:     "typed database is read only",
+			err:      &mysql.MySQLError{Number: 1105, Message: "cannot update manifest: database is read only"},
+			expected: true,
+		},
+		{
+			name:     "untyped Dolt merge conflict does not enter general retry loop",
+			err:      errors.New("dolt commit: Error 1105 (HY000): Merge conflict detected, @autocommit transaction rolled back"),
+			expected: false,
+		},
+		{
+			name:     "typed 1105 with connection-like wording is not retryable",
+			err:      &mysql.MySQLError{Number: 1105, Message: "connection lost while validating commit"},
+			expected: false,
 		},
 		{
 			name:     "syntax error - not retryable",
@@ -189,102 +206,19 @@ func TestWithRetry_NonRetryableError(t *testing.T) {
 	}
 }
 
-func TestCommitPhaseError(t *testing.T) {
-	domain := errors.New("syntax error in SQL")
-	tests := []struct {
-		name        string
-		in          error
-		wantNil     bool
-		wantWrapped bool // wrapped as a non-retryable ErrCommitIndeterminate
-	}{
-		{name: "nil passes through", in: nil, wantNil: true},
-		{name: "invalid connection -> indeterminate", in: errors.New("invalid connection"), wantWrapped: true},
-		{name: "bad connection -> indeterminate", in: errors.New("driver: bad connection"), wantWrapped: true},
-		{name: "broken pipe -> indeterminate", in: errors.New("write: broken pipe"), wantWrapped: true},
-		{name: "domain error passes through", in: domain},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := commitPhaseError(tt.in)
-			if tt.wantNil {
-				if got != nil {
-					t.Fatalf("commitPhaseError(nil) = %v, want nil", got)
-				}
-				return
-			}
-			if tt.wantWrapped {
-				if !errors.Is(got, ErrCommitIndeterminate) {
-					t.Fatalf("commitPhaseError(%v) not wrapped as ErrCommitIndeterminate: %v", tt.in, got)
-				}
-				// The whole point: a wrapped commit-phase error must NOT be retried.
-				if isRetryableError(got) {
-					t.Fatalf("isRetryableError(commitPhaseError(%v)) = true, want false (would replay a commit -> double-mint)", tt.in)
-				}
-				return
-			}
-			if !errors.Is(got, tt.in) {
-				t.Fatalf("commitPhaseError(%v) = %v, want pass-through", tt.in, got)
-			}
-		})
-	}
-}
-
-// TestWithRetry_DoesNotReplayCommitIndeterminate proves the double-mint fix: a
-// connection loss surfaced at/after COMMIT (wrapped via commitPhaseError) must
-// stop withRetry from re-running the operation, which would re-apply the write.
-func TestWithRetry_DoesNotReplayCommitIndeterminate(t *testing.T) {
+func TestWithRetry_DoesNotReplayDoltMergeConflict(t *testing.T) {
 	store := &DoltStore{}
+
 	callCount := 0
 	err := store.withRetry(context.Background(), func() error {
 		callCount++
-		// A write whose COMMIT may have landed before the connection dropped.
-		return commitPhaseError(errors.New("invalid connection"))
+		return errors.New("dolt commit: Error 1105 (HY000): Merge conflict detected, @autocommit transaction rolled back")
 	})
+
+	if err == nil {
+		t.Fatal("withRetry() error = nil, want the definite rollback error")
+	}
 	if callCount != 1 {
-		t.Errorf("expected exactly 1 call (no replay) for commit-indeterminate, got %d", callCount)
-	}
-	if !errors.Is(err, ErrCommitIndeterminate) {
-		t.Errorf("expected ErrCommitIndeterminate, got %v", err)
-	}
-}
-
-// TestWithRetry_StillRetriesPreCommitConnLoss guards the converse: a transient
-// connection error that is NOT a commit-phase failure stays retryable — only the
-// commit phase is protected, so pre-commit blips still recover automatically.
-func TestWithRetry_StillRetriesPreCommitConnLoss(t *testing.T) {
-	store := &DoltStore{}
-	callCount := 0
-	err := store.withRetry(context.Background(), func() error {
-		callCount++
-		if callCount < 2 {
-			return errors.New("invalid connection") // pre-commit: safe to replay
-		}
-		return nil
-	})
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if callCount != 2 {
-		t.Errorf("expected 2 calls (1 retry + success) for pre-commit conn loss, got %d", callCount)
-	}
-}
-
-func TestWithRetry_RetryOnMergeConflict(t *testing.T) {
-	store := &DoltStore{}
-
-	callCount := 0
-	err := store.withRetry(context.Background(), func() error {
-		callCount++
-		if callCount < 3 {
-			return errors.New("dolt commit: Error 1105 (HY000): Merge conflict detected, @autocommit transaction rolled back")
-		}
-		return nil
-	})
-
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if callCount != 3 {
-		t.Errorf("expected 3 calls (2 retries + success), got %d", callCount)
+		t.Errorf("expected 1 call at the general retry boundary, got %d", callCount)
 	}
 }

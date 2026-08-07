@@ -8,11 +8,9 @@ import (
 
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/backends"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/util"
 	"github.com/steveyegge/beads/internal/storage/dolt"
-	beadsmysql "github.com/steveyegge/beads/internal/storage/mysql"
-	"github.com/steveyegge/beads/internal/storage/postgres"
-	beadssqlite "github.com/steveyegge/beads/internal/storage/sqlite"
 )
 
 func usesSQLServer() bool {
@@ -57,17 +55,12 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltS
 		// message below.
 		return nil, fmt.Errorf("load %s: %w", configfile.ConfigPath(beadsDir), err)
 	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendPostgres {
-		// Postgres needs no CGO (pure-Go pgx), so it works in the nocgo build too.
-		return postgres.NewFromConfig(ctx, beadsDir)
+	if err := validateConfiguredBackend(cfg); err != nil {
+		return nil, err
 	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendMySQL {
-		// MySQL (go-sql-driver) needs no CGO either.
-		return beadsmysql.NewFromConfig(ctx, beadsDir)
-	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendSQLite {
-		// SQLite (modernc.org/sqlite) is pure-Go; no CGO.
-		return beadssqlite.NewFromConfig(ctx, beadsDir)
+	cfg = normalizeLoadedConfig(cfg)
+	if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
+		return backend.Open(ctx, beadsDir)
 	}
 	if cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider
@@ -90,14 +83,12 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 	if err != nil {
 		return nil, fmt.Errorf("load %s: %w", configfile.ConfigPath(beadsDir), err)
 	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendPostgres {
-		return postgres.NewFromConfig(ctx, beadsDir)
+	if err := validateConfiguredBackend(cfg); err != nil {
+		return nil, err
 	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendMySQL {
-		return beadsmysql.NewFromConfig(ctx, beadsDir)
-	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendSQLite {
-		return beadssqlite.NewFromConfig(ctx, beadsDir)
+	cfg = normalizeLoadedConfig(cfg)
+	if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
+		return backend.OpenReadOnly(ctx, beadsDir)
 	}
 	if cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider
@@ -113,6 +104,13 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 		return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
 	}
 	return nil, fmt.Errorf("%s", nocgoEmbeddedErrMsg)
+}
+
+// newPreviewStoreFromConfig is the non-CGO twin of the CGO build's preview
+// factory. The two differ only in how they open the EMBEDDED store, and this
+// build has no embedded store at all, so preview and read-only coincide here.
+func newPreviewStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
+	return newReadOnlyStoreFromConfig(ctx, beadsDir)
 }
 
 const nocgoEmbeddedErrMsg = `embedded Dolt requires a CGO build, but this bd binary was built with CGO_ENABLED=0.

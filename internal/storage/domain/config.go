@@ -43,6 +43,7 @@ type ConfigUseCase interface {
 	DeleteConfig(ctx context.Context, key string) error
 	GetAllConfig(ctx context.Context) (map[string]string, error)
 	GetMetadata(ctx context.Context, key string) (string, error)
+	GetLocalMetadata(ctx context.Context, key string) (string, error)
 
 	ReconcileVersion(ctx context.Context, cliVersion string) (VersionReconcileResult, error)
 }
@@ -61,6 +62,11 @@ type CreateContext struct {
 	IssuePrefix     string
 	AllowedPrefixes string
 	CustomTypes     []string
+	CustomStatuses  []types.CustomStatus
+	// InfraTypes is the resolved infrastructure-type set. A create whose type
+	// is in this set is routed to the wisp tables, the same routing the
+	// embedded and direct stores apply from IsInfraTypeCtx.
+	InfraTypes map[string]bool
 }
 
 type Issue struct{}
@@ -184,6 +190,14 @@ func (u *configUseCaseImpl) GetMetadata(ctx context.Context, key string) (string
 	return out, nil
 }
 
+func (u *configUseCaseImpl) GetLocalMetadata(ctx context.Context, key string) (string, error) {
+	out, err := u.cfgRepo.GetLocalMetadata(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("GetLocalMetadata: %w", err)
+	}
+	return out, nil
+}
+
 func (u *configUseCaseImpl) SetConfig(ctx context.Context, key, value string) error {
 	if err := u.cfgRepo.SetConfig(ctx, key, value); err != nil {
 		return fmt.Errorf("SetConfig: %w", err)
@@ -283,9 +297,19 @@ func (u *configUseCaseImpl) LoadCreateContext(ctx context.Context) (CreateContex
 	if err != nil {
 		return CreateContext{}, fmt.Errorf("LoadCreateContext: read custom types: %w", err)
 	}
+	customStatuses, err := u.cfgRepo.GetCustomStatuses(ctx)
+	if err != nil {
+		return CreateContext{}, fmt.Errorf("LoadCreateContext: read custom statuses: %w", err)
+	}
+	infraTypes, err := u.GetInfraTypes(ctx)
+	if err != nil {
+		return CreateContext{}, fmt.Errorf("LoadCreateContext: read infra types: %w", err)
+	}
 	return CreateContext{
 		IssuePrefix:     prefix,
 		AllowedPrefixes: allowed,
 		CustomTypes:     customTypes,
+		CustomStatuses:  customStatuses,
+		InfraTypes:      infraTypes,
 	}, nil
 }
