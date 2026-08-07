@@ -373,8 +373,33 @@ else
   # Only *.up.sql is embedded into the CLI fresh bundle (`//go:embed
   # migrations/*.up.sql`, schema.go:218), so a .down.sql can never meet the bug
   # this check is about. Scanning it would reject valid work for no reason.
+  #
+  # Upstream-shipped migrations that predate rule E are grandfathered: on a
+  # fork resync everything since the fork base is "added", including history
+  # inherited verbatim from upstream. Entries live in
+  # migrations/prepared-dml-grandfather.txt with per-line justifications and
+  # the same staleness rules as the check-B allowlist.
+  GRANDFATHER="$MIG_DIR/prepared-dml-grandfather.txt"
+  if [ -f "$GRANDFATHER" ]; then
+    while IFS= read -r gline; do
+      case "$gline" in ''|'#'*) continue ;; esac
+      gentry="${gline%%[[:space:]]*}"
+      gjust="${gline#"$gentry"}"
+      if [ ! -f "$MIG_DIR/$gentry" ]; then
+        fail=1
+        echo "FAIL (prepared-DML grandfather) stale entry, file does not exist: $gentry"
+      fi
+      if [ -z "$(echo "$gjust" | tr -d '[:space:]')" ]; then
+        fail=1
+        echo "FAIL (prepared-DML grandfather) entry missing justification: $gentry"
+      fi
+    done < "$GRANDFATHER"
+  fi
   for f in $(grep '\.up\.sql$' <<<"$added_main" || true); do
     [ -f "$f" ] || continue
+    if [ -f "$GRANDFATHER" ] && grep -q "^$(basename "$f")[[:space:]]" "$GRANDFATHER"; then
+      continue
+    fi
     stripped=$(sed 's/--.*$//' "$f" | tr '[:upper:]' '[:lower:]')
     declare -A dml_flagged=()
     dml_var=""
