@@ -393,11 +393,12 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 	// routine listings durable-tier-only. Any explicit type filter opts back
 	// in unconditionally: a type that can only match wisps-table rows
 	// (molecules, or any other type parked there) must not be silently
-	// incomplete (va-k0e). AllFlag opts in too — SkipWisps is exactly the
-	// kind of default status filter --all is documented to override
-	// (vg-3kn). IncludeInfra and IncludeEphemeral remain explicit escape
-	// hatches for the unfiltered case.
-	if !in.IncludeInfra && !in.IncludeEphemeral && !in.AllFlag && in.IssueType == "" {
+	// incomplete (va-k0e). IncludeInfra and IncludeEphemeral are the
+	// explicit escape hatches for the unfiltered case. AllFlag deliberately
+	// does NOT opt in: the reader contract pins AllFlag as replacing the
+	// default status exclusions only (ListDefaultExclusionsAndTheirOverrides),
+	// and the wisp plane keeps its own dedicated opt-in.
+	if !in.IncludeInfra && !in.IncludeEphemeral && in.IssueType == "" {
 		filter.SkipWisps = true
 	}
 

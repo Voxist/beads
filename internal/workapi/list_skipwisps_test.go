@@ -56,9 +56,9 @@ func TestBuildListFilter_SkipWisps(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "--all must not skip wisps (--all is documented as overriding default filters)",
+			name: "--all keeps skipping wisps (the reader contract pins AllFlag to status exclusions only; wisps have their own opt-in)",
 			in:   issueops.ListRequest{AllFlag: true},
-			want: false,
+			want: true,
 		},
 	}
 

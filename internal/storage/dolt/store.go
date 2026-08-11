@@ -2072,15 +2072,18 @@ func (s *DoltStore) verifyProjectIdentity(ctx context.Context, beadsDir string) 
 // (or freshly created, empty) database. The global flag selects the
 // global-database variant of the diagnostic text.
 func newProjectIdentityMismatchError(localID, dbID string, global bool) error {
+	// The PROJECT IDENTITY MISMATCH header is upstream's operator-facing
+	// wording and is grepped by its tests; the wrapped sentinel is this
+	// fork's machine-facing contract. Keep both.
 	if global {
 		return fmt.Errorf(
-			"%w (global) — refusing to connect\n\n"+
+			"PROJECT IDENTITY MISMATCH (global): %w — refusing to connect\n\n"+
 				"  Expected global project ID (metadata.json): %s\n"+
 				"  Database project ID:                        %s\n\n",
 			storage.ErrStoreIdentityMismatch, localID, dbID)
 	}
 	return fmt.Errorf(
-		"%w — refusing to connect\n\n"+
+		"PROJECT IDENTITY MISMATCH: %w — refusing to connect\n\n"+
 			"  Local project ID (metadata.json):  %s\n"+
 			"  Database project ID:               %s\n\n"+
 			"This means the Dolt server is serving a DIFFERENT project's database.\n"+

@@ -292,14 +292,20 @@ func openDB(ctx context.Context, dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("uow: open db: %w", err)
 	}
-	// S3e (v2): bound the client-side *sql.DB pool. A bd invocation is a
-	// short-lived single-threaded process; without these caps the driver
-	// opens an unbounded set of backend connections to the db-proxy, which
-	// (combined with the routed-store leak) exhausted the proxy's connection
-	// budget and wedged it. One live + one idle connection, recycled every
-	// 5 minutes, is sufficient for a single command's lifetime.
-	conn.SetMaxOpenConns(1)
-	conn.SetMaxIdleConns(1)
+	// S3e (v3): bound the client-side *sql.DB pool. A bd invocation is a
+	// short-lived process; without a cap the driver opens an unbounded set of
+	// backend connections to the db-proxy, which (combined with the
+	// routed-store leak, since fixed) exhausted the proxy's connection budget
+	// and wedged it. The cap must NOT be 1: command frontends hold a unit of
+	// work open across the command while the issueops reader role opens one
+	// more per call (e.g. show_proxied_server.go holds its UOW through
+	// terminal rendering while rd.Get pins a second connection), so a
+	// single-connection pool deadlocks every such command against itself —
+	// db.Conn blocks forever on the conn the same process still holds. Four
+	// tolerates that nesting with margin while still bounding the blowup the
+	// cap exists for.
+	conn.SetMaxOpenConns(4)
+	conn.SetMaxIdleConns(2)
 	conn.SetConnMaxLifetime(5 * time.Minute)
 	if err := conn.PingContext(ctx); err != nil {
 		return nil, errors.Join(fmt.Errorf("uow: ping db: %w", err), conn.Close())

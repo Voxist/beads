@@ -3,7 +3,7 @@ title: JSON Output Schema Contract
 description: The stable JSON output contract for bd --json commands, covering the schema_version envelope, per-command fields, and consumer guidelines.
 ---
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-08-07
 
 Freshness source: `cmd/bd/output.go`, `cmd/bd/errors.go`, and
 `cmd/bd/protocol/json_contract_test.go`.
@@ -92,6 +92,21 @@ Arrays are wrapped the same way:
   ]
 }
 ```
+
+When a paginated command's result set was capped by `--limit`, the envelope
+also carries a `pagination` key so consumers can detect truncation without
+parsing stderr:
+
+```json
+{
+  "schema_version": 1,
+  "data": [ ... ],
+  "pagination": {"returned": 50, "total": 120, "truncated": true}
+}
+```
+
+`total` is omitted when unknown. Legacy (non-envelope) mode has no pagination
+metadata; the truncation hint goes to stderr as text.
 
 ### Legacy mode (default, until v2.0)
 
