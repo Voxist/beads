@@ -1,6 +1,6 @@
 # OpenTelemetry Data Model
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-08-07
 
 Freshness source: `internal/telemetry/`, `internal/storage/dolt/store.go`,
 `internal/compact/haiku.go`, `cmd/bd/find_duplicates.go`, and hook execution
@@ -32,6 +32,13 @@ OTel SDK names use **dot notation** internally. Prometheus-compatible backends (
 | `bd.ai.input_tokens` | `bd_ai_input_tokens_total` |
 | `bd.ai.output_tokens` | `bd_ai_output_tokens_total` |
 | `bd.ai.request.duration` | `bd_ai_request_duration_ms` |
+| `bd.db.serialization_errors` | `bd_db_serialization_errors_total` |
+| `bd.write_retries_total` | `bd_write_retries_total` |
+| `bd.db.conn_acquire_ms` | `bd_db_conn_acquire_ms` |
+| `bd.db.pool_wait_count` | `bd_db_pool_wait_count_total` |
+| `bd.db.pool_wait_ms` | `bd_db_pool_wait_ms` |
+| `bd.db.pool_open` | `bd_db_pool_open` |
+| `bd.db.pool_in_use` | `bd_db_pool_in_use` |
 
 ---
 
@@ -282,7 +289,7 @@ Stdout/stderr are added as span **events** (not attributes):
 
 ## 7. AI Events
 
-Emitted by the compaction engine (`bd compact`) via `internal/compact/haiku.go`, and by duplicate detection (`bd find-duplicates --method ai`) via `cmd/bd/find_duplicates.go`. Both use the Anthropic SDK directly via `ANTHROPIC_API_KEY`.
+Emitted by the compaction engine (`bd compact`) via `internal/compact/haiku.go`, and by duplicate detection (`bd find-duplicates --method ai`) via `cmd/bd/find_duplicates.go`. Both use the Anthropic SDK with Anthropic-compatible credentials from `ANTHROPIC_API_KEY`, `MINIMAX_API_KEY`, or `ai.api_key`.
 
 > **Note**: Only `compact/haiku.go` records to the `bd.ai.*` OTel metric instruments. `find_duplicates.go` records token counts as span attributes only.
 

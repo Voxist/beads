@@ -1,0 +1,18 @@
+# Grandfather list for scripts/check-migration-hygiene.sh check E (prepared DML).
+#
+# Format: <path relative to migrations/> <whitespace> <justification>.
+# Every entry needs a justification on the same line; stale entries fail CI.
+#
+# Check E flags migrations added since the PR base, which on a fork resync
+# includes every migration inherited verbatim from upstream. Entries here are
+# upstream-SHIPPED migrations that predate upstream's own rule E (#5232) and
+# are grandfathered in upstream's CI purely by history. They must be inherited
+# byte-identical, never edited (check C enforces the freeze), and never
+# imitated: fork-authored migrations get no entries in this file.
+#
+# Operationally these migrations' prepared DML runs correctly ONLY on the
+# server path; the Dolt CLI fresh-bundle path silently no-ops it
+# (dolthub/dolt#11345). Any fleet migration crossing them must run against a
+# sql-server and verify the data moves landed.
+0055_move_leases_to_table.up.sql  upstream-shipped before rule E (#5232); inherited verbatim; server-path-only prepared lease-row moves
+0058_heal_wisp_dependencies_split_constraints.up.sql  upstream-shipped before rule E (#5232); inherited verbatim; server-path-only prepared dependency heals

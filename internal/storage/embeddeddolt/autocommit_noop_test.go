@@ -37,17 +37,36 @@ func TestWorkingSetIsOperationalNoOp(t *testing.T) {
 			t.Fatalf("Commit baseline: %v", err)
 		}
 
-		// A heartbeat mutates only updated_at/heartbeat_at/lease_expires_at/row_lock.
+		// Since migration 0055 (bd-lrgn1) a heartbeat writes only the
+		// dolt_ignored leases table, so it leaves NO pending working set at
+		// all — the schema-level resolution of the same incident this guard
+		// was built for, and a stronger property than the guard's skip.
 		if err := te.store.HeartbeatIssue(claimCtx, "noop-hb-1", "alice"); err != nil {
 			t.Fatalf("HeartbeatIssue: %v", err)
 		}
 
+		// The classifier reports false for a clean set by contract (nothing
+		// to skip); the load-bearing assertion is that no commit is minted.
 		noop, err := te.store.WorkingSetIsOperationalNoOp(ctx)
 		if err != nil {
 			t.Fatalf("WorkingSetIsOperationalNoOp: %v", err)
 		}
-		if !noop {
-			t.Fatal("heartbeat-only working set: got noop=false, want true")
+		if noop {
+			t.Fatal("heartbeat left an operational-only working set; leases have leaked back into a versioned table")
+		}
+		head, err := te.store.GetCurrentCommit(ctx)
+		if err != nil {
+			t.Fatalf("GetCurrentCommit: %v", err)
+		}
+		committed, err := te.store.CommitPending(ctx, "hb-check")
+		if err != nil {
+			t.Fatalf("CommitPending: %v", err)
+		}
+		if committed {
+			t.Fatal("heartbeat produced a pending working set; want none (heartbeats must mint no commits, bd-lrgn1/vp-on8s)")
+		}
+		if after, err := te.store.GetCurrentCommit(ctx); err != nil || after != head {
+			t.Fatalf("HEAD moved across a heartbeat: %s -> %s (err=%v)", head, after, err)
 		}
 	})
 

@@ -24,8 +24,10 @@ it up. Heartbeat pushes lease_expires_at forward and stamps heartbeat_at = now.
 Only the current owner may heartbeat. If the lease has already been reclaimed or
 the issue closed, heartbeat fails so the worker learns to stop.
 
-Heartbeat writes a Dolt commit, so heartbeat well below the TTL but not so fast
-it bloats history — cadence should be a small fraction of the TTL, not per-op.
+Leases live in an ephemeral, node-local table: heartbeats write no Dolt commit
+and no history, so any cadence comfortably below the TTL is fine. Leases are
+only enforceable on the node that granted them; cross-machine claim visibility
+rides the issue's status and assignee, which do commit.
 
 Examples:
   bd heartbeat bd-123
@@ -34,9 +36,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("heartbeat is not supported in proxied-server mode")
-		}
 		CheckReadonly("heartbeat")
 
 		evt := metrics.NewCommandEvent("heartbeat")
@@ -48,6 +47,10 @@ Examples:
 
 		ctx := rootCtx
 		id := args[0]
+
+		if usesProxiedServer() {
+			return runHeartbeatProxiedServer(ctx, id)
+		}
 
 		result, err := resolveAndGetIssueForMutation(ctx, store, id)
 		if err != nil {
@@ -78,16 +81,24 @@ Examples:
 
 		SetLastTouchedID(result.ResolvedID)
 
-		if jsonOutput {
-			return outputJSON(map[string]string{
-				"id":     result.ResolvedID,
-				"status": "heartbeat",
-				"owner":  actor,
-			})
-		}
-		fmt.Printf("%s Heartbeat %s (lease refreshed)\n", ui.RenderPass("✓"), formatFeedbackID(result.ResolvedID, result.Issue.Title))
-		return nil
+		return renderHeartbeatSuccess(result.ResolvedID, result.Issue.Title)
 	},
+}
+
+// renderHeartbeatSuccess prints the success shape both storage routes share —
+// the classic path and the proxied-server path (heartbeat_proxied_server.go)
+// call exactly this code, so the --json contract workers parse
+// ({"id","status":"heartbeat","owner"}) cannot drift between modes.
+func renderHeartbeatSuccess(id, title string) error {
+	if jsonOutput {
+		return outputJSON(map[string]string{
+			"id":     id,
+			"status": "heartbeat",
+			"owner":  actor,
+		})
+	}
+	fmt.Printf("%s Heartbeat %s (lease refreshed)\n", ui.RenderPass("✓"), formatFeedbackID(id, title))
+	return nil
 }
 
 func init() {
