@@ -1547,8 +1547,13 @@ var rootCmd = &cobra.Command{
 				storeMutex.Lock()
 				storeActive = true
 				storeMutex.Unlock()
-				if dbPath != "" {
-					hookRunner = hooks.NewRunner(filepath.Join(filepath.Dir(dbPath), "hooks"))
+				// Use the resolved .beads directory, not filepath.Dir(dbPath):
+				// for a registered WorkspaceIsBeadsDir backend dbPath IS the
+				// .beads directory itself, so Dir(dbPath) walked up to the
+				// workspace root and loaded hooks from <repo>/hooks — silently
+				// firing nothing (same bug the embedded path fixed below).
+				if beadsDir != "" {
+					hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
 				}
 				if hookRunner != nil && !config.GetBool("no-hooks") {
 					store = storage.NewHookFiringStore(store, hookRunner)
