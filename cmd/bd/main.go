@@ -1646,12 +1646,21 @@ var rootCmd = &cobra.Command{
 				storeMutex.Lock()
 				storeActive = true
 				storeMutex.Unlock()
-				// Use the resolved .beads directory, not filepath.Dir(dbPath):
-				// for a registered WorkspaceIsBeadsDir backend dbPath IS the
-				// .beads directory itself, so Dir(dbPath) walked up to the
-				// workspace root and loaded hooks from <repo>/hooks — silently
-				// firing nothing (same bug the embedded path fixed below).
-				if beadsDir != "" {
+				// REUSE the runner built for uowSinks above — do not construct a
+				// second one. Run() is asynchronous and waitForCommandHooks()
+				// waits on the GLOBAL hookRunner, so overwriting it here left the
+				// uow plumbing firing into instance A while the waiter waited on
+				// instance B, which had nothing pending: the process exited
+				// before A's goroutines reached exec and the hook silently never
+				// fired. One runner means Wait() covers both plumbings.
+				//
+				// Both spellings resolve the same directory. Use the resolved
+				// .beads dir, not filepath.Dir(dbPath): for a registered
+				// WorkspaceIsBeadsDir backend dbPath IS the .beads directory, so
+				// Dir(dbPath) walked up to the workspace root and loaded hooks
+				// from <repo>/hooks — silently firing nothing (same bug the
+				// embedded path fixed below).
+				if hookRunner == nil && beadsDir != "" {
 					hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
 				}
 				if hookRunner != nil && !config.GetBool("no-hooks") {
