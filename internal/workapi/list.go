@@ -443,35 +443,27 @@ func applyTypeSuppressions(in issueops.ListRequest, cfg ListConfig, filter *type
 	// the union of these flags, so it must decide the plane too, not only the
 	// type exclusions.
 	//
-	// FORK DELTA (va-k0e/vg-3kn, engdocs/FORK_DIVERGENCE.md): a NON-INFRA
-	// explicit type admits the plane too, which upstream's condition does not.
-	// The write path routes on storage class, not type — issues.go's
-	// useWispsTable is `Ephemeral || NoHistory || WispType != "" || IsInfraType`
-	// — so a no_history task or molecule sits in the wisps TABLE with
-	// ephemeral = 0. Under upstream's condition `bd list --type task` skips
-	// that table and those beads are invisible with nothing saying so.
+	// FORK DELTA (va-k0e/vg-3kn/vg-8db, engdocs/FORK_DIVERGENCE.md): ANY explicit
+	// type admits the plane, not only an infra one. The write path routes on
+	// STORAGE CLASS, not type — issues.go's useWispsTable is
+	// `Ephemeral || NoHistory || WispType != "" || IsInfraType` — so a
+	// no_history task or molecule sits in the wisps TABLE at ephemeral = 0, and
+	// an ephemeral task sits there at ephemeral = 1. Under upstream's condition
+	// `bd list --type task` reads neither and those beads are invisible with
+	// nothing indicating anything was withheld.
 	//
-	// It admits the plane WITHOUT widening the answer to true wisps. Ephemeral
-	// is pinned false rather than left nil, because the plane holds both kinds:
-	// no_history rows at ephemeral = 0 AND true wisps at ephemeral = 1. Leaving
-	// it nil would make a bare `bd list --type task` start returning ephemeral
-	// task wisps, with no flag to turn them back off (--include-ephemeral only
-	// adds). searchInTx documents this exact pairing: with SkipWisps off and
-	// Ephemeral=&false the wisps leg returns only NoHistory beads and excludes
-	// true wisps (GH#3649/GH#3659), and the durable issues.ephemeral column
-	// defaults to 0, so the predicate costs the durable leg nothing.
+	// Ephemeral is deliberately NOT pinned here. Naming a type is a request for
+	// that type WHEREVER IT LIVES, ephemeral rows included — the fork's
+	// contract, pinned by TestEmbeddedCountIncludeInfra's
+	// "type_filter_includes_wisps_tier_without_include_infra" case, which
+	// counts 3 durable + 2 no_history + 1 ephemeral task and wants 6. Pinning
+	// Ephemeral false would answer 5 and silently drop the ephemeral one.
 	//
-	// An INFRA type is deliberately untouched: BuildListFilter already pinned
-	// Ephemeral=true for it above, routing to the wisp plane alone, which is
-	// correct — issues.go marks infra rows ephemeral on write.
-	if !in.IncludeEphemeral && !in.IncludeInfra {
-		switch {
-		case in.IssueType == "":
-			filter.SkipWisps = true
-		case !cfg.IsInfra(in.IssueType):
-			ephemeral := false
-			filter.Ephemeral = &ephemeral
-		}
+	// An INFRA type is untouched: BuildListFilter already pinned Ephemeral=true
+	// for it above, routing to the wisp plane alone, which is correct — infra
+	// rows are marked ephemeral on write.
+	if !in.IncludeEphemeral && !in.IncludeInfra && in.IssueType == "" {
+		filter.SkipWisps = true
 	}
 }
 

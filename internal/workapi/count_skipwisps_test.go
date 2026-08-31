@@ -44,14 +44,18 @@ func TestBuildCountFilter_PlaneRule(t *testing.T) {
 			want: ephemeralWant{skipWisps: true, ephemeral: nil},
 		},
 		{
-			name: "--type=task admits the plane but not true wisps",
+			// Ephemeral stays UNSET: a named type means that type wherever it
+			// lives, ephemeral rows included. Pinning it false would make
+			// TestEmbeddedCountIncludeInfra's 3 durable + 2 no_history + 1
+			// ephemeral task answer 5 instead of 6.
+			name: "--type=task admits the plane, ephemeral rows included",
 			in:   issueops.CountRequest{IssueType: "task"},
-			want: ephemeralWant{skipWisps: false, ephemeral: ptrBool(false)},
+			want: ephemeralWant{skipWisps: false, ephemeral: nil},
 		},
 		{
-			name: "--type=molecule admits the plane but not true wisps",
+			name: "--type=molecule admits the plane, ephemeral rows included",
 			in:   issueops.CountRequest{IssueType: "molecule"},
-			want: ephemeralWant{skipWisps: false, ephemeral: ptrBool(false)},
+			want: ephemeralWant{skipWisps: false, ephemeral: nil},
 		},
 		{
 			name: "infra type routes to the wisp plane alone, untouched by the delta",
@@ -82,40 +86,23 @@ func TestBuildCountFilter_PlaneRule(t *testing.T) {
 	}
 }
 
-// TestBuildListFilter_PlaneAdmitsNoHistoryNotWisps is the list-side companion:
-// TestBuildListFilter_SkipWisps pins WHETHER the plane is read, this pins WHAT
-// comes back from it. Without the Ephemeral pin, `bd list --type task` would
-// widen from "durable tasks" to "durable tasks + every live task wisp".
-func TestBuildListFilter_PlaneAdmitsNoHistoryNotWisps(t *testing.T) {
+// TestBuildListFilter_PlaneAdmitsNamedTypeWhereverItLives is the list-side
+// companion: TestBuildListFilter_SkipWisps pins WHETHER the plane is read,
+// this pins that nothing narrows what comes back from it. The fork's contract
+// is that a named type means that type wherever it lives — durable, no_history
+// and ephemeral alike — so Ephemeral must stay unset. See
+// TestEmbeddedCountIncludeInfra's type_filter case, which wants all six.
+func TestBuildListFilter_PlaneAdmitsNamedTypeWhereverItLives(t *testing.T) {
 	cfg := ListConfig{}
 
-	t.Run("non-infra type pins Ephemeral false", func(t *testing.T) {
-		filter, err := BuildListFilter(issueops.ListRequest{IssueType: "task"}, cfg)
-		if err != nil {
-			t.Fatalf("BuildListFilter: %v", err)
-		}
-		if filter.SkipWisps {
-			t.Error("SkipWisps = true, want false (the plane must be read)")
-		}
-		if filter.Ephemeral == nil {
-			t.Fatal("Ephemeral = unset, want false (true wisps must stay excluded)")
-		}
-		if *filter.Ephemeral {
-			t.Error("Ephemeral = true, want false")
-		}
-	})
-
-	t.Run("--include-ephemeral leaves the pin off so wisps are admitted", func(t *testing.T) {
-		filter, err := BuildListFilter(
-			issueops.ListRequest{IssueType: "task", IncludeEphemeral: true}, cfg)
-		if err != nil {
-			t.Fatalf("BuildListFilter: %v", err)
-		}
-		if filter.SkipWisps {
-			t.Error("SkipWisps = true, want false")
-		}
-		if filter.Ephemeral != nil && !*filter.Ephemeral {
-			t.Error("Ephemeral pinned false, want unset: --include-ephemeral asked for wisps")
-		}
-	})
+	filter, err := BuildListFilter(issueops.ListRequest{IssueType: "task"}, cfg)
+	if err != nil {
+		t.Fatalf("BuildListFilter: %v", err)
+	}
+	if filter.SkipWisps {
+		t.Error("SkipWisps = true, want false (the plane must be read)")
+	}
+	if filter.Ephemeral != nil {
+		t.Errorf("Ephemeral = %v, want unset (a named type admits ephemeral rows too)", *filter.Ephemeral)
+	}
 }
