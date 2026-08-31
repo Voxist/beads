@@ -124,6 +124,23 @@ type CountRequest struct {
 	// the historical `bd count` answer, kept exactly so a scripted caller reads
 	// the same number it read yesterday.
 	IncludeInfra bool
+
+	// IncludeEphemeral admits the EPHEMERAL PLANE — the wisps TABLE — and
+	// admits nothing else. It is the plane knob on its own: exactly the first
+	// of IncludeInfra's four changes, with none of the other three.
+	//
+	// It exists because there was no way to ask for that one thing. The write
+	// path routes on STORAGE CLASS, not type (dolt's useWispsTable is
+	// `Ephemeral || NoHistory || WispType != "" || IsInfraType`), so a
+	// no_history task lives in the wisps table while remaining ordinary durable
+	// work. Counting it needed IncludeInfra, which ALSO drops template rows of
+	// the named type — a silent undercount traded for a silent undercount.
+	//
+	// Same meaning as ListRequest.IncludeEphemeral (see issueops/reader.go),
+	// so `bd count --include-ephemeral <filters>` matches the cardinality of
+	// `bd list --include-ephemeral <filters> --all`. Unset, the count is
+	// durable-plane only: the historical answer, unchanged.
+	IncludeEphemeral bool
 }
 
 // CountResult is the cardinality of the matching set.

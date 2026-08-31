@@ -96,13 +96,7 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 
 	if in.IncludeInfra {
 		applyCountIncludeInfra(&filter, in.IssueType, cfg)
-	} else if in.IssueType == "" {
-		// FORK DELTA (vg-8db, engdocs/FORK_DIVERGENCE.md): the count half of the
-		// plane rule in applyTypeSuppressions. An unfiltered count keeps its
-		// historical durable-only semantics, but naming a type must not silently
-		// undercount the beads parked in the wisps table. Ephemeral is not
-		// pinned, for the reason spelled out on the list side: the fork's
-		// contract is that a named type means that type wherever it lives.
+	} else if !in.IncludeEphemeral {
 		filter.SkipWisps = true
 	}
 	return filter, nil

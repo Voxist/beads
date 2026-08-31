@@ -98,7 +98,6 @@ Not refused — simply never proposed. These are the real upstreaming backlog.
 
 | Area | Where |
 | --- | --- |
-| `bd ready` nil-store panic in proxied mode | branch `fix/bd-ready-proxied-server-nil-store` (**not yet on `main`**) |
 | no-op-commit gate + `bd monitor-commit-rate` (vp-5u7i, ADR-0023 L-A) | branch `gc/vp-5u7i`, Voxist PR #27 (open) |
 | heartbeat/lease no-op auto-commit skip (vp-on8s) | `internal/storage/embeddeddolt/` |
 | `BD_NO_AUTO_MIGRATE` fleet-migration guard | `cmd/bd/` |
@@ -108,137 +107,86 @@ Not refused — simply never proposed. These are the real upstreaming backlog.
 Ops-only, never upstreamable: `DEPLOY_BD` install guard, nix `vendorHash`
 recomputation, `prepared-dml-grandfather.txt`.
 
-## The wisps plane rule — carried today, but SOLVABLE
+## The wisps plane rule — RESOLVED, no longer a divergence
 
-`va-k0e` / `vg-3kn` / `vg-8db`. Upstream's `applyTypeSuppressions` admits the
-wisp plane only for `IncludeEphemeral`, `IncludeInfra`, or an **infra** type.
-The write path routes on STORAGE CLASS, not type — `internal/storage/dolt/issues.go`:
+`va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of
+the answer is worth not re-deriving, and because the reasoning that made it look
+unavoidable was wrong in an instructive way.
+
+**The problem.** The write path routes on STORAGE CLASS, not type —
+`internal/storage/dolt/issues.go`:
 
 ```go
 useWispsTable := issue.Ephemeral || issue.NoHistory || issue.WispType != "" || s.IsInfraTypeCtx(ctx, issue.IssueType)
 ```
 
-so a `no_history` task or molecule sits in the wisps TABLE and a bare
-`bd list --type task` never reads it. The fork's delta makes any explicit type
-admit the plane, `Ephemeral` unpinned, so `bd count --type task` answers 6 where
-upstream answers 3.
+so a `no_history` task lives in the wisps TABLE while remaining ordinary durable
+work. Upstream's read rule admits that table only for `IncludeEphemeral`,
+`IncludeInfra`, or an infra type, so `bd count --type task` never saw it.
 
-**This is NOT an upstream bug.** Upstream asserts 3 in BOTH count twins,
-commented "the default must stay byte-identical", and routes the tier through
-`--include-infra`. A branch carrying the delta against clean upstream fails
-upstream's own `TestEmbeddedCountIncludeInfra` with `count --type task = 5,
-want 3`. Do not file it as a bug.
+**What the fork used to do.** Change the default: any explicit type admits the
+plane. That fought upstream's tested contract (`the default must stay
+byte-identical`), so it meant editing `internal/workapi/{list,count}.go`, three
+golden cases, and **both** `cmd/bd/count_*_test.go` twins on every resync — and
+the twins silently drifted, because only the embedded one was updated when the
+delta landed. It was also not upstreamable: carried against clean upstream it
+fails upstream's own `TestEmbeddedCountIncludeInfra`.
 
-### Current cost
+**What it does now.** `bd count` gained an `--include-ephemeral` flag, mirroring
+the one the fork already had on `bd list`. Upstream's default is untouched.
 
-Editing two upstream test files every resync
-(`cmd/bd/count_embedded_test.go`, `cmd/bd/count_proxied_integration_test.go`,
-`--type task` 3 -> 6), plus the two conditions and 3 golden cases. The twins
-**silently drifted**: when the delta landed only the embedded one was updated,
-and the proxied one still asserted upstream's 3 until the 2026-08-31 resync
-pulled that file into the tree and CI failed. There is no seam that avoids the
-edits — both twins build fixtures inline and shell out to the built binary, with
-no injectable hook, build tag, or config the assertions read.
+- `issueops.CountRequest.IncludeEphemeral` — the plane knob alone: exactly the
+  first of `IncludeInfra`'s four bundled changes, with none of the other three.
+- `internal/workapi/count.go` — one line: `} else if !in.IncludeEphemeral {`.
+- `internal/workapi/list.go`, the golden corpus and BOTH count twins are
+  byte-identical with upstream again.
 
-### The way out (investigated 2026-08-31, not yet applied)
+`--include-infra` was not a usable substitute: upstream's own doc calls it "FOUR
+changes at once and not one", and its template exclusion silently drops template
+rows of the named type — one silent undercount traded for another.
 
-**The fork already owns the right opt-in and did not know it.** It carries a
-fork-only `--include-ephemeral` flag on `bd list` (`cmd/bd/list.go`,
-`cmd/bd/list_input.go`, 6 lines). Measured: upstream's
-`bd list --include-ephemeral --type X` produces a filter **byte-identical** to
-what the fork's modified default produces for `bd list --type X` — same
-`SkipWisps`, same `ExcludeTypes`, every other field equal.
+**Why the old rationale did not survive contact.** Worth remembering, because
+each of these read as solid at the time:
 
-`bd count` has no such flag; `CountRequest` has only `IncludeInfra`. And
-`--include-infra` is **not** a substitute — upstream's own doc
-(`issueops/counter.go:108-126`) calls it "FOUR changes at once and not one".
-Under a pinned non-infra type two are no-ops, but `IsTemplate:false` is not:
-`bd count --type task --include-infra` silently drops **template** tasks the
-fork's count includes. That is a narrowing — the same silent-undercount failure
-the delta exists to prevent, relocated.
+- The motivating consumer was gone. `va-k0e` existed so wisp-leak reconciliation
+  could find in-flight wisps via `bd list --type=molecule`; that consumer now
+  passes an explicit tier and unions two queries.
+- No programmatic caller depended on it. The orchestrator's only `bd list` call
+  site already passes `--include-infra`, and it never shells out to `bd count`.
+- The "test behind it" was circular — this document argued the contract was
+  settled because a test pinned it, where that test was the fork's own edit of
+  upstream's test.
+- The fleet's own default tier is `ephemeral = 0`. The real need was always the
+  `no_history` rows, not the ephemeral ones.
 
-So the minimal fix is additive and leaves upstream's default untouched:
+**Behaviour change.** `bd list --type X` and `bd count --type X` are
+durable-only again; add `--include-ephemeral` to reach the wisps tier. The
+concrete loser is `bd list --type session` (city `session` beads are written
+`no_history`, and `session` is a custom type, not an infra type);
+`workflow`/`step`/`convergence` are in the same position. No doc, skill, runbook
+or agent instruction in either repo promised otherwise — swept before the
+change. `docs/CLI_REFERENCE.md` deliberately does NOT document the new flag yet:
+the docs describe the pinned release (`docs/cli-docs.pin`), so it appears at the
+next release bump.
 
-1. add `IncludeEphemeral` to `issueops.CountRequest` and wire an
-   `--include-ephemeral` flag on `bd count`, mirroring `bd list`;
-2. revert `internal/workapi/count.go` to upstream and change only the last arm
-   to `} else if !in.IncludeEphemeral { filter.SkipWisps = true }`;
-3. revert `internal/workapi/list.go`, the golden corpus and **both** count twins
-   to byte-identical with upstream;
-4. retarget the two fork test files at the flag (`--type X` -> `SkipWisps=true`;
-   `--type X --include-ephemeral` -> `SkipWisps=false`), and add a `cmd/bd`
-   integration case asserting `bd count --type task --include-ephemeral` = 6.
-
-Per-resync cost then drops to **zero**, and fork carry shrinks to the two flag
-registrations — themselves upstreamable, since upstream already owns the field
-(`issueops/reader.go`), exposes `include_ephemeral` over HTTP, and registers the
-flag on `bd ready` and `bd linear sync`, just not on `bd list`.
-
-### Why the original rationale no longer holds
-
-- **The motivating consumer is gone.** `va-k0e` (`f3a12745e`) existed because
-  wisp-leak reconciliation needed `bd list --type=molecule` to find in-flight
-  wisps. That consumer now passes an explicit `TierBoth` that unions
-  `--include-infra` with a separate ephemeral query, and reaches those rows
-  without the fork default.
-- **No programmatic consumer depends on it.** The orchestrator's only `bd list`
-  call site already appends `--include-infra --include-gates` unconditionally,
-  and it never shells out to `bd count` at all (its counter is direct SQL).
-- **The "test behind it" was circular.** This document previously argued the
-  contract was settled because a test pinned it — but that test *is* the fork's
-  own edit of upstream's test, not independent evidence.
-- **The fleet's own model contradicts the wide default**: its default tier is
-  `ephemeral = 0` — durable plus no-history, ephemeral only via an explicit
-  tier. The honest need is the **no_history** rows, not the ephemeral ones.
-
-### What it would cost
-
-A real, user-visible regression for interactive use: `bd list --type X` and
-`bd count --type X` go back to durable-only, and a human must add
-`--include-ephemeral`. The concrete loser is `bd list --type session` — city
-`session` beads are written `no_history` and `session` is a registered custom
-type, not an infra type. `workflow`/`step`/`convergence` are in the same
-position; `molecule` and `event` lose rows only where a writer chose
-`no_history`.
-
-**No documented contract promises otherwise.** A sweep of beads `docs/`,
-`engdocs/`, `plugins/beads/skills/`, `AGENT_INSTRUCTIONS.md`, `AGENTS.md` and
-the gascity equivalents found no runbook, skill or agent instruction that tells
-anyone to expect wisp-plane rows from a bare type filter. Mitigation is light:
-regenerate `docs/CLI_REFERENCE.md` so `--include-ephemeral` is discoverable,
-patch the `--type event` examples in `docs/core-concepts/labels.md`, and call it
-out in release notes. The exposure is operator muscle memory, not a contract.
-
-### Where it lives today, and what guards it
-
-| Side | Code | Guard |
-| --- | --- | --- |
-| list | `internal/workapi/list.go` (`applyTypeSuppressions`) | `TestBuildListFilter_SkipWisps`, `TestBuildListFilter_PlaneAdmitsNamedTypeWhereverItLives`, 3 golden cases |
-| count | `internal/workapi/count.go` (`BuildCountFilter`) | `TestBuildCountFilter_PlaneRule` (unit), `TestEmbeddedCountIncludeInfra` + `TestProxiedServerCountIncludeInfra` (cmd/bd, gated on a live backend) |
-
-Both cmd/bd twins must be edited together, and both unit guards are
-mutation-checked. Until the fix above is applied, `Ephemeral` stays **unpinned**:
-pinning it false was tried during review and reverted, because it makes the
-embedded twin's 3 durable + 2 no_history + 1 ephemeral task answer 5, not 6.
+**Remaining carry**, all additive and each proposed upstream separately: the
+`--include-ephemeral` registrations on `bd list` and `bd count`, the
+`CountRequest` field, and the one-line guard. Upstream already owns the concept —
+`ListRequest.IncludeEphemeral` is documented, the HTTP API exposes
+`include_ephemeral`, and the flag is registered on `bd ready` and
+`bd linear sync` — it was simply never wired to `bd list` or `bd count`.
 
 ## Known resync conflict zones
 
 Recurring conflicts, roughly in descending pain:
 
-1. `internal/workapi/list.go`, `internal/workapi/count.go`,
-   `testdata/list_filter_golden.json` (and, when upstream moves them,
-   `cmd/bd/count.go` / `count_filter_test.go` / `list_golden_test.go`) — the
-   wisps plane rule above. Semantic, not textual: upstream keeps restructuring
-   the surrounding code, so the delta has to be re-applied on the new shape
-   rather than merged. Re-read that section before resolving; the answer is
-   KEEP, and the tests named there are what prove you got it right.
-2. `internal/storage/uow/*`, `internal/storage/dolt/store.go`,
+1. `internal/storage/uow/*`, `internal/storage/dolt/store.go`,
    `internal/storage/issueops/commit_pending.go` — our originals vs the
    upstream re-lands. **Auto-merges cleanly and wrongly**; review by hand.
-3. `go.mod` / `go.sum` / `default.nix` — the fork adds `lumberjack` and
+2. `go.mod` / `go.sum` / `default.nix` — the fork adds `lumberjack` and
    `x/time` as direct deps, so `vendorHash` must be recomputed after every
    resync.
-4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `issueops/reader.go`, `Makefile`.
+3. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
 
 ## Recurring resync chores
 

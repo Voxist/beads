@@ -442,29 +442,7 @@ func applyTypeSuppressions(in issueops.ListRequest, cfg ListConfig, filter *type
 	// listing. IncludeAllTypes is a fourth, via the early return above — it is
 	// the union of these flags, so it must decide the plane too, not only the
 	// type exclusions.
-	//
-	// FORK DELTA (va-k0e/vg-3kn/vg-8db, engdocs/FORK_DIVERGENCE.md): ANY explicit
-	// type admits the plane, not only an infra one. The write path routes on
-	// STORAGE CLASS, not type — issues.go's useWispsTable is
-	// `Ephemeral || NoHistory || WispType != "" || IsInfraType` — so a
-	// no_history task or molecule sits in the wisps TABLE at ephemeral = 0, and
-	// an ephemeral task sits there at ephemeral = 1. Under upstream's condition
-	// `bd list --type task` reads neither and those beads are invisible with
-	// nothing indicating anything was withheld.
-	//
-	// Ephemeral is deliberately NOT pinned here. Naming a type is a request for
-	// that type WHEREVER IT LIVES, ephemeral rows included — the fork's
-	// contract, pinned by TestEmbeddedCountIncludeInfra's
-	// "type_filter_includes_wisps_tier_without_include_infra" case, which
-	// counts 3 durable + 2 no_history + 1 ephemeral task and wants 6. Pinning
-	// Ephemeral false would answer 5 and silently drop the ephemeral one.
-	//
-	// An INFRA type is untouched here. BuildListFilter pins Ephemeral=true for
-	// it — routing to the wisp plane alone, which is correct since infra rows
-	// are marked ephemeral on write — but it does so AFTER this call, so
-	// filter.Ephemeral is always nil while this function runs. Do not branch on
-	// it here.
-	if !in.IncludeEphemeral && !in.IncludeInfra && in.IssueType == "" {
+	if !in.IncludeEphemeral && !in.IncludeInfra && (in.IssueType == "" || !cfg.IsInfra(in.IssueType)) {
 		filter.SkipWisps = true
 	}
 }
