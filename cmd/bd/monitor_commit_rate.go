@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -12,15 +12,15 @@ import (
 )
 
 var (
-	alertThresholdMin    int
+	alertThresholdMin     int
 	alertThresholdCommits int
-	alertOnly            bool
-	dryRun               bool
+	alertOnly             bool
+	dryRun                bool
 )
 
 func init() {
 	monitorCommitRateCmd.Flags().IntVar(&alertThresholdMin, "minutes", 1, "Time window in minutes to monitor for commit rate")
-	monitorCommitRateCmd.Flags().IntVar(&alertThresholdCommits, "commits", 10, "Alert threshold: number of commits in the time window that triggers an alert")
+	monitorCommitRateCmd.Flags().IntVar(&alertThresholdCommits, "commits", 10, "Alert threshold: number of no-op commits in the time window that triggers an alert")
 	monitorCommitRateCmd.Flags().BoolVar(&alertOnly, "alert-only", true, "Only alert when thresholds are exceeded (don't auto-take action)")
 	monitorCommitRateCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Perform a dry run without taking any actions")
 }
@@ -30,49 +30,54 @@ var monitorCommitRateCmd = &cobra.Command{
 	Short: "Monitor Dolt commit rate and alert on excessive no-op commits (vp-5u7i deliverable 2)",
 	Long: `Monitor Dolt commit rate to detect excessive no-op commits that indicate the storm pattern.
 
-This command samples dolt_log per DB and alerts when any DB exceeds N no-op commits/min
-with a flat distinct-bead count (signature: many commits, few beads, identical content_hash).
+Samples dolt_diff_issues for the current database and alerts when the no-op
+commit count in the time window is at or above the threshold AND those
+commits are concentrated on a disproportionately small set of beads
+(signature: many commits, few beads, identical content_hash — ADR-0023 L-A).
+This is the local backstop that catches a recurrence independent of bd's own
+write-path gate (e.g. a stray script or supervisor writing directly).
 
 This implements deliverable 2 from bead vp-5u7i.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		if err := runMonitorCommitRate(); err != nil {
-			log.Fatal(err)
-		}
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runMonitorCommitRate()
 	},
 }
 
 func runMonitorCommitRate() error {
 	if dryRun {
-		fmt.Printf("DRY RUN: Monitoring commit rate with threshold of %d commits per %d minutes\n", alertThresholdCommits, alertThresholdMin)
+		fmt.Printf("DRY RUN: Monitoring commit rate with threshold of %d no-op commits per %d minutes\n", alertThresholdCommits, alertThresholdMin)
 		return nil
 	}
 
-	ctx := context.Background()
-
-	// Use the global store variable which is already initialized by the main process
-	// This is how other commands in the codebase access the store
-	doltStore, ok := store.(storage.DoltStorage)
+	if store == nil {
+		return HandleErrorRespectJSON("no database connection available (%s)", diagHint())
+	}
+	accessor, ok := storage.UnwrapStore(store).(storage.RawDBAccessor)
 	if !ok {
-		return fmt.Errorf("current store is not a Dolt storage backend, cannot monitor commit logs")
+		return HandleErrorRespectJSON("storage backend does not support raw DB access required for commit-rate monitoring")
+	}
+	db := accessor.UnderlyingDB()
+	if db == nil {
+		return HandleErrorRespectJSON("underlying database not available")
 	}
 
-	// This would need to connect to the Dolt backend to sample dolt_log
-	// For now, we'll simulate the monitoring logic
-	fmt.Printf("Monitoring Dolt commit rate...\n")
-	fmt.Printf("Alert threshold: %d commits per %d minutes\n", alertThresholdCommits, alertThresholdMin)
+	ctx := rootCtx
+	var dbName string
+	if err := db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&dbName); err != nil {
+		return HandleErrorRespectJSON("resolving current database name: %v", err)
+	}
 
-	// Sample commit activity (this is where we'd integrate with Dolt directly)
-	// We would typically query dolt_log table to check for commit patterns
-
-	result, err := analyzeCommitPatterns(ctx, doltStore)
+	result, err := analyzeCommitPatterns(ctx, db, dbName, alertThresholdMin, alertThresholdCommits)
 	if err != nil {
-		return fmt.Errorf("failed to analyze commit patterns: %w", err)
+		return HandleErrorRespectJSON("failed to analyze commit patterns: %v", err)
 	}
 
 	if result.ExcessiveNoOpsDetected {
 		fmt.Fprintf(os.Stderr, "ALERT: Excessive no-op commit pattern detected!\n")
 		fmt.Fprintf(os.Stderr, "  Database: %s\n", result.DatabaseName)
-		fmt.Fprintf(os.Stderr, "  Commits analyzed: %d\n", result.CommitCount)
+		fmt.Fprintf(os.Stderr, "  No-op commits: %d\n", result.CommitCount)
 		fmt.Fprintf(os.Stderr, "  Distinct beads affected: %d\n", result.DistinctBeadCount)
 		fmt.Fprintf(os.Stderr, "  Time window: %v\n", result.TimeWindow)
 		fmt.Fprintf(os.Stderr, "  Content hash similarity: %.2f%% identical\n", result.PercentIdenticalContent)
@@ -80,51 +85,118 @@ func runMonitorCommitRate() error {
 		if !alertOnly {
 			fmt.Fprintf(os.Stderr, "Taking corrective action (disabled in this implementation)...\n")
 		}
-	} else {
-		fmt.Printf("No excessive commit patterns detected within threshold.\n")
+		// Exit code 2 (Nagios-style: 0 clean, 1 command error, 2 alert) gives
+		// a caller (the commit-rate-watchdog city-pack order, one invocation
+		// per rig) a reliable machine-readable signal without parsing stderr.
+		return &exitError{Code: 2}
 	}
 
+	fmt.Printf("No excessive commit patterns detected within threshold (database: %s).\n", result.DatabaseName)
 	return nil
 }
 
-// CommitAnalysisResult holds the results of our commit pattern analysis
+// CommitAnalysisResult holds the results of a commit-rate analysis pass.
+// CommitCount and DistinctBeadCount describe only the no-op subset of the
+// commits examined in the window — the counts the storm signature is judged
+// against — not the window's total commit volume.
 type CommitAnalysisResult struct {
 	ExcessiveNoOpsDetected  bool
 	DatabaseName            string
-	CommitCount             int
-	DistinctBeadCount       int
+	CommitCount             int // no-op commits in the window
+	DistinctBeadCount       int // distinct beads touched by those no-op commits
 	TimeWindow              time.Duration
-	PercentIdenticalContent float64
-	Details                 string
+	PercentIdenticalContent float64 // % of all commits examined that were no-op
 }
 
-// analyzeCommitPatterns examines the commit log to detect excessive no-op commit patterns
-func analyzeCommitPatterns(ctx context.Context, store storage.DoltStorage) (*CommitAnalysisResult, error) {
-	// This is where we would implement the actual logic to:
-	// 1. Connect to the Dolt backend
-	// 2. Query dolt_log for recent commits
-	// 3. Analyze patterns to detect no-op storms
+// minCommitsPerBeadRatio is the "flat distinct-bead count" leg of the storm
+// signature (ADR-0023 L-A): the measured incident averaged ~13 no-op commits
+// per bead (va-wzio alone took 10 in ~2s). Organic churn averages close to
+// one commit per bead, so requiring at least this many no-op commits per
+// affected bead separates a storm (the same small set hammered repeatedly)
+// from a legitimate burst of first-time no-op touches across many beads.
+const minCommitsPerBeadRatio = 2.0
 
-	// For demonstration, we'll return a simulated result
-	// In a real implementation, this would involve:
-	// - Executing SQL queries against the Dolt database
-	// - Checking commit messages, content hashes, and timestamps
-	// - Calculating ratios of commits to distinct beads
+// analyzeCommitPatterns samples dolt_diff_issues for the current database and
+// reports whether the no-op-commit storm signature (ADR-0023 L-A) is present
+// in the trailing windowMinutes: no-op commit volume at or above
+// alertThreshold, concentrated on a disproportionately small set of beads,
+// every one of them value-identical (from_content_hash == to_content_hash).
+// A commit counts as no-op only when every row it touched compares
+// content-identical; any real content change (or an added row, which has no
+// "from" state) marks the whole commit as real.
+func analyzeCommitPatterns(ctx context.Context, db *sql.DB, dbName string, windowMinutes, alertThreshold int) (*CommitAnalysisResult, error) {
+	// Compute the cutoff in Go rather than relying on the server's NOW() with
+	// a bound INTERVAL — go-mysql-server's parser support for a placeholder
+	// inside INTERVAL is untested, whereas a literal DATETIME comparison is
+	// universally supported and keeps the window's meaning explicit.
+	cutoff := time.Now().UTC().Add(-time.Duration(windowMinutes) * time.Minute)
+	rows, err := db.QueryContext(ctx, `
+		SELECT to_commit,
+		       COALESCE(to_id, '') AS to_id,
+		       COALESCE(from_content_hash, '') AS from_hash,
+		       COALESCE(to_content_hash, '') AS to_hash
+		FROM dolt_diff_issues
+		WHERE to_commit_date > ?
+		  AND to_id IS NOT NULL
+	`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("querying dolt_diff_issues: %w", err)
+	}
+	defer rows.Close()
 
-	result := &CommitAnalysisResult{
-		ExcessiveNoOpsDetected:  false, // Default to no alert
-		DatabaseName:            "va", // The problematic DB from the bead description
-		CommitCount:             0,
-		DistinctBeadCount:       0,
-		TimeWindow:              time.Duration(alertThresholdMin) * time.Minute,
-		PercentIdenticalContent: 0.0,
-		Details:                 "Commit pattern analysis performed",
+	type commitAgg struct {
+		allNoOp bool
+		beads   map[string]struct{}
+	}
+	commits := make(map[string]*commitAgg)
+	for rows.Next() {
+		var commitHash, id, fromHash, toHash string
+		if err := rows.Scan(&commitHash, &id, &fromHash, &toHash); err != nil {
+			return nil, fmt.Errorf("scanning dolt_diff_issues row: %w", err)
+		}
+		if id == "" {
+			continue
+		}
+		agg, ok := commits[commitHash]
+		if !ok {
+			agg = &commitAgg{allNoOp: true, beads: make(map[string]struct{})}
+			commits[commitHash] = agg
+		}
+		agg.beads[id] = struct{}{}
+		if fromHash == "" || fromHash != toHash {
+			agg.allNoOp = false
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading dolt_diff_issues: %w", err)
 	}
 
-	// Placeholder for actual analysis logic
-	// Would need to interface with Dolt store to check dolt_log table
+	noOpCommits := 0
+	noOpBeads := make(map[string]struct{})
+	for _, agg := range commits {
+		if agg.allNoOp {
+			noOpCommits++
+			for id := range agg.beads {
+				noOpBeads[id] = struct{}{}
+			}
+		}
+	}
 
-	fmt.Printf("Simulated analysis completed. In a real implementation, this would connect to Dolt backend to check commit logs.\n")
+	result := &CommitAnalysisResult{
+		DatabaseName:      dbName,
+		CommitCount:       noOpCommits,
+		DistinctBeadCount: len(noOpBeads),
+		TimeWindow:        time.Duration(windowMinutes) * time.Minute,
+	}
+	if len(commits) > 0 {
+		result.PercentIdenticalContent = 100 * float64(noOpCommits) / float64(len(commits))
+	}
+
+	beadsPerCommit := 0.0
+	if len(noOpBeads) > 0 {
+		beadsPerCommit = float64(noOpCommits) / float64(len(noOpBeads))
+	}
+	result.ExcessiveNoOpsDetected = noOpCommits >= alertThreshold && beadsPerCommit >= minCommitsPerBeadRatio
 
 	return result, nil
 }

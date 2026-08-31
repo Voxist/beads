@@ -2611,6 +2611,19 @@ never reused, per the v1.1.1 precedent.)
   not to the pool alias it was dispatched to.
   Off by default: with no `claim.pools` configured, behavior is unchanged.
 
+- **`bd monitor-commit-rate` — local backstop for the no-op-commit storm
+  (vp-5u7i deliverable 2, ADR-0023 L-A).** Samples `dolt_diff_issues` for the
+  current database over a trailing window (`--minutes`, default 1) and
+  reports the storm signature: no-op commits (`from_content_hash ==
+  to_content_hash`) at or above `--commits` (default 10), concentrated on a
+  disproportionately small set of beads. This is independent of the no-op
+  gate above — it samples committed history directly, so it also catches a
+  recurrence from any writer, not just `bd`. Alert-only by default
+  (`--alert-only`, on by default; the `--alert-only=false` action path is
+  unimplemented in this release — see the flag's help text); exits 2 on
+  alert, 0 clean, so a caller can branch on the exit code without parsing
+  output. Intended to run on a schedule per rig/database (a Voxist city-pack
+  order does this outside this repo).
 - **Work leases: claim-TTL, heartbeat, and reclaim for dead-worker recovery**
   (schema v54, migration `0054`)
   ([#4537](https://github.com/gastownhall/beads/pull/4537)). A claim was
