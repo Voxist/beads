@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -124,21 +125,88 @@ const minCommitsPerBeadRatio = 2.0
 // A commit counts as no-op only when every row it touched compares
 // content-identical; any real content change (or an added row, which has no
 // "from" state) marks the whole commit as real.
+// noOpDiffExcludedColumns are the issues columns whose change does NOT make a
+// diff row meaningful, so they are left out of the value comparison below.
+//
+//   - updated_at is rewritten by every update, including one that changes
+//     nothing else — it is the thing a no-op commit consists of.
+//   - row_lock is rewritten by any write that can touch status/assignee, so a
+//     concurrent reclaim/close collides on the row (see freshRowLock); its
+//     change carries no user-visible content.
+//   - content_hash is NOT MAINTAINED on the update path. It is written by the
+//     upsert/import path only (issueUpsertColumns in issueops/helpers.go) and
+//     never recomputed by UpdateIssue, so from_content_hash == to_content_hash
+//     holds for every ordinary edit. Comparing it — which this command used to
+//     do, and only that — reported every real update as a no-op.
+var noOpDiffExcludedColumns = map[string]bool{
+	"updated_at":   true,
+	"row_lock":     true,
+	"content_hash": true,
+}
+
+// noOpDiffPredicate builds the SQL that decides whether one dolt_diff_issues
+// row changed anything meaningful.
+//
+// The column list is discovered from information_schema rather than hardcoded:
+// the issues table gains columns regularly upstream, and a stale hardcoded list
+// fails OPEN — an unlisted column's change would be invisible and the row would
+// count as a no-op. Discovery makes a new column meaningful by default, which
+// is the safe direction to be wrong in.
+//
+// <=> is MySQL's NULL-safe equality: NULL <=> NULL is true and NULL <=> 'x' is
+// false, which is what "unchanged" means for a nullable column.
+func noOpDiffPredicate(ctx context.Context, db *sql.DB, dbName string) (string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = ? AND table_name = 'issues'
+		ORDER BY ordinal_position
+	`, dbName)
+	if err != nil {
+		return "", fmt.Errorf("reading issues columns: %w", err)
+	}
+	defer rows.Close()
+
+	var terms []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			return "", fmt.Errorf("scanning column name: %w", err)
+		}
+		if noOpDiffExcludedColumns[col] {
+			continue
+		}
+		terms = append(terms, fmt.Sprintf("`from_%s` <=> `to_%s`", col, col))
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("reading issues columns: %w", err)
+	}
+	if len(terms) == 0 {
+		return "", fmt.Errorf("issues table reported no comparable columns")
+	}
+	return strings.Join(terms, " AND "), nil
+}
+
 func analyzeCommitPatterns(ctx context.Context, db *sql.DB, dbName string, windowMinutes, alertThreshold int) (*CommitAnalysisResult, error) {
+	unchanged, err := noOpDiffPredicate(ctx, db, dbName)
+	if err != nil {
+		return nil, err
+	}
+
 	// Compute the cutoff in Go rather than relying on the server's NOW() with
 	// a bound INTERVAL — go-mysql-server's parser support for a placeholder
 	// inside INTERVAL is untested, whereas a literal DATETIME comparison is
 	// universally supported and keeps the window's meaning explicit.
 	cutoff := time.Now().UTC().Add(-time.Duration(windowMinutes) * time.Minute)
-	rows, err := db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT to_commit,
 		       COALESCE(to_id, '') AS to_id,
-		       COALESCE(from_content_hash, '') AS from_hash,
-		       COALESCE(to_content_hash, '') AS to_hash
+		       from_id IS NOT NULL AS is_update,
+		       (%s) AS unchanged
 		FROM dolt_diff_issues
 		WHERE to_commit_date > ?
 		  AND to_id IS NOT NULL
-	`, cutoff)
+	`, unchanged), cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("querying dolt_diff_issues: %w", err)
 	}
@@ -150,8 +218,9 @@ func analyzeCommitPatterns(ctx context.Context, db *sql.DB, dbName string, windo
 	}
 	commits := make(map[string]*commitAgg)
 	for rows.Next() {
-		var commitHash, id, fromHash, toHash string
-		if err := rows.Scan(&commitHash, &id, &fromHash, &toHash); err != nil {
+		var commitHash, id string
+		var isUpdate, rowUnchanged bool
+		if err := rows.Scan(&commitHash, &id, &isUpdate, &rowUnchanged); err != nil {
 			return nil, fmt.Errorf("scanning dolt_diff_issues row: %w", err)
 		}
 		if id == "" {
@@ -163,7 +232,9 @@ func analyzeCommitPatterns(ctx context.Context, db *sql.DB, dbName string, windo
 			commits[commitHash] = agg
 		}
 		agg.beads[id] = struct{}{}
-		if fromHash == "" || fromHash != toHash {
+		// An INSERT is never a no-op: it added a bead that was not there. Only
+		// a modification whose every compared column is unchanged qualifies.
+		if !isUpdate || !rowUnchanged {
 			agg.allNoOp = false
 		}
 	}
