@@ -64,10 +64,17 @@ func TestBuildCountFilter_IncludeEphemeral(t *testing.T) {
 	}
 }
 
-// TestCountAndListAgreeOnThePlane is the property applyCountIncludeInfra exists
-// to hold, extended to the new knob: for the same request, count and list must
-// read the same planes. It is the guard that would fail if a later change wired
-// the flag into one of the two builders and not the other.
+// TestCountAndListAgreeOnThePlane pins that count and list read the same PLANE
+// for the same request — the guard that fails if a later change wires the flag
+// into one builder and not the other.
+//
+// It asserts the ABSOLUTE expected value as well as the agreement. Agreement
+// alone is satisfied by a regression that turns the flag into a no-op on BOTH
+// builders, which is exactly the drift this exists to catch.
+//
+// It deliberately says nothing about the two answers being equal in ROWS: a
+// count includes templates and a listing does not, with or without this flag.
+// See issueops.CountRequest.IncludeEphemeral.
 func TestCountAndListAgreeOnThePlane(t *testing.T) {
 	cfg := ListConfig{}
 
@@ -75,11 +82,12 @@ func TestCountAndListAgreeOnThePlane(t *testing.T) {
 		name             string
 		issueType        string
 		includeEphemeral bool
+		wantSkipWisps    bool
 	}{
-		{"default", "", false},
-		{"named type", "task", false},
-		{"include-ephemeral", "", true},
-		{"named type + include-ephemeral", "task", true},
+		{"default", "", false, true},
+		{"named type", "task", false, true},
+		{"include-ephemeral", "", true, false},
+		{"named type + include-ephemeral", "task", true, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			listFilter, err := BuildListFilter(issueops.ListRequest{
@@ -97,6 +105,11 @@ func TestCountAndListAgreeOnThePlane(t *testing.T) {
 			if listFilter.SkipWisps != countFilter.SkipWisps {
 				t.Errorf("plane disagreement: list SkipWisps=%v, count SkipWisps=%v",
 					listFilter.SkipWisps, countFilter.SkipWisps)
+			}
+			if listFilter.SkipWisps != tt.wantSkipWisps {
+				t.Errorf("SkipWisps = %v on both builders, want %v — agreeing on the "+
+					"wrong value is the regression this case exists to catch",
+					listFilter.SkipWisps, tt.wantSkipWisps)
 			}
 		})
 	}

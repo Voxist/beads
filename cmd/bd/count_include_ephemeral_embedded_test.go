@@ -58,11 +58,24 @@ func TestEmbeddedCountIncludeEphemeral(t *testing.T) {
 		}
 	})
 
-	t.Run("count matches list cardinality under the same flag", func(t *testing.T) {
-		listed := len(bdListJSON(t, bd, dir,
+	t.Run("count and list read the same plane", func(t *testing.T) {
+		// The property is that both reach the wisps tier under the flag — NOT
+		// that the two numbers are equal. A count includes template rows and a
+		// listing does not, with or without this flag (see
+		// issueops.CountRequest.IncludeEphemeral), and this fixture has no
+		// templates only because it does not need any. Asserting raw equality
+		// here would pass by accident and break the day someone adds one.
+		durable := len(bdListJSON(t, bd, dir,
+			"--type", "task", "--status", "all", "--limit", "0"))
+		withPlane := len(bdListJSON(t, bd, dir,
 			"--type", "task", "--include-ephemeral", "--status", "all", "--limit", "0"))
-		if got := countOf("--type", "task", "--include-ephemeral"); got != listed {
-			t.Errorf("count = %d but list returned %d rows under the same filters", got, listed)
+		if withPlane-durable != 3 {
+			t.Errorf("list gained %d rows from the plane, want 3 (2 no_history + 1 ephemeral)",
+				withPlane-durable)
+		}
+		if got := countOf("--type", "task", "--include-ephemeral") - countOf("--type", "task"); got != 3 {
+			t.Errorf("count gained %d rows from the plane, want 3 — count and list "+
+				"must admit the same tier even where their totals differ", got)
 		}
 	})
 }

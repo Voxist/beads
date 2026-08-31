@@ -136,10 +136,16 @@ type CountRequest struct {
 	// work. Counting it needed IncludeInfra, which ALSO drops template rows of
 	// the named type — a silent undercount traded for a silent undercount.
 	//
-	// Same meaning as ListRequest.IncludeEphemeral (see issueops/reader.go),
-	// so `bd count --include-ephemeral <filters>` matches the cardinality of
-	// `bd list --include-ephemeral <filters> --all`. Unset, the count is
-	// durable-plane only: the historical answer, unchanged.
+	// Same meaning as ListRequest.IncludeEphemeral (see issueops/reader.go):
+	// both admit the same PLANE under the same filters. It does NOT promise the
+	// two answers are equal — a count and a listing already differ on TEMPLATES
+	// without this flag, and still do with it. A count includes template rows
+	// unless IncludeInfra excludes them; a listing excludes them unless
+	// IncludeTemplates admits them. That predates this field and is unchanged by
+	// it; only IncludeInfra sets out to reconcile cardinality, and it pays for
+	// that with three changes beyond the plane.
+	//
+	// Unset, the count is durable-plane only: the historical answer, unchanged.
 	IncludeEphemeral bool
 }
 

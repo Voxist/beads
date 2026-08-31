@@ -601,6 +601,7 @@ var countFieldForParameter = map[string]string{
 	"no_assignee":       "NoAssignee",
 	"no_labels":         "NoLabels",
 	"include_infra":     "IncludeInfra",
+	"include_ephemeral": "IncludeEphemeral",
 }
 
 // TestEveryCountRequestFieldIsPublished: the role publishes 23 filters and the
