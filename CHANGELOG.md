@@ -53,6 +53,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING for operators: `bd list --type X` and `bd count --type X` are
+  durable-plane only again; add `--include-ephemeral` to reach the wisps tier.**
+  This restores upstream's default. The fork previously made any explicit
+  `--type` read the wisps table, which meant carrying edits to two upstream test
+  files on every resync — and the two silently drifted apart until a resync
+  surfaced the disagreement. The behaviour is now reached by a flag instead:
+  `bd count` gains `--include-ephemeral`, mirroring the one `bd list` already
+  had, and `internal/workapi/count.go` differs from upstream by a single line.
+
+  What changes for a human at a terminal:
+
+  ```
+  bd list  --type session                       # durable only  (was: + no_history)
+  bd list  --type session --include-ephemeral   # durable + no_history + ephemeral
+  bd count --type task    --include-ephemeral   # same, on the count side
+  ```
+
+  City `session`, `workflow`, `step` and `convergence` beads are written
+  `no_history`, so those are the type filters most likely to look emptier than
+  before. `bd count --type <infra type>` (`agent`, `role`, `message`) now
+  answers 0 — upstream's own asymmetry, which the fork's wider default had been
+  masking; `--include-ephemeral` or `--include-infra` recovers it.
+
+  No programmatic caller is affected: the orchestrator's only `bd list` call
+  site already passes `--include-infra`, and it does not shell out to
+  `bd count`. This is operator muscle memory, not a contract.
+
 - **`bd gate check` resolves bead gates whose target lives in a prefix-routed
   rig** ([#5859](https://github.com/gastownhall/beads/pull/5859)). After a local
   miss, the evaluator follows the target bead ID through `routes.jsonl` and

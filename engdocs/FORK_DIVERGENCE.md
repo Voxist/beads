@@ -313,7 +313,7 @@ no `nochange.go` and should not gain one.
 
 ## Recurring resync chores
 
-Neither is a tree change you can prepare in advance; both are done per cycle.
+None is a tree change you can prepare in advance; all are done per cycle.
 
 1. **Push the docs-pin tag to the fork.** `docs/cli-docs.pin` names the release
    tag the docs pipeline builds `bd` from, and CI resolves it against the fork.
@@ -326,6 +326,66 @@ Neither is a tree change you can prepare in advance; both are done per cycle.
    upstream lacks, so upstream's hash never validates for us. Run
    `./scripts/update-nix-vendorhash.sh` (it falls back to a `nixos/nix` Docker
    image when nix is not installed).
+
+3. **`make install` cannot succeed in this fork — use `install-force`.** The
+   `check-up-to-date` target compares HEAD against `origin/main`, and here
+   `origin` is UPSTREAM, so it always reports the fork as stale:
+
+   ```
+   ERROR: Local branch is not up to date with origin/main
+     Local:  96a40b308   (our main)
+     Remote: d530cddfa   (gastownhall/beads)
+   ```
+
+   `install-force` skips that check and is the correct target for this repo,
+   not an override being abused. The inverted-remote convention showing up in
+   the build system.
+
+## Deploying a new bd to the fleet
+
+**BINARY FIRST, ALWAYS. Migrating a database before deploying breaks every
+stale binary against it, with no graceful degradation.**
+
+bd refuses outright when the database is ahead of the binary:
+
+```
+schema version mismatch: database is at v66, binary knows up to v62 (4 migrations ahead)
+```
+
+`bd ready`, `bd list` and `bd doctor` all fail. This is NOT the same question as
+which migrations get applied — `migrationSource.pendingVersions` selects
+`version > current` from the binary's own set, so a stale binary finds nothing
+pending — and reasoning from that alone gives the wrong answer. Learned on
+2026-08-31 by migrating `vct` before deploying and taking wise-stack down for
+fifteen minutes. It was the quietest rig only because the rehearsal was
+deliberately run there.
+
+The order that works:
+
+1. **Back up first.** One shared Dolt server, one data dir, N databases, and
+   migrations do not roll back. Use `CALL DOLT_BACKUP('sync-url',
+   'file:///…/<db>')` per database THROUGH THE SERVER — the fleet holds live
+   connections, so a filesystem copy can catch a torn write. Then actually
+   restore one (`dolt backup restore file://…/<db> <name>`) and check its
+   schema version and a row count against live. An unrestored backup is a guess.
+2. **Build out of band**: `make install-force INSTALL_DIR=/tmp/bd-new`. The
+   canonical path is guarded by `check-deploy-bd`; do not aim there yet.
+3. **Rehearse on the smallest, idlest database.** Capture a baseline first
+   (schema version, row counts, `bd ready`/`bd list` counts) by direct SQL, not
+   through `bd` — store-open runs `autoMigrateOnVersionBump`, so even a read
+   command can start migrating.
+4. **Deploy canonically.** `bd-deploy` is referenced by the Makefile guard but
+   does not exist on the dev machine; the working path is
+   `make install-force DEPLOY_BD=1 INSTALL_DIR=~/.gc/bin`, which builds,
+   codesigns, stages to a temp name and `rename(2)`s over the live path. Snapshot
+   the outgoing binary first, following the convention already in `~/.gc/bin`:
+   `bd.prev`, `bd.prev-<stamp>`, and `bd-<version>-<sha>`.
+5. **Let the rest migrate on first touch**, and watch them converge. A database
+   caught mid-flight reports an intermediate version (`vp` sat at 65 for a few
+   seconds); that is normal, but confirm it settles.
+
+Anything else still running an old `bd` against the shared server will break the
+moment its database migrates. Check other machines before deploying.
 
 ## Local conventions
 
