@@ -98,7 +98,6 @@ Not refused — simply never proposed. These are the real upstreaming backlog.
 
 | Area | Where |
 | --- | --- |
-| no-op-commit gate + `bd monitor-commit-rate` (vp-5u7i, ADR-0023 L-A) | branch `gc/vp-5u7i`, Voxist PR #27 (open) |
 | heartbeat/lease no-op auto-commit skip (vp-on8s) | `internal/storage/embeddeddolt/` |
 | `BD_NO_AUTO_MIGRATE` fleet-migration guard | `cmd/bd/` |
 | `GC_AGENT` actor resolution for `--claim` idempotency | `cmd/bd/` |
@@ -187,6 +186,51 @@ Recurring conflicts, roughly in descending pain:
    `x/time` as direct deps, so `vendorHash` must be recomputed after every
    resync.
 3. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
+
+## Parked, deliberately not carried
+
+Work that exists, is not on `main`, and should stay that way until something
+changes. Recorded so it is neither rediscovered nor re-attempted by accident.
+
+### `bd monitor-commit-rate` (vp-5u7i deliverable 2)
+
+Branch `feat/monitor-commit-rate`; Voxist PR #33 closed 2026-08-31.
+
+A watchdog that samples committed history for no-op-commit storms. Parked
+because **every storm source it watches for is already closed**, and nothing
+calls it:
+
+- `internal/storage/embeddeddolt/store.go` skips the auto-commit when only
+  operational columns changed — the vp-on8s lease/heartbeat case that motivated
+  it;
+- upstream's `DiscardNoopIssueUpdates` gates value-identical updates inside `bd`;
+- the fleet's own direct-SQL writes (`gascity/internal/beads/bdstore.go`) are
+  CAS-guarded, so they only match rows they actually change;
+- zero references to the command anywhere in gascity — the CHANGELOG entry
+  advertises a city-pack order that does not exist.
+
+Landing it would mean carrying fork-local code, plus a `cmd/bd/main.go`
+registration line to re-apply every resync, to detect a condition three separate
+fixes already prevent.
+
+The branch is worth keeping rather than deleting: its detection logic was
+**fixed** before parking. It identifies a no-op by NULL-safe comparison of the
+actual content columns, discovered from `information_schema`, instead of the
+frozen `content_hash` — which is written only by the upsert path and never
+recomputed on update, so the original signal classified every real edit as a
+no-op. Anyone resuming starts from a correct signal.
+
+Known defects still in that branch, from the PR review: the command is
+registered in `main()` rather than `init()` (so in-process tests cannot see it);
+the query scans `dolt_diff_issues` over all history rather than using
+commit-scoped `dolt_diff(from, to, 'issues')`, which is O(history) at per-minute
+cadence; `--dry-run` returns exit 0 without analysing; and the alert text still
+names the content-hash signal that was removed.
+
+**Deliverable 1 of vp-5u7i (the no-op-commit gate) is NOT parked — it is
+upstream's now**, via `DiscardNoopIssueUpdates` plus the early `Changed: false`
+return in `issueops/update.go`. Do not re-land the fork version; `main` carries
+no `nochange.go` and should not gain one.
 
 ## Recurring resync chores
 
