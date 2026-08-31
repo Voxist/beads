@@ -31,6 +31,7 @@ Examples:
   bd count --by-label               # Group count by label
   bd count --assignee alice --by-status  # Count alice's issues by status
   bd count --include-infra          # Count issues + wisps tier (matches 'bd list --include-infra --all' cardinality)
+  bd count --type task --include-ephemeral  # Count tasks in the durable AND wisps tiers
 `,
 	SilenceUsage:  true,
 	SilenceErrors: true,

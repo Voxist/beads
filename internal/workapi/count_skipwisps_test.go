@@ -64,9 +64,20 @@ func TestBuildCountFilter_IncludeEphemeral(t *testing.T) {
 	}
 }
 
-// TestCountAndListAgreeOnThePlane pins that count and list read the same PLANE
-// for the same request — the guard that fails if a later change wires the flag
-// into one builder and not the other.
+// TestCountAndListPlaneAgreement pins how count and list decide the PLANE for
+// the same request — including the ONE case where they disagree.
+//
+// The name is not "AgreeOnThePlane" because they do not always agree, and a
+// test that claimed they did would be asserting a property the code lacks. For
+// an INFRA type they diverge: list reads the plane (applyTypeSuppressions
+// exempts infra types) while count does not, so `bd count --type agent` answers
+// 0 where `bd list --type agent` returns rows.
+//
+// That divergence is UPSTREAM'S and predates the flag — upstream's count arm is
+// a bare `else { SkipWisps = true }`, so it answers 0 for an infra type too. It
+// is pinned here rather than fixed because fixing it inside the fork would
+// re-add the divergence this change exists to remove; it belongs upstream. The
+// fork's old wide default happened to mask it, which is why it surfaces now.
 //
 // It asserts the ABSOLUTE expected value as well as the agreement. Agreement
 // alone is satisfied by a regression that turns the flag into a no-op on BOTH
@@ -75,19 +86,28 @@ func TestBuildCountFilter_IncludeEphemeral(t *testing.T) {
 // It deliberately says nothing about the two answers being equal in ROWS: a
 // count includes templates and a listing does not, with or without this flag.
 // See issueops.CountRequest.IncludeEphemeral.
-func TestCountAndListAgreeOnThePlane(t *testing.T) {
-	cfg := ListConfig{}
+func TestCountAndListPlaneAgreement(t *testing.T) {
+	// CustomTypes admits "agent" into the workspace vocabulary (BuildListFilter
+	// rejects a type it does not know), and the default InfraSet already treats
+	// it as infra. Without the vocabulary the builders return an error and the
+	// infra cases below prove nothing.
+	cfg := ListConfig{CustomTypes: []string{"agent", "role", "message"}}
 
 	for _, tt := range []struct {
 		name             string
 		issueType        string
 		includeEphemeral bool
-		wantSkipWisps    bool
+		wantCountSkip    bool
+		wantAgree        bool
 	}{
-		{"default", "", false, true},
-		{"named type", "task", false, true},
-		{"include-ephemeral", "", true, false},
-		{"named type + include-ephemeral", "task", true, false},
+		{"default", "", false, true, true},
+		{"named type", "task", false, true, true},
+		{"include-ephemeral", "", true, false, true},
+		{"named type + include-ephemeral", "task", true, false, true},
+		// The known divergence. list reads the plane for an infra type, count
+		// does not; --include-ephemeral recovers count.
+		{"infra type diverges", "agent", false, true, false},
+		{"infra type + include-ephemeral", "agent", true, false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			listFilter, err := BuildListFilter(issueops.ListRequest{
@@ -102,14 +122,14 @@ func TestCountAndListAgreeOnThePlane(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildCountFilter: %v", err)
 			}
-			if listFilter.SkipWisps != countFilter.SkipWisps {
-				t.Errorf("plane disagreement: list SkipWisps=%v, count SkipWisps=%v",
-					listFilter.SkipWisps, countFilter.SkipWisps)
+			if countFilter.SkipWisps != tt.wantCountSkip {
+				t.Errorf("count SkipWisps = %v, want %v", countFilter.SkipWisps, tt.wantCountSkip)
 			}
-			if listFilter.SkipWisps != tt.wantSkipWisps {
-				t.Errorf("SkipWisps = %v on both builders, want %v — agreeing on the "+
-					"wrong value is the regression this case exists to catch",
-					listFilter.SkipWisps, tt.wantSkipWisps)
+			agree := listFilter.SkipWisps == countFilter.SkipWisps
+			if agree != tt.wantAgree {
+				t.Errorf("list SkipWisps=%v count SkipWisps=%v (agree=%v), want agree=%v — "+
+					"a change to either builder alone lands here",
+					listFilter.SkipWisps, countFilter.SkipWisps, agree, tt.wantAgree)
 			}
 		})
 	}
