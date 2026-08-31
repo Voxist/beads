@@ -1889,7 +1889,18 @@ var rootCmd = &cobra.Command{
 			// routed *sql.DB-backed store (newProxiedServerRoutedStore); closing
 			// only uowProvider here leaked one backend connection to the db-proxy
 			// per bd invocation, which exhausted the pool and wedged the proxy.
+			//
+			// storeActive drops FIRST, under the mutex, exactly as the two other
+			// close sites do (the non-proxied arm below, and
+			// closeStoreBeforeGateRelease). It is what flushBatchCommitOnShutdown
+			// reads to decide whether to CommitPending: leaving it true across
+			// the close would let a signal arriving in that window commit through
+			// an already-closed store, and would leave it true for the rest of
+			// every proxied-mode process.
 			if store != nil {
+				storeMutex.Lock()
+				storeActive = false
+				storeMutex.Unlock()
 				_ = store.Close()
 				store = nil
 			}

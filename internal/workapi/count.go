@@ -97,14 +97,21 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 	if in.IncludeInfra {
 		applyCountIncludeInfra(&filter, in.IssueType, cfg)
 	} else if in.IssueType == "" {
-		// FORK DELTA (vg-8db, engdocs/FORK_DIVERGENCE.md): the count side of the
-		// list plane rule in applyTypeSuppressions. An unfiltered count keeps its
+		// FORK DELTA (vg-8db, engdocs/FORK_DIVERGENCE.md): the count half of the
+		// plane rule in applyTypeSuppressions. An unfiltered count keeps its
 		// historical durable-only semantics, but naming a type must not silently
 		// undercount: the write path routes on storage class, not type, so a
 		// no_history task or molecule sits in the wisps table and would be
-		// missing from `bd count --type task`. Keeps count and list agreeing on
-		// cardinality, which is the property applyCountIncludeInfra exists for.
+		// missing from `bd count --type task`.
 		filter.SkipWisps = true
+	} else if !cfg.IsInfra(in.IssueType) {
+		// The other half of that rule: admit the plane for the durable rows
+		// parked there, but pin Ephemeral false so the count does not start
+		// including true wisps. Mirrors list.go exactly — count and list must
+		// agree on cardinality, which is the property applyCountIncludeInfra
+		// exists to hold.
+		ephemeral := false
+		filter.Ephemeral = &ephemeral
 	}
 	return filter, nil
 }

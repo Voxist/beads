@@ -50,8 +50,17 @@ func newProxiedServerRoutedStore(ctx context.Context, beadsDir string) (s storag
 		return nil, fmt.Errorf("newProxiedServerRoutedStore: resolve root path: %w", err)
 	}
 	pf, err := pidfile.Read(rootPath, proxy.PIDFileName)
-	if err != nil || pf == nil || pf.Port == 0 {
+	if err != nil {
 		return nil, fmt.Errorf("newProxiedServerRoutedStore: read proxy endpoint from %s: %w", rootPath, err)
+	}
+	// Split from the error arm above rather than folded into it: on these two
+	// the read SUCCEEDED and err is nil, so a single %w arm rendered
+	// "%!w(<nil>)". This string is not swallowed — it is stored in
+	// routedStoreOpenErr and printed by the S2 requireStore() guard as the
+	// stated reason store-based commands are disabled, so an operator with a
+	// portless pidfile got a formatting artifact instead of a diagnosis.
+	if pf == nil || pf.Port == 0 {
+		return nil, fmt.Errorf("newProxiedServerRoutedStore: proxy pidfile in %s has no listener port; is the db-proxy running?", rootPath)
 	}
 
 	persisted, _ := configfile.Load(beadsDir)
