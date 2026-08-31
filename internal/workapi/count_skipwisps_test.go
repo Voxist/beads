@@ -25,11 +25,13 @@ func ptrBool(b bool) *bool { return &b }
 // package green, so the next resync would have silently taken `bd count --type
 // task` back to undercounting every no_history task parked in the wisps table.
 //
-// It also pins the narrowing that keeps the delta honest: naming a type admits
-// the PLANE, not true wisps. The table holds both (no_history at ephemeral = 0,
-// wisps at ephemeral = 1), so Ephemeral must be pinned false — otherwise a bare
-// `bd count --type task` starts counting ephemeral task wisps with no flag to
-// turn them off.
+// It also pins that nothing NARROWS what comes back: Ephemeral stays unset, so
+// a named type admits the whole plane — no_history rows at ephemeral = 0 and
+// true wisps at ephemeral = 1 alike. Pinning Ephemeral false was tried during
+// review and reverted (1eac1264a): it makes count_embedded_test.go's 3 durable
+// + 2 no_history + 1 ephemeral task answer 5 instead of 6. That embedded case
+// is gated behind BEADS_TEST_EMBEDDED_DOLT=1, so this unit guard is what fails
+// fast if someone re-narrows it.
 func TestBuildCountFilter_PlaneRule(t *testing.T) {
 	cfg := ListConfig{}
 

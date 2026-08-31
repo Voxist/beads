@@ -459,9 +459,11 @@ func applyTypeSuppressions(in issueops.ListRequest, cfg ListConfig, filter *type
 	// counts 3 durable + 2 no_history + 1 ephemeral task and wants 6. Pinning
 	// Ephemeral false would answer 5 and silently drop the ephemeral one.
 	//
-	// An INFRA type is untouched: BuildListFilter already pinned Ephemeral=true
-	// for it above, routing to the wisp plane alone, which is correct — infra
-	// rows are marked ephemeral on write.
+	// An INFRA type is untouched here. BuildListFilter pins Ephemeral=true for
+	// it — routing to the wisp plane alone, which is correct since infra rows
+	// are marked ephemeral on write — but it does so AFTER this call, so
+	// filter.Ephemeral is always nil while this function runs. Do not branch on
+	// it here.
 	if !in.IncludeEphemeral && !in.IncludeInfra && in.IssueType == "" {
 		filter.SkipWisps = true
 	}

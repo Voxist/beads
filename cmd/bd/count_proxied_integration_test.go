@@ -475,9 +475,17 @@ func TestProxiedServerCountIncludeInfra(t *testing.T) {
 		return len(bdProxiedListJSON(t, bd, p, full...))
 	}
 
-	t.Run("default_stays_durable_only", func(t *testing.T) {
-		if got := countOf(t, "--type", "task"); got != 3 {
-			t.Errorf("count --type task = %d, want 3 (durable tasks only)", got)
+	// FORK DELTA (vg-8db, engdocs/FORK_DIVERGENCE.md): upstream wants 3 here
+	// ("the default must stay byte-identical"); the fork wants 6. A named type
+	// is a request for that type WHEREVER IT LIVES — durable, no_history and
+	// ephemeral alike — so a type filter never silently undercounts. The
+	// embedded twin (count_embedded_test.go) already carried this; this proxied
+	// twin was missed when the delta landed and still asserted upstream's 3,
+	// which is why the two disagreed on the same command until the 2026-08-31
+	// resync brought this file into the tree.
+	t.Run("type_filter_includes_wisps_tier_without_include_infra", func(t *testing.T) {
+		if got := countOf(t, "--type", "task"); got != 6 {
+			t.Errorf("count --type task = %d, want 6 (wisps tier included even without --include-infra)", got)
 		}
 	})
 
