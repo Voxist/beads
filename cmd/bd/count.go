@@ -31,6 +31,7 @@ Examples:
   bd count --by-label               # Group count by label
   bd count --assignee alice --by-status  # Count alice's issues by status
   bd count --include-infra          # Count issues + wisps tier (matches 'bd list --include-infra --all' cardinality)
+  bd count --type task --include-ephemeral  # Count tasks in the durable AND wisps tiers
 `,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -88,6 +89,7 @@ func parseCountRequest(cmd *cobra.Command) (issueops.CountRequest, issueops.Coun
 	noAssignee, _ := cmd.Flags().GetBool("no-assignee")
 	noLabels, _ := cmd.Flags().GetBool("no-labels")
 	includeInfra, _ := cmd.Flags().GetBool("include-infra")
+	includeEphemeral, _ := cmd.Flags().GetBool("include-ephemeral")
 
 	request := issueops.CountRequest{
 		Status:        status,
@@ -104,6 +106,8 @@ func parseCountRequest(cmd *cobra.Command) (issueops.CountRequest, issueops.Coun
 		NoAssignee:    noAssignee,
 		NoLabels:      noLabels,
 		IncludeInfra:  includeInfra,
+
+		IncludeEphemeral: includeEphemeral,
 	}
 
 	if cmd.Flags().Changed("priority") {
@@ -271,6 +275,12 @@ func registerCountFlags(cmd *cobra.Command) {
 	// `bd count --include-infra <filters>` returns exactly the cardinality of
 	// `bd list --include-infra <filters> --all`.
 	cmd.Flags().Bool("include-infra", false, "Include infrastructure beads and the wisps tier (matches 'bd list --include-infra --all' cardinality)")
+
+	// The plane knob alone: admits the wisps tier WITHOUT lifting any type
+	// exclusion, which --include-infra cannot do (it bundles four changes, and
+	// its template exclusion silently drops template rows of a named type).
+	// Mirrors bd list's flag of the same name.
+	cmd.Flags().Bool("include-ephemeral", false, "Include the wisps tier (no_history and ephemeral beads) without lifting type exclusions")
 
 	// Grouping flags
 	cmd.Flags().Bool("by-status", false, "Group count by status")

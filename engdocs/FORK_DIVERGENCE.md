@@ -13,6 +13,7 @@ Keep this file current when a resync lands or an upstream PR changes state.
 | --- | --- | --- |
 | `origin` | `gastownhall/beads` | **upstream** |
 | `bfork` | `Voxist/beads` | **this fork**; `main` tracks `bfork/main` |
+| `mine` | `bourgois/beads-fork` | **personal fork**; upstream PRs are filed from here |
 | `cstar`, `maphew` | peer forks | reference only |
 
 The naming is inverted from the usual convention: `origin` is *upstream*, not
@@ -73,24 +74,55 @@ maintainers from pushing to an organization-owned fork branch, so maintainers
 could not amend our PR in place and re-landed it themselves with authorship
 preserved.
 
-> **Contribution rule:** file upstream PRs from a *personal* fork, not from
-> `Voxist/beads`. "Allow edits by maintainers" does not work on org-owned forks,
-> and every org-fork PR so far has cost a manual re-land.
->
-> **That personal fork does not exist yet.** `bourgois/beads` is a REDIRECT to
-> `Voxist/beads` — the same repository, id `1261574242` — presumably left behind
-> when the fork was transferred to the org. `gh repo view bourgois/beads`
-> answers about `Voxist/beads`, and a remote pointing at it pushes to the org
-> fork. Verify with:
+> **Contribution rule:** file upstream PRs from **`bourgois/beads-fork`**, never
+> from `Voxist/beads`. "Allow edits by maintainers" does not work on an
+> org-owned fork, so a maintainer who wants to amend a PR cannot push to it —
+> every org-fork PR we filed (#4355, #4407, #4449) cost them a manual
+> replacement transport instead. Confirmed working on the personal fork:
+> `maintainer_can_modify` is `true` on #6096/#6097/#6098.
 >
 > ```
-> gh api repos/bourgois/beads --jq .full_name   # -> Voxist/beads
+> git remote add mine git@github.com:bourgois/beads-fork.git
+> git push mine <branch>
+> gh pr create --repo gastownhall/beads --head bourgois:<branch>
 > ```
 >
-> So this rule is currently unactionable: someone must first create a real
-> personal fork under their own account (`gh repo fork gastownhall/beads`).
-> Until then, an upstream PR either comes from the org fork and costs a re-land,
-> or waits.
+> **The fork is `beads-fork`, not `beads`, deliberately.** `bourgois/beads` is a
+> REDIRECT to `Voxist/beads` — the same repository, id `1261574242` — left by the
+> transfer to the org, and it resolves at the GIT level, not just the web UI:
+>
+> ```
+> gh api repos/bourgois/beads --jq .full_name        # -> Voxist/beads
+> git ls-remote https://github.com/bourgois/beads.git  # -> Voxist/beads' main
+> ```
+>
+> Creating a repo at that path would DISABLE the redirect, silently retargeting
+> anything still configured with the old URL — reads would return the wrong
+> repository and a push would land in it, neither failing loudly. Nothing on the
+> dev machine referenced it when this was checked, but other clones, CI configs
+> and teammates could not be inspected, so the name was left alone. Do not
+> reclaim it casually; if you ever want it, audit those first.
+
+## Filed upstream, awaiting review
+
+Opened 2026-08-31 from `bourgois/beads-fork`, all with `maintainer_can_modify`.
+None is fork carry — each fixes an upstream bug the fork happened to hit.
+
+| PR | What |
+| --- | --- |
+| [#6096](https://github.com/gastownhall/beads/pull/6096) | `update-nix-vendorhash.sh` writes a stray `default.nix''` on BSD sed — `SED_INPLACE="sed -i ''"` cannot carry an empty argument, so the quotes survive word-splitting as a literal backup suffix. The stray carries the placeholder `sha256-AAAA…` hash, so `git add -A` can commit an unvalidatable `vendorHash`. |
+| [#6097](https://github.com/gastownhall/beads/pull/6097) | `TestProtocol_FieldsRoundTrip` fails wherever `TZ` differs from the system zone. `workspace.env()` is a whitelist and omits `TZ`, so the `bd` child falls back to `/etc/localtime` while the test process uses its own. Upstream CI misses it because its runners have `TZ` unset AND a UTC system zone. |
+| [#6098](https://github.com/gastownhall/beads/pull/6098) | `bd list --wisp-type X` is UNSATISFIABLE — wisp-typed beads are routed to the wisps table on write, `issues.wisp_type` defaults to `''`, and the plane is skipped, so the predicate is evaluated only against rows that cannot carry it. The golden corpus was recording the bug. |
+
+Two more candidates, both gated on the `--include-ephemeral` work landing here
+first:
+
+- **`--include-ephemeral` on `bd list` and `bd count`** — additive, defaults
+  untouched. Landing it retires nearly all of the remaining carry in the wisps
+  section above.
+- **`bd count --type <infra type>` answers 0** while `bd list --type <infra
+  type>` returns rows. Upstream's asymmetry; pinned by
+  `TestCountAndListPlaneAgreement`'s `infra type diverges` case.
 
 ## Fork-local, no upstream path yet
 
@@ -98,8 +130,6 @@ Not refused — simply never proposed. These are the real upstreaming backlog.
 
 | Area | Where |
 | --- | --- |
-| `bd ready` nil-store panic in proxied mode | branch `fix/bd-ready-proxied-server-nil-store` (**not yet on `main`**) |
-| no-op-commit gate + `bd monitor-commit-rate` (vp-5u7i, ADR-0023 L-A) | branch `gc/vp-5u7i`, Voxist PR #27 (open) |
 | heartbeat/lease no-op auto-commit skip (vp-on8s) | `internal/storage/embeddeddolt/` |
 | `BD_NO_AUTO_MIGRATE` fleet-migration guard | `cmd/bd/` |
 | `GC_AGENT` actor resolution for `--claim` idempotency | `cmd/bd/` |
@@ -108,137 +138,178 @@ Not refused — simply never proposed. These are the real upstreaming backlog.
 Ops-only, never upstreamable: `DEPLOY_BD` install guard, nix `vendorHash`
 recomputation, `prepared-dml-grandfather.txt`.
 
-## The wisps plane rule — carried today, but SOLVABLE
+## The wisps plane rule — resolved into an additive flag
 
-`va-k0e` / `vg-3kn` / `vg-8db`. Upstream's `applyTypeSuppressions` admits the
-wisp plane only for `IncludeEphemeral`, `IncludeInfra`, or an **infra** type.
-The write path routes on STORAGE CLASS, not type — `internal/storage/dolt/issues.go`:
+`va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of
+the answer is worth not re-deriving, and because the reasoning that made it look
+unavoidable was wrong in an instructive way.
+
+**The problem.** The write path routes on STORAGE CLASS, not type —
+`internal/storage/dolt/issues.go`:
 
 ```go
 useWispsTable := issue.Ephemeral || issue.NoHistory || issue.WispType != "" || s.IsInfraTypeCtx(ctx, issue.IssueType)
 ```
 
-so a `no_history` task or molecule sits in the wisps TABLE and a bare
-`bd list --type task` never reads it. The fork's delta makes any explicit type
-admit the plane, `Ephemeral` unpinned, so `bd count --type task` answers 6 where
-upstream answers 3.
+so a `no_history` task lives in the wisps TABLE while remaining ordinary durable
+work. Upstream's read rule admits that table only for `IncludeEphemeral`,
+`IncludeInfra`, or an infra type, so `bd count --type task` never saw it.
 
-**This is NOT an upstream bug.** Upstream asserts 3 in BOTH count twins,
-commented "the default must stay byte-identical", and routes the tier through
-`--include-infra`. A branch carrying the delta against clean upstream fails
-upstream's own `TestEmbeddedCountIncludeInfra` with `count --type task = 5,
-want 3`. Do not file it as a bug.
+**What the fork used to do.** Change the default: any explicit type admits the
+plane. That fought upstream's tested contract (`the default must stay
+byte-identical`), so it meant editing `internal/workapi/{list,count}.go`, three
+golden cases, and **both** `cmd/bd/count_*_test.go` twins on every resync — and
+the twins silently drifted, because only the embedded one was updated when the
+delta landed. It was also not upstreamable: carried against clean upstream it
+fails upstream's own `TestEmbeddedCountIncludeInfra`.
 
-### Current cost
+**What it does now.** `bd count` gained an `--include-ephemeral` flag, mirroring
+the one the fork already had on `bd list`. Upstream's default is untouched.
 
-Editing two upstream test files every resync
-(`cmd/bd/count_embedded_test.go`, `cmd/bd/count_proxied_integration_test.go`,
-`--type task` 3 -> 6), plus the two conditions and 3 golden cases. The twins
-**silently drifted**: when the delta landed only the embedded one was updated,
-and the proxied one still asserted upstream's 3 until the 2026-08-31 resync
-pulled that file into the tree and CI failed. There is no seam that avoids the
-edits — both twins build fixtures inline and shell out to the built binary, with
-no injectable hook, build tag, or config the assertions read.
+- `issueops.CountRequest.IncludeEphemeral` — the plane knob alone: exactly the
+  first of `IncludeInfra`'s four bundled changes, with none of the other three.
+- `internal/workapi/count.go` — one line: `} else if !in.IncludeEphemeral {`.
+- `internal/workapi/list.go`, the golden corpus and BOTH count twins are
+  byte-identical with upstream again.
 
-### The way out (investigated 2026-08-31, not yet applied)
+`--include-infra` was not a usable substitute: upstream's own doc calls it "FOUR
+changes at once and not one", and its template exclusion silently drops template
+rows of the named type — one silent undercount traded for another.
 
-**The fork already owns the right opt-in and did not know it.** It carries a
-fork-only `--include-ephemeral` flag on `bd list` (`cmd/bd/list.go`,
-`cmd/bd/list_input.go`, 6 lines). Measured: upstream's
-`bd list --include-ephemeral --type X` produces a filter **byte-identical** to
-what the fork's modified default produces for `bd list --type X` — same
-`SkipWisps`, same `ExcludeTypes`, every other field equal.
+**Why the old rationale did not survive contact.** Worth remembering, because
+each of these read as solid at the time:
 
-`bd count` has no such flag; `CountRequest` has only `IncludeInfra`. And
-`--include-infra` is **not** a substitute — upstream's own doc
-(`issueops/counter.go:108-126`) calls it "FOUR changes at once and not one".
-Under a pinned non-infra type two are no-ops, but `IsTemplate:false` is not:
-`bd count --type task --include-infra` silently drops **template** tasks the
-fork's count includes. That is a narrowing — the same silent-undercount failure
-the delta exists to prevent, relocated.
+- The motivating consumer was gone. `va-k0e` existed so wisp-leak reconciliation
+  could find in-flight wisps via `bd list --type=molecule`; that consumer now
+  passes an explicit tier and unions two queries.
+- No programmatic caller depended on it. The orchestrator's only `bd list` call
+  site already passes `--include-infra`, and it never shells out to `bd count`.
+- The "test behind it" was circular — this document argued the contract was
+  settled because a test pinned it, where that test was the fork's own edit of
+  upstream's test.
+- The fleet's own default tier is `ephemeral = 0`. The real need was always the
+  `no_history` rows, not the ephemeral ones.
 
-So the minimal fix is additive and leaves upstream's default untouched:
+**Behaviour change.** `bd list --type X` and `bd count --type X` are
+durable-only again; add `--include-ephemeral` to reach the wisps tier.
 
-1. add `IncludeEphemeral` to `issueops.CountRequest` and wire an
-   `--include-ephemeral` flag on `bd count`, mirroring `bd list`;
-2. revert `internal/workapi/count.go` to upstream and change only the last arm
-   to `} else if !in.IncludeEphemeral { filter.SkipWisps = true }`;
-3. revert `internal/workapi/list.go`, the golden corpus and **both** count twins
-   to byte-identical with upstream;
-4. retarget the two fork test files at the flag (`--type X` -> `SkipWisps=true`;
-   `--type X --include-ephemeral` -> `SkipWisps=false`), and add a `cmd/bd`
-   integration case asserting `bd count --type task --include-ephemeral` = 6.
+`bd count --type <INFRA TYPE>` — `agent`, `role`, `message`, or whatever the
+workspace configures — now answers **0**, because infra beads are always written
+to the wisps table and count no longer reads it for a named type. `bd list
+--type agent` still returns rows, so the two disagree. That asymmetry is
+UPSTREAM'S (its count arm is a bare `else { SkipWisps = true }`); the fork's old
+wide default merely masked it. `--include-ephemeral` or `--include-infra`
+recovers the count. Pinned by `TestCountAndListPlaneAgreement`'s
+`infra type diverges` case, and worth fixing UPSTREAM rather than here.
 
-Per-resync cost then drops to **zero**, and fork carry shrinks to the two flag
-registrations — themselves upstreamable, since upstream already owns the field
-(`issueops/reader.go`), exposes `include_ephemeral` over HTTP, and registers the
-flag on `bd ready` and `bd linear sync`, just not on `bd list`.
+Among non-infra types the concrete loser is `bd list --type session` (city `session` beads are written
+`no_history`, and `session` is a custom type, not an infra type);
+`workflow`/`step`/`convergence` are in the same position. No doc, skill, runbook
+or agent instruction in either repo promised otherwise — swept before the
+change. `docs/CLI_REFERENCE.md` deliberately does NOT document the new flag yet:
+the docs describe the pinned release (`docs/cli-docs.pin`), so it appears at the
+next release bump.
 
-### Why the original rationale no longer holds
+**Remaining carry.** Not zero, and the earlier claim that it was is wrong. The
+divergence CHANGED CHARACTER rather than disappearing, which is the real win:
 
-- **The motivating consumer is gone.** `va-k0e` (`f3a12745e`) existed because
-  wisp-leak reconciliation needed `bd list --type=molecule` to find in-flight
-  wisps. That consumer now passes an explicit `TierBoth` that unions
-  `--include-infra` with a separate ephemeral query, and reaches those rows
-  without the fork default.
-- **No programmatic consumer depends on it.** The orchestrator's only `bd list`
-  call site already appends `--include-infra --include-gates` unconditionally,
-  and it never shells out to `bd count` at all (its counter is direct SQL).
-- **The "test behind it" was circular.** This document previously argued the
-  contract was settled because a test pinned it — but that test *is* the fork's
-  own edit of upstream's test, not independent evidence.
-- **The fleet's own model contradicts the wide default**: its default tier is
-  `ephemeral = 0` — durable plus no-history, ephemeral only via an explicit
-  tier. The honest need is the **no_history** rows, not the ephemeral ones.
+| File | What |
+| --- | --- |
+| `internal/workapi/count.go` | the one-line `!in.IncludeEphemeral` guard |
+| `issueops/counter.go` | the `CountRequest.IncludeEphemeral` field + doc |
+| `cmd/bd/count.go` | flag registration, read, examples line |
+| `cmd/bd/list.go`, `cmd/bd/list_input.go` | the pre-existing `--include-ephemeral` flag |
+| `internal/httpapi/reads.go` | reads `include_ephemeral` in `countFilters` |
+| `internal/httpapi/spec/openapi.v0.yaml` | the parameter on `countIssues` |
+| `internal/httpapi/apigen/types.gen.go` | GENERATED from that spec — `make api-gen` |
+| `internal/httpapi/count_test.go` | parameter map, forwarding case, the filter counts |
+| `cmd/bd/count_filter_test.go` | the flag tripwire's map and `want` |
+| `internal/workapi/count_skipwisps_test.go` | fork-owned; no upstream conflict |
+| `cmd/bd/count_include_ephemeral_embedded_test.go` | fork-owned; no upstream conflict |
 
-### What it would cost
+The last two rows are ours and cost nothing at resync. The rest are
+upstream-owned — but every one is an ADDITIVE registration of a new flag, which
+is the difference that matters. The old delta CONTRADICTED values upstream
+asserts (`--type task` 3 -> 6 in two count twins); that can never be upstreamed
+and must be re-applied, by hand, forever, and it silently drifted once. These
+go away entirely the day the flag is upstreamed.
 
-A real, user-visible regression for interactive use: `bd list --type X` and
-`bd count --type X` go back to durable-only, and a human must add
-`--include-ephemeral`. The concrete loser is `bd list --type session` — city
-`session` beads are written `no_history` and `session` is a registered custom
-type, not an infra type. `workflow`/`step`/`convergence` are in the same
-position; `molecule` and `event` lose rows only where a writer chose
-`no_history`.
+Two of them are still in-place edits of upstream TEST files
+(`internal/httpapi/count_test.go`, `cmd/bd/count_filter_test.go`) — the same
+pattern this change set out to remove, so it is worth being clear-eyed about:
+both are tripwires that FAIL LOUDLY when the flag is present and unregistered,
+rather than assertions that silently disagree. `count_test.go` also carries
+hand-maintained prose ("the role publishes 24 filters") that a resync will not
+update for you.
 
-**No documented contract promises otherwise.** A sweep of beads `docs/`,
-`engdocs/`, `plugins/beads/skills/`, `AGENT_INSTRUCTIONS.md`, `AGENTS.md` and
-the gascity equivalents found no runbook, skill or agent instruction that tells
-anyone to expect wisp-plane rows from a bare type filter. Mitigation is light:
-regenerate `docs/CLI_REFERENCE.md` so `--include-ephemeral` is discoverable,
-patch the `--type event` examples in `docs/core-concepts/labels.md`, and call it
-out in release notes. The exposure is operator muscle memory, not a contract.
-
-### Where it lives today, and what guards it
-
-| Side | Code | Guard |
-| --- | --- | --- |
-| list | `internal/workapi/list.go` (`applyTypeSuppressions`) | `TestBuildListFilter_SkipWisps`, `TestBuildListFilter_PlaneAdmitsNamedTypeWhereverItLives`, 3 golden cases |
-| count | `internal/workapi/count.go` (`BuildCountFilter`) | `TestBuildCountFilter_PlaneRule` (unit), `TestEmbeddedCountIncludeInfra` + `TestProxiedServerCountIncludeInfra` (cmd/bd, gated on a live backend) |
-
-Both cmd/bd twins must be edited together, and both unit guards are
-mutation-checked. Until the fix above is applied, `Ephemeral` stays **unpinned**:
-pinning it false was tried during review and reverted, because it makes the
-embedded twin's 3 durable + 2 no_history + 1 ephemeral task answer 5, not 6.
+**`openapi.v0.yaml` is the trap.** Miss that hunk on a resync and `make
+api-check` fails with a regeneration diff that reads like the fork's generated
+file is stale, not like a dropped delta. Re-apply the spec hunk, then
+`make api-gen`.
 
 ## Known resync conflict zones
 
 Recurring conflicts, roughly in descending pain:
 
-1. `internal/workapi/list.go`, `internal/workapi/count.go`,
-   `testdata/list_filter_golden.json` (and, when upstream moves them,
-   `cmd/bd/count.go` / `count_filter_test.go` / `list_golden_test.go`) — the
-   wisps plane rule above. Semantic, not textual: upstream keeps restructuring
-   the surrounding code, so the delta has to be re-applied on the new shape
-   rather than merged. Re-read that section before resolving; the answer is
-   KEEP, and the tests named there are what prove you got it right.
+1. `internal/workapi/count.go`, `issueops/counter.go`, `cmd/bd/count.go`,
+   `cmd/bd/list.go`, `cmd/bd/list_input.go`, `internal/httpapi/reads.go`,
+   `internal/httpapi/spec/openapi.v0.yaml` (then `make api-gen`),
+   `internal/httpapi/count_test.go`, `cmd/bd/count_filter_test.go` — the
+   `--include-ephemeral` carry above. Additive, so it conflicts far less than
+   the delta it replaced, but it is NOT zero: see the table in that section for
+   what each file holds.
 2. `internal/storage/uow/*`, `internal/storage/dolt/store.go`,
    `internal/storage/issueops/commit_pending.go` — our originals vs the
    upstream re-lands. **Auto-merges cleanly and wrongly**; review by hand.
 3. `go.mod` / `go.sum` / `default.nix` — the fork adds `lumberjack` and
    `x/time` as direct deps, so `vendorHash` must be recomputed after every
    resync.
-4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `issueops/reader.go`, `Makefile`.
+4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
+
+## Parked, deliberately not carried
+
+Work that exists, is not on `main`, and should stay that way until something
+changes. Recorded so it is neither rediscovered nor re-attempted by accident.
+
+### `bd monitor-commit-rate` (vp-5u7i deliverable 2)
+
+Branch `feat/monitor-commit-rate`; Voxist PR #33 closed 2026-08-31.
+
+A watchdog that samples committed history for no-op-commit storms. Parked
+because **every storm source it watches for is already closed**, and nothing
+calls it:
+
+- `internal/storage/embeddeddolt/store.go` skips the auto-commit when only
+  operational columns changed — the vp-on8s lease/heartbeat case that motivated
+  it;
+- upstream's `DiscardNoopIssueUpdates` gates value-identical updates inside `bd`;
+- the fleet's own direct-SQL writes (`gascity/internal/beads/bdstore.go`) are
+  CAS-guarded, so they only match rows they actually change;
+- zero references to the command anywhere in gascity — the CHANGELOG entry
+  advertises a city-pack order that does not exist.
+
+Landing it would mean carrying fork-local code, plus a `cmd/bd/main.go`
+registration line to re-apply every resync, to detect a condition three separate
+fixes already prevent.
+
+The branch is worth keeping rather than deleting: its detection logic was
+**fixed** before parking. It identifies a no-op by NULL-safe comparison of the
+actual content columns, discovered from `information_schema`, instead of the
+frozen `content_hash` — which is written only by the upsert path and never
+recomputed on update, so the original signal classified every real edit as a
+no-op. Anyone resuming starts from a correct signal.
+
+Known defects still in that branch, from the PR review: the command is
+registered in `main()` rather than `init()` (so in-process tests cannot see it);
+the query scans `dolt_diff_issues` over all history rather than using
+commit-scoped `dolt_diff(from, to, 'issues')`, which is O(history) at per-minute
+cadence; `--dry-run` returns exit 0 without analysing; and the alert text still
+names the content-hash signal that was removed.
+
+**Deliverable 1 of vp-5u7i (the no-op-commit gate) is NOT parked — it is
+upstream's now**, via `DiscardNoopIssueUpdates` plus the early `Changed: false`
+return in `issueops/update.go`. Do not re-land the fork version; `main` carries
+no `nochange.go` and should not gain one.
 
 ## Recurring resync chores
 

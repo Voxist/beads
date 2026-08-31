@@ -6,63 +6,48 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// ephemeralWant describes what the fork's plane rule must produce for the
-// wisps table: whether the table is read at all, and whether true wisps
-// (ephemeral = 1) are admitted along with the no_history rows (ephemeral = 0)
-// that share it.
-type ephemeralWant struct {
-	skipWisps bool
-	// ephemeral is the expected *filter.Ephemeral, or nil for "unset".
-	ephemeral *bool
-}
-
-func ptrBool(b bool) *bool { return &b }
-
-// TestBuildCountFilter_PlaneRule pins the COUNT half of the fork plane delta
-// (vg-8db). It exists because the list half was guarded by
-// TestBuildListFilter_SkipWisps and the golden corpus while this half was not:
-// reverting count.go's condition to upstream's bare `else` left the whole
-// package green, so the next resync would have silently taken `bd count --type
-// task` back to undercounting every no_history task parked in the wisps table.
+// TestBuildCountFilter_IncludeEphemeral pins the plane knob on the count side.
 //
-// It also pins that nothing NARROWS what comes back: Ephemeral stays unset, so
-// a named type admits the whole plane — no_history rows at ephemeral = 0 and
-// true wisps at ephemeral = 1 alike. Pinning Ephemeral false was tried during
-// review and reverted (1eac1264a): it makes count_embedded_test.go's 3 durable
-// + 2 no_history + 1 ephemeral task answer 5 instead of 6. That embedded case
-// is gated behind BEADS_TEST_EMBEDDED_DOLT=1, so this unit guard is what fails
-// fast if someone re-narrows it.
-func TestBuildCountFilter_PlaneRule(t *testing.T) {
+// The wisps TABLE holds no_history beads (ephemeral = 0) alongside true wisps
+// (ephemeral = 1), and the write path routes on STORAGE CLASS, not type — so a
+// no_history task lives there while remaining ordinary durable work. A count
+// that names a type therefore has to be able to reach that table, and until
+// IncludeEphemeral existed the only way was IncludeInfra, which ALSO drops
+// template rows of the named type: one silent undercount traded for another.
+//
+// The default is upstream's and must stay byte-identical: durable plane only.
+func TestBuildCountFilter_IncludeEphemeral(t *testing.T) {
 	cfg := ListConfig{}
 
 	cases := []struct {
-		name string
-		in   issueops.CountRequest
-		want ephemeralWant
+		name          string
+		in            issueops.CountRequest
+		wantSkipWisps bool
 	}{
 		{
-			name: "unfiltered count stays durable-only (historical default)",
-			in:   issueops.CountRequest{},
-			want: ephemeralWant{skipWisps: true, ephemeral: nil},
+			name:          "unfiltered count stays durable-only",
+			in:            issueops.CountRequest{},
+			wantSkipWisps: true,
 		},
 		{
-			// Ephemeral stays UNSET: a named type means that type wherever it
-			// lives, ephemeral rows included. Pinning it false would make
-			// TestEmbeddedCountIncludeInfra's 3 durable + 2 no_history + 1
-			// ephemeral task answer 5 instead of 6.
-			name: "--type=task admits the plane, ephemeral rows included",
-			in:   issueops.CountRequest{IssueType: "task"},
-			want: ephemeralWant{skipWisps: false, ephemeral: nil},
+			name:          "a named type alone stays durable-only (upstream's default)",
+			in:            issueops.CountRequest{IssueType: "task"},
+			wantSkipWisps: true,
 		},
 		{
-			name: "--type=molecule admits the plane, ephemeral rows included",
-			in:   issueops.CountRequest{IssueType: "molecule"},
-			want: ephemeralWant{skipWisps: false, ephemeral: nil},
+			name:          "--include-ephemeral admits the plane",
+			in:            issueops.CountRequest{IncludeEphemeral: true},
+			wantSkipWisps: false,
 		},
 		{
-			name: "infra type routes to the wisp plane alone, untouched by the delta",
-			in:   issueops.CountRequest{IssueType: "agent", IncludeInfra: true},
-			want: ephemeralWant{skipWisps: false, ephemeral: ptrBool(true)},
+			name:          "--include-ephemeral with a named type admits the plane",
+			in:            issueops.CountRequest{IssueType: "task", IncludeEphemeral: true},
+			wantSkipWisps: false,
+		},
+		{
+			name:          "--include-infra still admits the plane on its own",
+			in:            issueops.CountRequest{IssueType: "task", IncludeInfra: true},
+			wantSkipWisps: false,
 		},
 	}
 
@@ -72,39 +57,80 @@ func TestBuildCountFilter_PlaneRule(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildCountFilter: %v", err)
 			}
-
-			if filter.SkipWisps != tt.want.skipWisps {
-				t.Errorf("SkipWisps = %v, want %v", filter.SkipWisps, tt.want.skipWisps)
-			}
-			switch {
-			case tt.want.ephemeral == nil && filter.Ephemeral != nil:
-				t.Errorf("Ephemeral = %v, want unset", *filter.Ephemeral)
-			case tt.want.ephemeral != nil && filter.Ephemeral == nil:
-				t.Errorf("Ephemeral = unset, want %v", *tt.want.ephemeral)
-			case tt.want.ephemeral != nil && *filter.Ephemeral != *tt.want.ephemeral:
-				t.Errorf("Ephemeral = %v, want %v", *filter.Ephemeral, *tt.want.ephemeral)
+			if filter.SkipWisps != tt.wantSkipWisps {
+				t.Errorf("SkipWisps = %v, want %v", filter.SkipWisps, tt.wantSkipWisps)
 			}
 		})
 	}
 }
 
-// TestBuildListFilter_PlaneAdmitsNamedTypeWhereverItLives is the list-side
-// companion: TestBuildListFilter_SkipWisps pins WHETHER the plane is read,
-// this pins that nothing narrows what comes back from it. The fork's contract
-// is that a named type means that type wherever it lives — durable, no_history
-// and ephemeral alike — so Ephemeral must stay unset. See
-// TestEmbeddedCountIncludeInfra's type_filter case, which wants all six.
-func TestBuildListFilter_PlaneAdmitsNamedTypeWhereverItLives(t *testing.T) {
-	cfg := ListConfig{}
+// TestCountAndListPlaneAgreement pins how count and list decide the PLANE for
+// the same request — including the ONE case where they disagree.
+//
+// The name is not "AgreeOnThePlane" because they do not always agree, and a
+// test that claimed they did would be asserting a property the code lacks. For
+// an INFRA type they diverge: list reads the plane (applyTypeSuppressions
+// exempts infra types) while count does not, so `bd count --type agent` answers
+// 0 where `bd list --type agent` returns rows.
+//
+// That divergence is UPSTREAM'S and predates the flag — upstream's count arm is
+// a bare `else { SkipWisps = true }`, so it answers 0 for an infra type too. It
+// is pinned here rather than fixed because fixing it inside the fork would
+// re-add the divergence this change exists to remove; it belongs upstream. The
+// fork's old wide default happened to mask it, which is why it surfaces now.
+//
+// It asserts the ABSOLUTE expected value as well as the agreement. Agreement
+// alone is satisfied by a regression that turns the flag into a no-op on BOTH
+// builders, which is exactly the drift this exists to catch.
+//
+// It deliberately says nothing about the two answers being equal in ROWS: a
+// count includes templates and a listing does not, with or without this flag.
+// See issueops.CountRequest.IncludeEphemeral.
+func TestCountAndListPlaneAgreement(t *testing.T) {
+	// CustomTypes admits "agent" into the workspace vocabulary (BuildListFilter
+	// rejects a type it does not know), and the default InfraSet already treats
+	// it as infra. Without the vocabulary the builders return an error and the
+	// infra cases below prove nothing.
+	cfg := ListConfig{CustomTypes: []string{"agent", "role", "message"}}
 
-	filter, err := BuildListFilter(issueops.ListRequest{IssueType: "task"}, cfg)
-	if err != nil {
-		t.Fatalf("BuildListFilter: %v", err)
-	}
-	if filter.SkipWisps {
-		t.Error("SkipWisps = true, want false (the plane must be read)")
-	}
-	if filter.Ephemeral != nil {
-		t.Errorf("Ephemeral = %v, want unset (a named type admits ephemeral rows too)", *filter.Ephemeral)
+	for _, tt := range []struct {
+		name             string
+		issueType        string
+		includeEphemeral bool
+		wantCountSkip    bool
+		wantAgree        bool
+	}{
+		{"default", "", false, true, true},
+		{"named type", "task", false, true, true},
+		{"include-ephemeral", "", true, false, true},
+		{"named type + include-ephemeral", "task", true, false, true},
+		// The known divergence. list reads the plane for an infra type, count
+		// does not; --include-ephemeral recovers count.
+		{"infra type diverges", "agent", false, true, false},
+		{"infra type + include-ephemeral", "agent", true, false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			listFilter, err := BuildListFilter(issueops.ListRequest{
+				IssueType: tt.issueType, IncludeEphemeral: tt.includeEphemeral,
+			}, cfg)
+			if err != nil {
+				t.Fatalf("BuildListFilter: %v", err)
+			}
+			countFilter, err := BuildCountFilter(issueops.CountRequest{
+				IssueType: tt.issueType, IncludeEphemeral: tt.includeEphemeral,
+			}, cfg)
+			if err != nil {
+				t.Fatalf("BuildCountFilter: %v", err)
+			}
+			if countFilter.SkipWisps != tt.wantCountSkip {
+				t.Errorf("count SkipWisps = %v, want %v", countFilter.SkipWisps, tt.wantCountSkip)
+			}
+			agree := listFilter.SkipWisps == countFilter.SkipWisps
+			if agree != tt.wantAgree {
+				t.Errorf("list SkipWisps=%v count SkipWisps=%v (agree=%v), want agree=%v — "+
+					"a change to either builder alone lands here",
+					listFilter.SkipWisps, countFilter.SkipWisps, agree, tt.wantAgree)
+			}
+		})
 	}
 }
