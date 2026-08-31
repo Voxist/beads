@@ -476,7 +476,7 @@ func init() {
 	// This flag is how a caller reaches the wisps table, and it is the ONLY way
 	// short of --include-infra (which is wider: it also lifts the infra TYPE
 	// exclusions). An explicit --type does NOT search that table — the fork
-	// briefly made it do so (va-k0e) and that delta was removed in favour of
+	// briefly made it do so (va-k0e) and that delta was removed in favor of
 	// this flag, so do not re-add it. `bd count` carries the mirror flag.
 	listCmd.Flags().Bool("include-ephemeral", false, "Include ephemeral issues/wisps in output (normally hidden)")
 
