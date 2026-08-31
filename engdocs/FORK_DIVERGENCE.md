@@ -13,6 +13,7 @@ Keep this file current when a resync lands or an upstream PR changes state.
 | --- | --- | --- |
 | `origin` | `gastownhall/beads` | **upstream** |
 | `bfork` | `Voxist/beads` | **this fork**; `main` tracks `bfork/main` |
+| `mine` | `bourgois/beads-fork` | **personal fork**; upstream PRs are filed from here |
 | `cstar`, `maphew` | peer forks | reference only |
 
 The naming is inverted from the usual convention: `origin` is *upstream*, not
@@ -73,24 +74,55 @@ maintainers from pushing to an organization-owned fork branch, so maintainers
 could not amend our PR in place and re-landed it themselves with authorship
 preserved.
 
-> **Contribution rule:** file upstream PRs from a *personal* fork, not from
-> `Voxist/beads`. "Allow edits by maintainers" does not work on org-owned forks,
-> and every org-fork PR so far has cost a manual re-land.
->
-> **That personal fork does not exist yet.** `bourgois/beads` is a REDIRECT to
-> `Voxist/beads` — the same repository, id `1261574242` — presumably left behind
-> when the fork was transferred to the org. `gh repo view bourgois/beads`
-> answers about `Voxist/beads`, and a remote pointing at it pushes to the org
-> fork. Verify with:
+> **Contribution rule:** file upstream PRs from **`bourgois/beads-fork`**, never
+> from `Voxist/beads`. "Allow edits by maintainers" does not work on an
+> org-owned fork, so a maintainer who wants to amend a PR cannot push to it —
+> every org-fork PR we filed (#4355, #4407, #4449) cost them a manual
+> replacement transport instead. Confirmed working on the personal fork:
+> `maintainer_can_modify` is `true` on #6096/#6097/#6098.
 >
 > ```
-> gh api repos/bourgois/beads --jq .full_name   # -> Voxist/beads
+> git remote add mine git@github.com:bourgois/beads-fork.git
+> git push mine <branch>
+> gh pr create --repo gastownhall/beads --head bourgois:<branch>
 > ```
 >
-> So this rule is currently unactionable: someone must first create a real
-> personal fork under their own account (`gh repo fork gastownhall/beads`).
-> Until then, an upstream PR either comes from the org fork and costs a re-land,
-> or waits.
+> **The fork is `beads-fork`, not `beads`, deliberately.** `bourgois/beads` is a
+> REDIRECT to `Voxist/beads` — the same repository, id `1261574242` — left by the
+> transfer to the org, and it resolves at the GIT level, not just the web UI:
+>
+> ```
+> gh api repos/bourgois/beads --jq .full_name        # -> Voxist/beads
+> git ls-remote https://github.com/bourgois/beads.git  # -> Voxist/beads' main
+> ```
+>
+> Creating a repo at that path would DISABLE the redirect, silently retargeting
+> anything still configured with the old URL — reads would return the wrong
+> repository and a push would land in it, neither failing loudly. Nothing on the
+> dev machine referenced it when this was checked, but other clones, CI configs
+> and teammates could not be inspected, so the name was left alone. Do not
+> reclaim it casually; if you ever want it, audit those first.
+
+## Filed upstream, awaiting review
+
+Opened 2026-08-31 from `bourgois/beads-fork`, all with `maintainer_can_modify`.
+None is fork carry — each fixes an upstream bug the fork happened to hit.
+
+| PR | What |
+| --- | --- |
+| [#6096](https://github.com/gastownhall/beads/pull/6096) | `update-nix-vendorhash.sh` writes a stray `default.nix''` on BSD sed — `SED_INPLACE="sed -i ''"` cannot carry an empty argument, so the quotes survive word-splitting as a literal backup suffix. The stray carries the placeholder `sha256-AAAA…` hash, so `git add -A` can commit an unvalidatable `vendorHash`. |
+| [#6097](https://github.com/gastownhall/beads/pull/6097) | `TestProtocol_FieldsRoundTrip` fails wherever `TZ` differs from the system zone. `workspace.env()` is a whitelist and omits `TZ`, so the `bd` child falls back to `/etc/localtime` while the test process uses its own. Upstream CI misses it because its runners have `TZ` unset AND a UTC system zone. |
+| [#6098](https://github.com/gastownhall/beads/pull/6098) | `bd list --wisp-type X` is UNSATISFIABLE — wisp-typed beads are routed to the wisps table on write, `issues.wisp_type` defaults to `''`, and the plane is skipped, so the predicate is evaluated only against rows that cannot carry it. The golden corpus was recording the bug. |
+
+Two more candidates, both gated on the `--include-ephemeral` work landing here
+first:
+
+- **`--include-ephemeral` on `bd list` and `bd count`** — additive, defaults
+  untouched. Landing it retires nearly all of the remaining carry in the wisps
+  section above.
+- **`bd count --type <infra type>` answers 0** while `bd list --type <infra
+  type>` returns rows. Upstream's asymmetry; pinned by
+  `TestCountAndListPlaneAgreement`'s `infra type diverges` case.
 
 ## Fork-local, no upstream path yet
 
