@@ -26,13 +26,25 @@ type readyScopeField struct {
 // intersection: fields the builder copies onto the filter and the projection
 // then discards.
 //
-// Three groups are deliberately ABSENT, because listing them here would refuse
+// Four groups are deliberately ABSENT, because listing them here would refuse
 // requests that are answered correctly today:
 //
 //   - What the projection carries: IssueType, all five label forms, Assignee,
 //     NoAssignee, the exact Priority, ParentID, MolType, WispType,
 //     MetadataFields, HasMetadataKey, ExcludeTypes (and with it IncludeGates
-//     and IncludeInfra's type suppression), Limit, Offset and MaxRows.
+//     and IncludeInfra's type suppression), IncludeEphemeral (and with it
+//     IncludeInfra's plane half, which the ready query admits through its own
+//     ephemeral gate), Limit, Offset, and the MaxRows cap with its
+//     attribution.
+//
+//   - THE HYDRATION KNOBS, SkipLabels and SkipCounts. They are the one group
+//     the "exactly the intersection" rule above would otherwise sweep in: the
+//     builder does copy them onto the filter and the projection does discard
+//     them. They stay out because they select what is HYDRATED rather than
+//     which rows match, so a ReadyFlag request that sets one is answered with
+//     the rows it asked for and merely pays for a column it did not want.
+//     Refusing that would be refusing a correct answer over its cost, and the
+//     promise is already stated where a caller reads it (ListRequest.ReadyFlag).
 //
 //   - Status and AllFlag. The builder resolves both to "open" under ReadyFlag
 //     before the projection ever runs, so IssueFilter.Statuses is never
@@ -79,9 +91,11 @@ var readyScopeFields = []readyScopeField{
 	{"PriorityMin", "--priority-min", func(r ListRequest) bool { return r.PriorityMin != nil }},
 	{"PriorityMax", "--priority-max", func(r ListRequest) bool { return r.PriorityMax != nil }},
 
-	// The keyset position is a pair and only the timestamp half decides
-	// whether one was supplied; AfterID alone is not a position.
-	{"AfterCreatedAt/AfterID", "cursor", func(r ListRequest) bool { return r.AfterCreatedAt != nil }},
+	// The keyset position is a tuple and only the timestamp half decides
+	// whether one was supplied; neither AfterID nor AfterPriority alone is a
+	// position. All three are named in the refusal because a caller who dropped
+	// only the ones named would still be sending part of a position.
+	{"AfterCreatedAt/AfterID/AfterPriority", "cursor", func(r ListRequest) bool { return r.AfterCreatedAt != nil }},
 }
 
 // ValidateReadyFlagScope refuses a list request that combines ReadyFlag with a

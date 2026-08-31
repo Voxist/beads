@@ -31,10 +31,12 @@ func (s *DoltStore) createIssue(ctx context.Context, issue *types.Issue, actor s
 		return fmt.Errorf("issue must not be nil")
 	}
 
-	// Route to wisps table if ephemeral, no-history, or infra type.
-	useWispsTable := issue.Ephemeral || issue.NoHistory || s.IsInfraTypeCtx(ctx, issue.IssueType)
+	// Route to wisps table if ephemeral, no-history, wisp-typed, or infra type.
+	// A wisp_type is a claim of ephemerality: minted without the flag it lands
+	// in the issues plane where no TTL, GC, or purge tier owns it.
+	useWispsTable := issue.Ephemeral || issue.NoHistory || issue.WispType != "" || s.IsInfraTypeCtx(ctx, issue.IssueType)
 	if useWispsTable && !issue.NoHistory {
-		issue.Ephemeral = true // infra types get marked ephemeral (legacy behavior)
+		issue.Ephemeral = true // infra and wisp types get marked ephemeral (legacy behavior)
 	}
 
 	var result issueops.CreateIssueResult
@@ -86,7 +88,6 @@ func sortedDirtyTables(dirty map[string]bool) []string {
 // CreateIssues creates multiple issues in a single transaction
 func (s *DoltStore) CreateIssues(ctx context.Context, issues []*types.Issue, actor string) error {
 	return s.CreateIssuesWithFullOptions(ctx, issues, actor, storage.BatchCreateOptions{
-		OrphanHandling:       storage.OrphanAllow,
 		SkipPrefixValidation: false,
 	})
 }
@@ -667,7 +668,7 @@ func (s *DoltStore) deleteIssue(ctx context.Context, id string) error {
 
 		commitMsg := fmt.Sprintf("bd: delete %s", id)
 		return s.doltAddAndCommitInTx(ctx, tx,
-			[]string{"issues", "dependencies", "labels", "comments", "events", "child_counters", "issue_snapshots", "compaction_snapshots"},
+			[]string{"issues", "dependencies", "labels", "comments", "events", "provenance_events", "child_counters", "issue_snapshots", "compaction_snapshots"},
 			commitMsg)
 	}); err != nil {
 		return s.recordDoltPublicationFailure(ctx, err)
@@ -749,7 +750,7 @@ func (s *DoltStore) deleteIssues(ctx context.Context, ids []string, cascade bool
 
 		commitMsg := fmt.Sprintf("bd: delete %d issue(s)", result.DeletedCount)
 		return s.doltAddAndCommitInTx(ctx, tx,
-			[]string{"issues", "dependencies", "labels", "comments", "events", "child_counters", "issue_snapshots", "compaction_snapshots"},
+			[]string{"issues", "dependencies", "labels", "comments", "events", "provenance_events", "child_counters", "issue_snapshots", "compaction_snapshots"},
 			commitMsg)
 	}); err != nil {
 		// Preserve partial result (e.g., OrphanedIssues) on error.

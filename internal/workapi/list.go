@@ -196,24 +196,45 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 	}
 
 	filter := types.IssueFilter{
-		Limit:          SQLLimit(in),
+		Limit: SQLLimit(in),
+		// The offset is carried for the callers that consume this filter as a
+		// VALUE and run their own query — `bd list --watch` and the proxied
+		// hierarchical --parent walk — where the seam beneath them renders it.
+		// Both implementations of issueops.Reader take it back off
+		// (WithRowsBeforeThePage) and skip in the shared page epilogue instead;
+		// FinishPageAt says why the role cannot leave it here.
 		Offset:         in.Offset,
 		SortBy:         in.SortBy,
 		SortDesc:       in.Reverse,
 		AfterCreatedAt: in.AfterCreatedAt,
 		AfterID:        in.AfterID,
+		AfterPriority:  in.AfterPriority,
+		// The defensive cap travels ON the request, so this builder is the
+		// only writer of the filter's two cap fields. `bd list` used to stamp
+		// them onto the filter after the builder returned, which is the
+		// "build it, then reach in and change it" half-step the role exists to
+		// make unreachable — and it left the cap invisible to every
+		// implementation of Reader.List.
+		MaxRows:       in.MaxRows,
+		MaxRowsSource: in.MaxRowsSource,
 	}
+
+	// The status selector is parsed once here; every consumer below — the
+	// "all" short-circuit, the default exclusions, the pinned default —
+	// works from the same parts so their readings cannot drift.
+	statusParts := splitStatusSelector(in.Status)
+	statusAll := len(statusParts) == 1 && statusParts[0] == "all"
 
 	if in.ReadyFlag {
 		s := types.StatusOpen
 		filter.Status = &s
-	} else if in.Status != "" && in.Status != "all" {
-		if err := ApplyStatusFilter(&filter, in.Status, cfg.CustomStatusNames()); err != nil {
+	} else if len(statusParts) > 0 && !statusAll {
+		if err := applyStatusParts(&filter, statusParts, cfg.CustomStatusNames()); err != nil {
 			return filter, err
 		}
 	}
 
-	if in.Status == "" && !in.AllFlag && !in.ReadyFlag && !in.PinnedFlag {
+	if len(statusParts) == 0 && !in.AllFlag && !in.ReadyFlag && !in.PinnedFlag {
 		excludeStatuses := []types.Status{types.StatusClosed, types.StatusPinned}
 		for _, cs := range cfg.CustomStatuses {
 			if cs.Category == types.CategoryDone || cs.Category == types.CategoryFrozen {
@@ -306,6 +327,12 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 	if in.SkipLabels {
 		filter.SkipLabels = true
 	}
+	if in.SkipCounts {
+		filter.SkipCounts = true
+	}
+	if in.Brief {
+		filter.Lite = true
+	}
 
 	if in.PriorityMin != nil {
 		p := *in.PriorityMin
@@ -319,25 +346,12 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 	if in.PinnedFlag {
 		pinned := true
 		filter.Pinned = &pinned
-	} else if in.NoPinnedFlag || (in.Status != "pinned" && in.Status != "hooked" && !in.AllFlag) {
+	} else if in.NoPinnedFlag || (!statusSelectsPinned(statusParts, !in.ReadyFlag) && !in.AllFlag) {
 		pinned := false
 		filter.Pinned = &pinned
 	}
 
-	if !in.IncludeTemplates {
-		isTemplate := false
-		filter.IsTemplate = &isTemplate
-	}
-
-	if !in.IncludeGates && in.IssueType != "gate" {
-		filter.ExcludeTypes = append(filter.ExcludeTypes, "gate")
-	}
-
-	if !in.IncludeInfra && !cfg.IsInfra(in.IssueType) {
-		for _, t := range cfg.InfraTypes() {
-			filter.ExcludeTypes = append(filter.ExcludeTypes, types.IssueType(t))
-		}
-	}
+	applyTypeSuppressions(in, cfg, &filter)
 
 	for _, raw := range in.ExcludeTypes {
 		for _, t := range strings.Split(raw, ",") {
@@ -389,20 +403,105 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 		return filter, err
 	}
 
-	// Default to skipping the wisps (ephemeral) table for perf and to keep
-	// routine listings durable-tier-only. Any explicit type filter opts back
-	// in unconditionally: a type that can only match wisps-table rows
-	// (molecules, or any other type parked there) must not be silently
-	// incomplete (va-k0e). IncludeInfra and IncludeEphemeral are the
-	// explicit escape hatches for the unfiltered case. AllFlag deliberately
-	// does NOT opt in: the reader contract pins AllFlag as replacing the
-	// default status exclusions only (ListDefaultExclusionsAndTheirOverrides),
-	// and the wisp plane keeps its own dedicated opt-in.
-	if !in.IncludeInfra && !in.IncludeEphemeral && in.IssueType == "" {
-		filter.SkipWisps = true
+	return filter, nil
+}
+
+// applyTypeSuppressions applies every default suppression that hides a bead on
+// account of WHAT IT IS, so that a "show everything" frontend has exactly one
+// thing to skip. Two kinds live here: the type-level exclusions that make the
+// default listing show durable work only (templates, gates, infra types), and
+// the plane decision — whether the wisps TABLE is read at all.
+//
+// IncludeAllTypes lifts them ALL by skipping this function entirely, which is
+// what makes it future-proof: a suppression added here is automatically lifted
+// for frontends like `bd human list` without touching them.
+func applyTypeSuppressions(in issueops.ListRequest, cfg ListConfig, filter *types.IssueFilter) {
+	if in.IncludeAllTypes {
+		return
 	}
 
-	return filter, nil
+	if !in.IncludeTemplates {
+		isTemplate := false
+		filter.IsTemplate = &isTemplate
+	}
+
+	if !in.IncludeGates && in.IssueType != "gate" {
+		filter.ExcludeTypes = append(filter.ExcludeTypes, "gate")
+	}
+
+	if !in.IncludeInfra && !cfg.IsInfra(in.IssueType) {
+		for _, t := range cfg.InfraTypes() {
+			filter.ExcludeTypes = append(filter.ExcludeTypes, types.IssueType(t))
+		}
+	}
+
+	// The plane bit. Three requests admit the wisp table: an explicit
+	// IncludeEphemeral, IncludeInfra (which admits the plane AND drops the
+	// infra-type exclusions above), and naming an infra type (which routed to
+	// the plane alone in BuildListFilter). Everything else is the durable
+	// listing. IncludeAllTypes is a fourth, via the early return above — it is
+	// the union of these flags, so it must decide the plane too, not only the
+	// type exclusions.
+	//
+	// FORK DELTA (va-k0e/vg-3kn/vg-8db, engdocs/FORK_DIVERGENCE.md): ANY explicit
+	// type admits the plane, not only an infra one. The write path routes on
+	// STORAGE CLASS, not type — issues.go's useWispsTable is
+	// `Ephemeral || NoHistory || WispType != "" || IsInfraType` — so a
+	// no_history task or molecule sits in the wisps TABLE at ephemeral = 0, and
+	// an ephemeral task sits there at ephemeral = 1. Under upstream's condition
+	// `bd list --type task` reads neither and those beads are invisible with
+	// nothing indicating anything was withheld.
+	//
+	// Ephemeral is deliberately NOT pinned here. Naming a type is a request for
+	// that type WHEREVER IT LIVES, ephemeral rows included — the fork's
+	// contract, pinned by TestEmbeddedCountIncludeInfra's
+	// "type_filter_includes_wisps_tier_without_include_infra" case, which
+	// counts 3 durable + 2 no_history + 1 ephemeral task and wants 6. Pinning
+	// Ephemeral false would answer 5 and silently drop the ephemeral one.
+	//
+	// An INFRA type is untouched here. BuildListFilter pins Ephemeral=true for
+	// it — routing to the wisp plane alone, which is correct since infra rows
+	// are marked ephemeral on write — but it does so AFTER this call, so
+	// filter.Ephemeral is always nil while this function runs. Do not branch on
+	// it here.
+	if !in.IncludeEphemeral && !in.IncludeInfra && in.IssueType == "" {
+		filter.SkipWisps = true
+	}
+}
+
+// splitStatusSelector splits a --status selector into its trimmed
+// comma-separated parts. An empty selector yields nil. This is the only
+// reading of the selector syntax; everything downstream works on the parts.
+func splitStatusSelector(status string) []string {
+	if status == "" {
+		return nil
+	}
+	parts := strings.Split(status, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+// statusSelectsPinned reports whether a status selector asks for
+// pinned-carrying beads: the pinned or hooked status, or — when the selector
+// actually applies to the query — the "all" selector, which promises every
+// status. The pinned default is not forced off for a filter that asks for
+// those beads. allApplies is false under --ready, which forces status open
+// and otherwise ignores the selector, so "all" must not lift the pinned
+// default there.
+func statusSelectsPinned(parts []string, allApplies bool) bool {
+	for _, part := range parts {
+		switch part {
+		case "pinned", "hooked":
+			return true
+		case "all":
+			if allApplies {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ValidStatusList renders the status names a filter accepts, for error text.
@@ -417,20 +516,33 @@ func ValidStatusList(customStatusNames []string) string {
 // ApplyStatusFilter parses a status selector - one status, or a
 // comma-separated OR set - onto the filter.
 func ApplyStatusFilter(filter *types.IssueFilter, status string, customStatusNames []string) error {
-	statusParts := strings.Split(status, ",")
-	if len(statusParts) == 1 {
-		s := types.Status(strings.TrimSpace(statusParts[0]))
+	parts := splitStatusSelector(status)
+	if len(parts) == 0 {
+		return fmt.Errorf("invalid status %q (valid: %s)", status, ValidStatusList(customStatusNames))
+	}
+	return applyStatusParts(filter, parts, customStatusNames)
+}
+
+func applyStatusParts(filter *types.IssueFilter, parts []string, customStatusNames []string) error {
+	if len(parts) == 1 {
+		s := types.Status(parts[0])
 		if !s.IsValidWithCustom(customStatusNames) {
-			return fmt.Errorf("invalid status %q (valid: %s)", status, ValidStatusList(customStatusNames))
+			return fmt.Errorf("invalid status %q (valid: %s)", parts[0], ValidStatusList(customStatusNames))
 		}
 		filter.Status = &s
 		return nil
 	}
 
-	for _, part := range statusParts {
-		s := types.Status(strings.TrimSpace(part))
+	for _, part := range parts {
+		s := types.Status(part)
 		if !s.IsValidWithCustom(customStatusNames) {
-			return fmt.Errorf("invalid status %q in multi-status filter (valid: %s)", strings.TrimSpace(part), ValidStatusList(customStatusNames))
+			// "all" is a real selector on its own (every status), so failing
+			// it as merely "invalid" would contradict the flag help. A custom
+			// status literally named "all" passes validation above instead.
+			if part == "all" {
+				return fmt.Errorf(`status "all" cannot be combined with other statuses`)
+			}
+			return fmt.Errorf("invalid status %q in multi-status filter (valid: %s)", part, ValidStatusList(customStatusNames))
 		}
 		filter.Statuses = append(filter.Statuses, s)
 	}
