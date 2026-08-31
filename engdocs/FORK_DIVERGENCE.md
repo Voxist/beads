@@ -106,7 +106,7 @@ Not refused — simply never proposed. These are the real upstreaming backlog.
 Ops-only, never upstreamable: `DEPLOY_BD` install guard, nix `vendorHash`
 recomputation, `prepared-dml-grandfather.txt`.
 
-## The wisps plane rule — RESOLVED, no longer a divergence
+## The wisps plane rule — resolved into an additive flag
 
 `va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of
 the answer is worth not re-deriving, and because the reasoning that made it look
@@ -159,8 +159,18 @@ each of these read as solid at the time:
   `no_history` rows, not the ephemeral ones.
 
 **Behaviour change.** `bd list --type X` and `bd count --type X` are
-durable-only again; add `--include-ephemeral` to reach the wisps tier. The
-concrete loser is `bd list --type session` (city `session` beads are written
+durable-only again; add `--include-ephemeral` to reach the wisps tier.
+
+`bd count --type <INFRA TYPE>` — `agent`, `role`, `message`, or whatever the
+workspace configures — now answers **0**, because infra beads are always written
+to the wisps table and count no longer reads it for a named type. `bd list
+--type agent` still returns rows, so the two disagree. That asymmetry is
+UPSTREAM'S (its count arm is a bare `else { SkipWisps = true }`); the fork's old
+wide default merely masked it. `--include-ephemeral` or `--include-infra`
+recovers the count. Pinned by `TestCountAndListPlaneAgreement`'s
+`infra type diverges` case, and worth fixing UPSTREAM rather than here.
+
+Among non-infra types the concrete loser is `bd list --type session` (city `session` beads are written
 `no_history`, and `session` is a custom type, not an infra type);
 `workflow`/`step`/`convergence` are in the same position. No doc, skill, runbook
 or agent instruction in either repo promised otherwise — swept before the
@@ -168,24 +178,61 @@ change. `docs/CLI_REFERENCE.md` deliberately does NOT document the new flag yet:
 the docs describe the pinned release (`docs/cli-docs.pin`), so it appears at the
 next release bump.
 
-**Remaining carry**, all additive and each proposed upstream separately: the
-`--include-ephemeral` registrations on `bd list` and `bd count`, the
-`CountRequest` field, and the one-line guard. Upstream already owns the concept —
-`ListRequest.IncludeEphemeral` is documented, the HTTP API exposes
-`include_ephemeral`, and the flag is registered on `bd ready` and
-`bd linear sync` — it was simply never wired to `bd list` or `bd count`.
+**Remaining carry.** Not zero, and the earlier claim that it was is wrong. The
+divergence CHANGED CHARACTER rather than disappearing, which is the real win:
+
+| File | What |
+| --- | --- |
+| `internal/workapi/count.go` | the one-line `!in.IncludeEphemeral` guard |
+| `issueops/counter.go` | the `CountRequest.IncludeEphemeral` field + doc |
+| `cmd/bd/count.go` | flag registration, read, examples line |
+| `cmd/bd/list.go`, `cmd/bd/list_input.go` | the pre-existing `--include-ephemeral` flag |
+| `internal/httpapi/reads.go` | reads `include_ephemeral` in `countFilters` |
+| `internal/httpapi/spec/openapi.v0.yaml` | the parameter on `countIssues` |
+| `internal/httpapi/apigen/types.gen.go` | GENERATED from that spec — `make api-gen` |
+| `internal/httpapi/count_test.go` | parameter map, forwarding case, the filter counts |
+| `cmd/bd/count_filter_test.go` | the flag tripwire's map and `want` |
+| `internal/workapi/count_skipwisps_test.go` | fork-owned; no upstream conflict |
+| `cmd/bd/count_include_ephemeral_embedded_test.go` | fork-owned; no upstream conflict |
+
+The last two rows are ours and cost nothing at resync. The rest are
+upstream-owned — but every one is an ADDITIVE registration of a new flag, which
+is the difference that matters. The old delta CONTRADICTED values upstream
+asserts (`--type task` 3 -> 6 in two count twins); that can never be upstreamed
+and must be re-applied, by hand, forever, and it silently drifted once. These
+go away entirely the day the flag is upstreamed.
+
+Two of them are still in-place edits of upstream TEST files
+(`internal/httpapi/count_test.go`, `cmd/bd/count_filter_test.go`) — the same
+pattern this change set out to remove, so it is worth being clear-eyed about:
+both are tripwires that FAIL LOUDLY when the flag is present and unregistered,
+rather than assertions that silently disagree. `count_test.go` also carries
+hand-maintained prose ("the role publishes 24 filters") that a resync will not
+update for you.
+
+**`openapi.v0.yaml` is the trap.** Miss that hunk on a resync and `make
+api-check` fails with a regeneration diff that reads like the fork's generated
+file is stale, not like a dropped delta. Re-apply the spec hunk, then
+`make api-gen`.
 
 ## Known resync conflict zones
 
 Recurring conflicts, roughly in descending pain:
 
-1. `internal/storage/uow/*`, `internal/storage/dolt/store.go`,
+1. `internal/workapi/count.go`, `issueops/counter.go`, `cmd/bd/count.go`,
+   `cmd/bd/list.go`, `cmd/bd/list_input.go`, `internal/httpapi/reads.go`,
+   `internal/httpapi/spec/openapi.v0.yaml` (then `make api-gen`),
+   `internal/httpapi/count_test.go`, `cmd/bd/count_filter_test.go` — the
+   `--include-ephemeral` carry above. Additive, so it conflicts far less than
+   the delta it replaced, but it is NOT zero: see the table in that section for
+   what each file holds.
+2. `internal/storage/uow/*`, `internal/storage/dolt/store.go`,
    `internal/storage/issueops/commit_pending.go` — our originals vs the
    upstream re-lands. **Auto-merges cleanly and wrongly**; review by hand.
-2. `go.mod` / `go.sum` / `default.nix` — the fork adds `lumberjack` and
+3. `go.mod` / `go.sum` / `default.nix` — the fork adds `lumberjack` and
    `x/time` as direct deps, so `vendorHash` must be recomputed after every
    resync.
-3. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
+4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
 
 ## Parked, deliberately not carried
 
