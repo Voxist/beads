@@ -361,6 +361,30 @@ func TestCommentOutYamlKeyAnyForm(t *testing.T) {
 			want:    "# dolt:\n  # mode: server\nb: 2",
 		},
 		{
+			name:    "deeper key of the same name is NOT touched",
+			content: "dolt:\n  pool:\n    mode: fast\n  disable: true",
+			key:     "dolt.mode",
+			want:    "dolt:\n  pool:\n    mode: fast\n  disable: true",
+		},
+		{
+			name:    "three-segment key is commented at the right depth",
+			content: "dolt:\n  pool:\n    mode: fast\n    size: 4",
+			key:     "dolt.pool.mode",
+			want:    "dolt:\n  pool:\n    # mode: fast\n    size: 4",
+		},
+		{
+			name:    "emptied ancestors are commented out up the chain",
+			content: "dolt:\n  pool:\n    mode: fast\nother: 1",
+			key:     "dolt.pool.mode",
+			want:    "# dolt:\n  # pool:\n    # mode: fast\nother: 1",
+		},
+		{
+			name:    "same-named key under a different parent is left alone",
+			content: "other:\n  mode: keep\ndolt:\n  mode: server",
+			key:     "dolt.mode",
+			want:    "other:\n  mode: keep\n# dolt:\n  # mode: server",
+		},
+		{
 			name:    "absent key is a no-op",
 			content: "a: 1\nb: 2",
 			key:     "dolt.mode",
@@ -379,5 +403,69 @@ func TestCommentOutYamlKeyAnyForm(t *testing.T) {
 				t.Errorf("commentOutYamlKeyAnyForm()\ngot:\n%s\nwant:\n%s", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestUnsetMachineLocalKeyClearsAValueStillInTrackedConfig covers the state
+// every workspace is in immediately after upgrading: the live value is still
+// in config.yaml and no sidecar exists yet. Clearing only the sidecar would
+// report success while the value stayed in effect.
+func TestUnsetMachineLocalKeyClearsAValueStillInTrackedConfig(t *testing.T) {
+	beadsDir, configPath, localPath := newWorkspace(t,
+		"issue_prefix: vp\nbackup.enabled: false\nother-setting: value\n")
+
+	t.Chdir(filepath.Dir(beadsDir))
+	if err := UnsetYamlConfig("backup.enabled"); err != nil {
+		t.Fatalf("UnsetYamlConfig: %v", err)
+	}
+
+	if _, ok := yamlValueInContent(readFile(t, configPath), "backup.enabled"); ok {
+		t.Errorf("backup.enabled still live in config.yaml after unset:\n%s", readFile(t, configPath))
+	}
+	if _, ok := readYamlValueAtPath(localPath, "backup.enabled"); ok {
+		t.Errorf("backup.enabled still live in %s after unset", LocalConfigFileName)
+	}
+	if !strings.Contains(readFile(t, configPath), "other-setting: value") {
+		t.Errorf("unset disturbed an unrelated key:\n%s", readFile(t, configPath))
+	}
+}
+
+// TestMigrationMarkerNotRecordedWhenTrackedWriteFails: the marker must not
+// outlive a failed cleanup, or the one-time migration skips forever and
+// strands the keys in the tracked file.
+func TestMigrationMarkerNotRecordedWhenTrackedWriteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	beadsDir, configPath, localPath := newWorkspace(t, "issue_prefix: vp\nbackup.enabled: false\n")
+	if err := os.Chmod(configPath, 0o400); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(configPath, 0o600) }()
+
+	if err := SetYamlConfigInDir(beadsDir, "dolt.port", "3306"); err == nil {
+		t.Fatal("expected an error when config.yaml is not writable")
+	}
+	if strings.Contains(readFile(t, localPath), machineLocalMigrationMarker) {
+		t.Error("migration marker was recorded even though the config.yaml cleanup failed")
+	}
+}
+
+// TestMachineLocalKeysAreReadableByDirScopedReaders pins the reader half.
+// GetStringFromDir opens the workspace's files directly rather than going
+// through merged viper; `bd bootstrap` resolves dolt.port through it, so a
+// sidecar value invisible there would silently fall back to a default.
+func TestMachineLocalKeysAreReadableByDirScopedReaders(t *testing.T) {
+	beadsDir, _, _ := newWorkspace(t, "issue_prefix: vp\ndolt.port: \"1111\"\n")
+
+	if err := SetYamlConfigInDir(beadsDir, "dolt.port", "3306"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got := GetStringFromDir(beadsDir, "dolt.port"); got != "3306" {
+		t.Errorf("GetStringFromDir(dolt.port) = %q, want \"3306\" (sidecar must win)", got)
+	}
+	// A shared key still resolves from config.yaml.
+	if got := GetStringFromDir(beadsDir, "issue_prefix"); got != "vp" {
+		t.Errorf("GetStringFromDir(issue_prefix) = %q, want \"vp\"", got)
 	}
 }

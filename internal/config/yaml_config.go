@@ -823,27 +823,26 @@ func scalarStyleFor(value string) yaml.Style {
 	return 0
 }
 
+// commentOutYamlKey comments out the flat form of key, preserving indentation.
+//
+// It splits on newlines rather than scanning with bufio: a bufio.Scanner stops
+// at its 64 KiB line limit and silently returns everything before it, so a
+// single over-long line would truncate the file this result is written back
+// to — and since the machine-local migration routes the git-TRACKED
+// config.yaml through here, that truncation would be committed. Splitting also
+// round-trips a trailing newline instead of eating it.
 func commentOutYamlKey(content, key string) string {
 	keyPattern := regexp.MustCompile(`^(\s*)` + regexp.QuoteMeta(key) + `\s*:`)
 
-	var result []string
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if keyPattern.MatchString(line) {
-			matches := keyPattern.FindStringSubmatch(line)
-			indent := ""
-			if len(matches) > 1 {
-				indent = matches[1]
-			}
-			// Comment out the line, preserving indentation
-			result = append(result, indent+"# "+strings.TrimLeft(line, " \t"))
-		} else {
-			result = append(result, line)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if !keyPattern.MatchString(line) {
+			continue
 		}
+		lines[i] = commentOutLinePreservingIndent(line)
 	}
 
-	return strings.Join(result, "\n")
+	return strings.Join(lines, "\n")
 }
 
 // formatYamlValue formats a value appropriately for YAML.
@@ -951,10 +950,15 @@ func validateYamlConfigValue(key, value string) error {
 // the flat form, updateNestedYamlKey creates the nested one — so a caller that
 // has to remove a key reliably cannot assume either shape.
 //
-// It works on lines rather than through the YAML parser so that comments,
-// key order, and formatting in the surrounding file survive untouched. The
+// It works on lines rather than through the YAML parser so that comments, key
+// order, and formatting in the surrounding file survive untouched. The
 // alternative, unmarshal-and-remarshal, reflows the entire document; for a
 // git-tracked file that turns a two-line removal into an unreviewable diff.
+//
+// Each segment is matched only as a DIRECT child of the one before it, by
+// indentation. Matching a segment at any depth would let `dolt.mode` comment
+// out the `mode:` inside a `dolt:`/`pool:` block — silently dropping a
+// different key's value.
 //
 // When commenting the child empties its parent block, the parent is commented
 // out too, so no bare `dolt:` (which parses as null) is left behind.
@@ -962,52 +966,92 @@ func commentOutYamlKeyAnyForm(content, key string) string {
 	out := commentOutYamlKey(content, key)
 
 	parts := strings.Split(key, ".")
-	if len(parts) != 2 {
+	if len(parts) < 2 {
 		return out
 	}
-	parent, child := parts[0], parts[1]
 
 	lines := strings.Split(out, "\n")
-	parentPattern := regexp.MustCompile(`^` + regexp.QuoteMeta(parent) + `\s*:\s*$`)
-	childPattern := regexp.MustCompile(`^(\s+)` + regexp.QuoteMeta(child) + `\s*:`)
+	path := findNestedKeyPath(lines, parts, 0, 0, len(lines), -1)
+	if path == nil {
+		return out
+	}
 
-	for i, line := range lines {
-		if !parentPattern.MatchString(line) {
-			continue
-		}
-		// Walk the parent's indented block.
-		end := len(lines)
-		childIdx := -1
-		for j := i + 1; j < len(lines); j++ {
-			l := lines[j]
-			if strings.TrimSpace(l) == "" {
-				continue
-			}
-			if !isIndentedLine(l) {
-				end = j
-				break
-			}
-			if childIdx == -1 && childPattern.MatchString(l) {
-				childIdx = j
-			}
-		}
-		if childIdx == -1 {
-			continue
-		}
-		lines[childIdx] = commentOutLinePreservingIndent(lines[childIdx])
+	leaf := path[len(path)-1]
+	lines[leaf] = commentOutLinePreservingIndent(lines[leaf])
 
-		// If nothing live is left under the parent, comment the parent too.
-		if !blockHasLiveKey(lines[i+1 : end]) {
-			lines[i] = commentOutLinePreservingIndent(lines[i])
+	// Walk back up, commenting out each ancestor whose block no longer holds a
+	// live key, so no bare `dolt:` (which parses as null) is left behind. Stop
+	// at the first ancestor that still has one.
+	for i := len(path) - 2; i >= 0; i-- {
+		j := path[i]
+		end := blockEnd(lines, j+1, indentWidth(lines[j]))
+		if blockHasLiveKey(lines[j+1 : end]) {
+			break
 		}
-		break
+		lines[j] = commentOutLinePreservingIndent(lines[j])
 	}
 
 	return strings.Join(lines, "\n")
 }
 
-func isIndentedLine(line string) bool {
-	return line != "" && (line[0] == ' ' || line[0] == '\t')
+// findNestedKeyPath returns the line index of every segment of parts[i:],
+// searching lines[from:to] for keys nested strictly deeper than parentIndent.
+// It returns nil when the path is absent.
+//
+// Each segment must be a DIRECT child of the previous one. Matching a segment
+// at any depth would let `dolt.mode` comment out the `mode:` inside a
+// `dolt:`/`pool:` block, silently dropping a different key's value.
+func findNestedKeyPath(lines, parts []string, i, from, to, parentIndent int) []int {
+	pattern := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(parts[i]) + `\s*:`)
+	childIndent := -1
+	for j := from; j < to; j++ {
+		trimmed := strings.TrimSpace(lines[j])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := indentWidth(lines[j])
+		if indent <= parentIndent {
+			return nil // the parent's block ended without a match
+		}
+		// The first key in the block fixes the depth of a direct child;
+		// anything deeper is a grandchild and must not be matched here.
+		if childIndent == -1 {
+			childIndent = indent
+		}
+		if indent != childIndent {
+			continue
+		}
+		if !pattern.MatchString(lines[j]) {
+			continue
+		}
+		if i == len(parts)-1 {
+			return []int{j}
+		}
+		end := blockEnd(lines, j+1, indent)
+		if sub := findNestedKeyPath(lines, parts, i+1, j+1, end, indent); sub != nil {
+			return append([]int{j}, sub...)
+		}
+		return nil
+	}
+	return nil
+}
+
+// blockEnd returns the index one past the last line belonging to the block
+// whose key line sits at parentIndent.
+func blockEnd(lines []string, from, parentIndent int) int {
+	for j := from; j < len(lines); j++ {
+		if strings.TrimSpace(lines[j]) == "" {
+			continue
+		}
+		if indentWidth(lines[j]) <= parentIndent {
+			return j
+		}
+	}
+	return len(lines)
+}
+
+func indentWidth(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
 }
 
 func commentOutLinePreservingIndent(line string) string {
