@@ -275,6 +275,11 @@ func SetYamlConfig(key, value string) error {
 		return err
 	}
 
+	// Machine-local keys never touch the git-tracked config.yaml.
+	if IsMachineLocalKey(key) {
+		return setMachineLocalYamlConfig(configPath, key, value)
+	}
+
 	return setYamlConfigAtPath(configPath, key, value)
 }
 
@@ -294,6 +299,11 @@ func SetYamlConfigInDir(beadsDir, key, value string) error {
 			return fmt.Errorf("no config.yaml found in %s (run 'bd init' first)", beadsDir)
 		}
 		return fmt.Errorf("failed to stat config.yaml: %w", err)
+	}
+
+	// Machine-local keys never touch the git-tracked config.yaml.
+	if IsMachineLocalKey(key) {
+		return setMachineLocalYamlConfig(configPath, key, value)
 	}
 
 	return setYamlConfigAtPath(configPath, key, value)
@@ -369,6 +379,14 @@ func readYamlValueAtPath(path, key string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	return yamlValueFromBytes(data, key)
+}
+
+// yamlValueFromBytes reads a dotted key out of YAML bytes, accepting both the
+// flat dotted form and the nested form. Split out of readYamlValueAtPath so
+// the machine-local migration can ask the same question of content it already
+// holds in memory.
+func yamlValueFromBytes(data []byte, key string) (string, bool) {
 	var root map[string]interface{}
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return "", false
@@ -546,6 +564,13 @@ func UnsetYamlConfig(key string) error {
 	configPath, err := findProjectConfigYaml()
 	if err != nil {
 		return err
+	}
+
+	// A machine-local key lives in the sidecar, so that is what unset clears.
+	// A value in the tracked config.yaml is a shared default that only an
+	// explicit edit should remove.
+	if IsMachineLocalKey(key) {
+		return unsetMachineLocalYamlConfig(configPath, key)
 	}
 
 	normalizedKey := normalizeYamlKey(key)
@@ -918,4 +943,86 @@ func validateYamlConfigValue(key, value string) error {
 		}
 	}
 	return nil
+}
+
+// commentOutYamlKeyAnyForm comments out a dotted key written in EITHER the
+// flat form (`dolt.mode: server`) or the nested form (`dolt:` with an indented
+// `mode: server`). bd's own writer has produced both — updateYamlKey appends
+// the flat form, updateNestedYamlKey creates the nested one — so a caller that
+// has to remove a key reliably cannot assume either shape.
+//
+// It works on lines rather than through the YAML parser so that comments,
+// key order, and formatting in the surrounding file survive untouched. The
+// alternative, unmarshal-and-remarshal, reflows the entire document; for a
+// git-tracked file that turns a two-line removal into an unreviewable diff.
+//
+// When commenting the child empties its parent block, the parent is commented
+// out too, so no bare `dolt:` (which parses as null) is left behind.
+func commentOutYamlKeyAnyForm(content, key string) string {
+	out := commentOutYamlKey(content, key)
+
+	parts := strings.Split(key, ".")
+	if len(parts) != 2 {
+		return out
+	}
+	parent, child := parts[0], parts[1]
+
+	lines := strings.Split(out, "\n")
+	parentPattern := regexp.MustCompile(`^` + regexp.QuoteMeta(parent) + `\s*:\s*$`)
+	childPattern := regexp.MustCompile(`^(\s+)` + regexp.QuoteMeta(child) + `\s*:`)
+
+	for i, line := range lines {
+		if !parentPattern.MatchString(line) {
+			continue
+		}
+		// Walk the parent's indented block.
+		end := len(lines)
+		childIdx := -1
+		for j := i + 1; j < len(lines); j++ {
+			l := lines[j]
+			if strings.TrimSpace(l) == "" {
+				continue
+			}
+			if !isIndentedLine(l) {
+				end = j
+				break
+			}
+			if childIdx == -1 && childPattern.MatchString(l) {
+				childIdx = j
+			}
+		}
+		if childIdx == -1 {
+			continue
+		}
+		lines[childIdx] = commentOutLinePreservingIndent(lines[childIdx])
+
+		// If nothing live is left under the parent, comment the parent too.
+		if !blockHasLiveKey(lines[i+1 : end]) {
+			lines[i] = commentOutLinePreservingIndent(lines[i])
+		}
+		break
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func isIndentedLine(line string) bool {
+	return line != "" && (line[0] == ' ' || line[0] == '\t')
+}
+
+func commentOutLinePreservingIndent(line string) string {
+	trimmed := strings.TrimLeft(line, " \t")
+	indent := line[:len(line)-len(trimmed)]
+	return indent + "# " + trimmed
+}
+
+func blockHasLiveKey(lines []string) bool {
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		return true
+	}
+	return false
 }
