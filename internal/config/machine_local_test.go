@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"testing"
 )
 
@@ -179,104 +178,6 @@ func TestMachineLocalSidecarWinsOnRead(t *testing.T) {
 	}
 }
 
-func TestMigrationLiftsBothKeyFormsOutOfTrackedConfig(t *testing.T) {
-	const tracked = `# Project contract.
-issue_prefix: vp
-dolt.auto-start: false          # shared: fleet policy
-dolt:
-  disable-event-flush: true
-  mode: server
-backup.enabled: false
-`
-	beadsDir, configPath, localPath := newWorkspace(t, tracked)
-
-	if err := SetYamlConfigInDir(beadsDir, "dolt.port", "3306"); err != nil {
-		t.Fatalf("SetYamlConfigInDir: %v", err)
-	}
-
-	after := readFile(t, configPath)
-
-	// Both forms of machine-local key are gone from the tracked file...
-	if _, ok := yamlValueInContent(after, "dolt.mode"); ok {
-		t.Errorf("nested dolt.mode survived migration:\n%s", after)
-	}
-	if _, ok := yamlValueInContent(after, "backup.enabled"); ok {
-		t.Errorf("flat backup.enabled survived migration:\n%s", after)
-	}
-	// ...and both landed in the sidecar with their values intact.
-	if got, _ := readYamlValueAtPath(localPath, "dolt.mode"); got != "server" {
-		t.Errorf("sidecar dolt.mode = %q, want \"server\"", got)
-	}
-	if got, _ := readYamlValueAtPath(localPath, "backup.enabled"); got != "false" {
-		t.Errorf("sidecar backup.enabled = %q, want \"false\"", got)
-	}
-
-	// Shared keys and the file's shape are untouched: the operator has to
-	// review and commit this diff, so it must stay small and readable.
-	if !strings.Contains(after, "dolt.auto-start: false          # shared: fleet policy") {
-		t.Errorf("shared key or its inline comment was disturbed:\n%s", after)
-	}
-	if !strings.Contains(after, "  disable-event-flush: true") {
-		t.Errorf("shared nested sibling was disturbed:\n%s", after)
-	}
-	if !strings.Contains(after, "# Project contract.") {
-		t.Errorf("leading comment was lost:\n%s", after)
-	}
-	if !strings.HasSuffix(after, "\n") {
-		t.Errorf("trailing newline was dropped, adding noise to the cleanup diff:\n%q", after)
-	}
-}
-
-// TestMigrationRunsOnlyOnce protects the escape hatch. A value an operator
-// deliberately restores to config.yaml as a shared default must survive later
-// machine-local writes; re-running the migration on every write would re-take
-// it, reintroducing the self-dirtying churn with the sign flipped.
-func TestMigrationRunsOnlyOnce(t *testing.T) {
-	beadsDir, configPath, localPath := newWorkspace(t, "issue_prefix: vp\nbackup.enabled: false\n")
-
-	if err := SetYamlConfigInDir(beadsDir, "dolt.port", "3306"); err != nil {
-		t.Fatalf("first write: %v", err)
-	}
-	if !strings.Contains(readFile(t, localPath), machineLocalMigrationMarker) {
-		t.Fatalf("migration marker not recorded in %s", LocalConfigFileName)
-	}
-
-	// The operator commits the cleanup, then deliberately re-adds a shared
-	// default to the tracked file.
-	restored := "issue_prefix: vp\n# backup.enabled: false\ndolt.mode: embedded\n"
-	if err := os.WriteFile(configPath, []byte(restored), 0o600); err != nil {
-		t.Fatalf("restore config.yaml: %v", err)
-	}
-
-	if err := SetYamlConfigInDir(beadsDir, "dolt.user", "bd"); err != nil {
-		t.Fatalf("second write: %v", err)
-	}
-
-	if after := readFile(t, configPath); after != restored {
-		t.Errorf("migration ran a second time and modified config.yaml\n--- want ---\n%s\n--- got ---\n%s", restored, after)
-	}
-	if count := strings.Count(readFile(t, localPath), machineLocalMigrationMarker); count != 1 {
-		t.Errorf("migration marker appears %d times, want exactly 1", count)
-	}
-}
-
-// TestMigrationMarkerSurvivesLaterWrites guards the marker's durability.
-// Later writes round-trip the sidecar through yaml.Node; if the marker were
-// dropped there, the one-time migration would silently become repeating.
-func TestMigrationMarkerSurvivesLaterWrites(t *testing.T) {
-	beadsDir, _, localPath := newWorkspace(t, "issue_prefix: vp\nbackup.enabled: false\n")
-
-	for _, key := range []string{"dolt.port", "dolt.user", "dolt.debug", "backup.interval", "dolt.host"} {
-		if err := SetYamlConfigInDir(beadsDir, key, sampleValueFor(key)); err != nil {
-			t.Fatalf("SetYamlConfigInDir(%s): %v", key, err)
-		}
-	}
-
-	if count := strings.Count(readFile(t, localPath), machineLocalMigrationMarker); count != 1 {
-		t.Fatalf("marker appears %d times after 5 writes, want exactly 1:\n%s", count, readFile(t, localPath))
-	}
-}
-
 func TestUnsetMachineLocalKeyLeavesTrackedConfigAlone(t *testing.T) {
 	beadsDir, configPath, localPath := newWorkspace(t, trackedConfigFixture)
 
@@ -406,51 +307,6 @@ func TestCommentOutYamlKeyAnyForm(t *testing.T) {
 	}
 }
 
-// TestUnsetMachineLocalKeyClearsAValueStillInTrackedConfig covers the state
-// every workspace is in immediately after upgrading: the live value is still
-// in config.yaml and no sidecar exists yet. Clearing only the sidecar would
-// report success while the value stayed in effect.
-func TestUnsetMachineLocalKeyClearsAValueStillInTrackedConfig(t *testing.T) {
-	beadsDir, configPath, localPath := newWorkspace(t,
-		"issue_prefix: vp\nbackup.enabled: false\nother-setting: value\n")
-
-	t.Chdir(filepath.Dir(beadsDir))
-	if err := UnsetYamlConfig("backup.enabled"); err != nil {
-		t.Fatalf("UnsetYamlConfig: %v", err)
-	}
-
-	if _, ok := yamlValueInContent(readFile(t, configPath), "backup.enabled"); ok {
-		t.Errorf("backup.enabled still live in config.yaml after unset:\n%s", readFile(t, configPath))
-	}
-	if _, ok := readYamlValueAtPath(localPath, "backup.enabled"); ok {
-		t.Errorf("backup.enabled still live in %s after unset", LocalConfigFileName)
-	}
-	if !strings.Contains(readFile(t, configPath), "other-setting: value") {
-		t.Errorf("unset disturbed an unrelated key:\n%s", readFile(t, configPath))
-	}
-}
-
-// TestMigrationMarkerNotRecordedWhenTrackedWriteFails: the marker must not
-// outlive a failed cleanup, or the one-time migration skips forever and
-// strands the keys in the tracked file.
-func TestMigrationMarkerNotRecordedWhenTrackedWriteFails(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores file permissions")
-	}
-	beadsDir, configPath, localPath := newWorkspace(t, "issue_prefix: vp\nbackup.enabled: false\n")
-	if err := os.Chmod(configPath, 0o400); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	defer func() { _ = os.Chmod(configPath, 0o600) }()
-
-	if err := SetYamlConfigInDir(beadsDir, "dolt.port", "3306"); err == nil {
-		t.Fatal("expected an error when config.yaml is not writable")
-	}
-	if strings.Contains(readFile(t, localPath), machineLocalMigrationMarker) {
-		t.Error("migration marker was recorded even though the config.yaml cleanup failed")
-	}
-}
-
 // TestMachineLocalKeysAreReadableByDirScopedReaders pins the reader half.
 // GetStringFromDir opens the workspace's files directly rather than going
 // through merged viper; `bd bootstrap` resolves dolt.port through it, so a
@@ -467,5 +323,81 @@ func TestMachineLocalKeysAreReadableByDirScopedReaders(t *testing.T) {
 	// A shared key still resolves from config.yaml.
 	if got := GetStringFromDir(beadsDir, "issue_prefix"); got != "vp" {
 		t.Errorf("GetStringFromDir(issue_prefix) = %q, want \"vp\"", got)
+	}
+}
+
+// TestSetMachineLocalKeyNeverRewritesTrackedConfig pins the property that
+// replaced the one-time migration: a machine-local write leaves the tracked
+// config.yaml byte-identical, even when that file already defines the key.
+//
+// The migration used to comment the key out of config.yaml as a side effect of
+// a write that reported "(in config.local.yaml)". For a project committing
+// `dolt.mode: server` as its shared contract, committing that cleanup sends
+// every other clone back to embedded storage — a different, empty database.
+// Precedence already makes the sidecar win, so the rewrite bought nothing.
+func TestSetMachineLocalKeyNeverRewritesTrackedConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	tracked := "dolt:\n  mode: server\n  host: shared.example\n"
+	if err := os.WriteFile(configPath, []byte(tracked), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := setMachineLocalYamlConfig(configPath, "dolt.mode", "embedded"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	if got := readFile(t, configPath); got != tracked {
+		t.Errorf("config.yaml was rewritten:\n got: %q\nwant: %q", got, tracked)
+	}
+	if v, ok := yamlValueInContent(readFile(t, LocalConfigPathFor(configPath)), "dolt.mode"); !ok || v != "embedded" {
+		t.Errorf("sidecar dolt.mode = %q (found=%v), want embedded", v, ok)
+	}
+}
+
+// TestUnsetMachineLocalKeyLeavesTheSharedDefault pins that unset clears only
+// THIS machine's override and never reaches into the tracked file, whatever
+// order the operations happen in. The old code migrated first, so the same
+// command removed the key from config.yaml before a one-time marker existed
+// and left it afterwards — opposite outcomes decided by invisible state.
+func TestUnsetMachineLocalKeyLeavesTheSharedDefault(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	tracked := "dolt:\n  mode: server\n"
+	if err := os.WriteFile(configPath, []byte(tracked), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setMachineLocalYamlConfig(configPath, "dolt.mode", "embedded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unsetMachineLocalYamlConfig(configPath, "dolt.mode"); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
+
+	if got := readFile(t, configPath); got != tracked {
+		t.Errorf("unset touched config.yaml:\n got: %q\nwant: %q", got, tracked)
+	}
+	if _, ok := yamlValueInContent(readFile(t, LocalConfigPathFor(configPath)), "dolt.mode"); ok {
+		t.Error("sidecar still defines dolt.mode after unset")
+	}
+}
+
+// TestUnsetMachineLocalKeyNeverSetCreatesNothing pins that unsetting a key that
+// was never set leaves the workspace clean. The old code called
+// ensureLocalConfigFile before checking, so an unset in a fresh workspace
+// created an untracked file — the self-dirtying this change exists to end.
+func TestUnsetMachineLocalKeyNeverSetCreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("dolt:\n  mode: server\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := unsetMachineLocalYamlConfig(configPath, "dolt.socket"); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
+
+	if _, err := os.Stat(LocalConfigPathFor(configPath)); !os.IsNotExist(err) {
+		t.Errorf("unset of a never-set key created %s", LocalConfigFileName)
 	}
 }

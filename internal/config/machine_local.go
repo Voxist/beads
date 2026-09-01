@@ -12,15 +12,6 @@ import (
 // wins over the tracked config.yaml for the same key.
 const LocalConfigFileName = "config.local.yaml"
 
-// machineLocalMigrationMarker records that the one-time migration of
-// machine-local keys out of the tracked config.yaml has already run for this
-// workspace.
-//
-// It is a YAML COMMENT rather than a config key on purpose: viper merges this
-// file into the live settings, so a real key would show up in `bd config list`
-// and in every consumer that ranges over settings.
-const machineLocalMigrationMarker = "# bd: machine-local keys migrated out of config.yaml (do not remove)"
-
 const localConfigHeader = `# bd machine-local configuration.
 #
 # Settings here describe THIS machine (which Dolt to talk to, whether this
@@ -109,11 +100,17 @@ func setMachineLocalYamlConfig(configPath, key, value string) error {
 	if err := ensureLocalConfigFile(localPath); err != nil {
 		return err
 	}
-	if err := migrateMachineLocalKeys(configPath, localPath); err != nil {
-		return err
-	}
-	// Written after the migration so the value being set wins over any older
-	// value the migration lifted out of config.yaml.
+	// The tracked config.yaml is NOT touched, and no migration runs. Both read
+	// paths already prefer the sidecar — Initialize merges config.local.yaml
+	// AFTER config.yaml, and GetStringFromDir checks the sidecar first — so a
+	// value written here wins without moving anything out of the tracked file.
+	//
+	// Rewriting config.yaml as a side effect of a write that reports
+	// "(in config.local.yaml)" was worse than untidy. A project that commits
+	// `dolt.mode: server` as its shared contract would have that line silently
+	// commented out; committing the result sends every other clone back to
+	// embedded storage — a different, empty database. Leaving the tracked file
+	// alone costs nothing, because precedence already does the job.
 	return setYamlConfigAtPath(localPath, normalizeYamlKey(key), value)
 }
 
@@ -122,15 +119,19 @@ func setMachineLocalYamlConfig(configPath, key, value string) error {
 // only an explicit edit should remove.
 func unsetMachineLocalYamlConfig(configPath, key string) error {
 	localPath := LocalConfigPathFor(configPath)
-	// Unset has to migrate first. Before the migration has run, the live value
-	// is still the one in config.yaml; clearing only the sidecar would report
-	// success while `bd config get` kept returning the old value.
-	if err := ensureLocalConfigFile(localPath); err != nil {
-		return err
-	}
-	if err := migrateMachineLocalKeys(configPath, localPath); err != nil {
-		return err
-	}
+	// Sidecar only, and no migration. Unsetting a machine-local key clears THIS
+	// machine's override; a value left in the tracked config.yaml is a shared
+	// default that only an explicit edit should remove — which is what this
+	// function's contract has always said.
+	//
+	// The previous version called migrateMachineLocalKeys first, which
+	// contradicted that contract and made the command mean two different
+	// things: before the one-time marker existed it removed the key from
+	// config.yaml as well, and after the marker it did not. Same command,
+	// opposite outcome, decided by invisible state.
+	//
+	// It also no longer creates the sidecar just to comment out a key that was
+	// never set. An unset in a clean workspace now leaves no file behind.
 	content, err := os.ReadFile(localPath) //nolint:gosec // localPath is derived from a resolved config.yaml path
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -139,10 +140,29 @@ func unsetMachineLocalYamlConfig(configPath, key string) error {
 		return fmt.Errorf("failed to read %s: %w", LocalConfigFileName, err)
 	}
 	updated := commentOutYamlKeyAnyForm(string(content), normalizeYamlKey(key))
+	if updated == string(content) {
+		return nil // key was not set on this machine; nothing to write
+	}
 	if err := os.WriteFile(localPath, []byte(updated), 0o600); err != nil {
 		return fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
 	}
 	return nil
+}
+
+// TrackedYamlValueFor reports a machine-local key's value still present in the
+// TRACKED config.yaml, so a caller can tell the operator that unsetting their
+// machine-local override did not remove the shared default.
+//
+// Without this the command is dishonest in a way that matters: it prints
+// "Unset dolt.mode" and exits 0 while `bd config get dolt.mode` keeps returning
+// the tracked value, and the operator has no hint about which of the two files
+// is still speaking.
+func TrackedYamlValueFor(configPath, key string) (string, bool) {
+	raw, err := os.ReadFile(configPath) //nolint:gosec // configPath is a resolved config.yaml path
+	if err != nil {
+		return "", false
+	}
+	return yamlValueInContent(string(raw), normalizeYamlKey(key))
 }
 
 // ensureLocalConfigFile creates the sidecar with its header if absent. The
@@ -157,97 +177,6 @@ func ensureLocalConfigFile(localPath string) error {
 		return fmt.Errorf("failed to create %s: %w", LocalConfigFileName, err)
 	}
 	return nil
-}
-
-// migrateMachineLocalKeys performs the ONE-TIME move of machine-local keys out
-// of the tracked config.yaml and into the sidecar.
-//
-// It runs at most once per workspace, gated on a marker comment in the sidecar.
-// Running it on every write would re-take a value an operator had deliberately
-// re-added to config.yaml as a shared default, which is the same self-dirtying
-// churn this change exists to end — just with the sign flipped.
-//
-// config.yaml is rewritten line-by-line (keys are commented out, matching
-// UnsetYamlConfig's convention) rather than re-marshaled, so comments,
-// ordering, and formatting of the tracked file survive: the operator gets one
-// small reviewable diff to commit, not a reflow of the whole file.
-func migrateMachineLocalKeys(configPath, localPath string) error {
-	localContent, err := os.ReadFile(localPath) //nolint:gosec // localPath is derived from a resolved config.yaml path
-	if err != nil {
-		return fmt.Errorf("failed to read %s: %w", LocalConfigFileName, err)
-	}
-	if strings.Contains(string(localContent), machineLocalMigrationMarker) {
-		return nil // already migrated
-	}
-
-	trackedRaw, err := os.ReadFile(configPath) //nolint:gosec // configPath is a resolved config.yaml path
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to read config.yaml: %w", err)
-		}
-		trackedRaw = nil
-	}
-	tracked := string(trackedRaw)
-
-	migrated := make(map[string]string)
-	for key := range MachineLocalKeys {
-		value, found := yamlValueInContent(tracked, key)
-		if !found {
-			continue
-		}
-		// A value already on this machine wins; the tracked one is only a
-		// default and must not overwrite it.
-		if _, alreadyLocal := yamlValueInContent(string(localContent), key); !alreadyLocal {
-			migrated[key] = value
-		}
-		tracked = commentOutYamlKeyAnyForm(tracked, key)
-	}
-
-	newLocal := string(localContent)
-	for key, value := range migrated {
-		newLocal, err = updateYamlKey(newLocal, key, value)
-		if err != nil {
-			return fmt.Errorf("migrating %s into %s: %w", key, LocalConfigFileName, err)
-		}
-	}
-	// Values first, marker last. If the config.yaml rewrite below fails (a
-	// read-only checkout, a full disk), a marker already on disk would make
-	// this one-time migration skip forever, stranding the keys in the tracked
-	// file. Writing the sidecar twice is cheap; it is untracked.
-	if err := os.WriteFile(localPath, []byte(newLocal), 0o600); err != nil {
-		return fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
-	}
-
-	// Only touch the tracked file when something actually moved.
-	if trackedRaw != nil && tracked != string(trackedRaw) {
-		if err := os.WriteFile(configPath, []byte(tracked), 0o600); err != nil {
-			return fmt.Errorf("failed to write config.yaml: %w", err)
-		}
-	}
-
-	if err := os.WriteFile(localPath, []byte(withMigrationMarker(newLocal)), 0o600); err != nil {
-		return fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
-	}
-	return nil
-}
-
-// withMigrationMarker records the marker as the FIRST line of the sidecar.
-//
-// Position matters: subsequent writes to this file go through
-// updateNestedYamlKey, which round-trips the document through yaml.Node and
-// preserves comments by their attachment to nodes. A head comment at the top
-// of the document is the position that survives that round-trip most reliably;
-// a trailing comment has no node to attach to. Losing the marker would let the
-// one-time migration run a second time and re-take a value the operator had
-// deliberately restored to config.yaml as a shared default.
-func withMigrationMarker(content string) string {
-	if strings.Contains(content, machineLocalMigrationMarker) {
-		return content
-	}
-	if content != "" && !strings.HasSuffix(content, "\n") {
-		content += "\n"
-	}
-	return machineLocalMigrationMarker + "\n" + content
 }
 
 // yamlValueInContent reads a dotted key out of YAML text in either the flat

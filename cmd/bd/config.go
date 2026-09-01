@@ -180,6 +180,19 @@ var configSetCmd = &cobra.Command{
 			if setErr != nil {
 				return HandleError("setting config: %v", setErr)
 			}
+			// Writing the sidecar creates an UNTRACKED file, so the ignore rule
+			// has to exist by the time it does. EnsureGitignoreForBeadsDir was
+			// reachable only from init/bootstrap/doctor --fix, which none of an
+			// already-initialized workspace's operators run before their next
+			// `bd config set` — so the first machine-local write left
+			// `?? .beads/config.local.yaml` in git status and the clean-tree
+			// guard failed exactly as it did before this change. Best-effort:
+			// a config write must not fail because .gitignore is unwritable.
+			if location == config.LocalConfigFileName {
+				if beadsDir := filepath.Dir(config.ConfigFileUsed()); beadsDir != "." {
+					_ = doctor.EnsureGitignoreForBeadsDir(beadsDir)
+				}
+			}
 
 			if jsonOutput {
 				if err := outputJSON(map[string]interface{}{
@@ -330,15 +343,24 @@ var configGetCmd = &cobra.Command{
 
 			value := config.GetYamlConfig(key)
 
+			// Attribute the file the value actually came from. Hard-coding
+			// "config.yaml" sends an operator to edit a file that does not
+			// contain the value — the misattribution the sidecar split exists
+			// to prevent, reintroduced at the reporting layer.
+			location := "config.yaml"
+			if _, ok := config.MachineLocalYamlValue(key); ok {
+				location = config.LocalConfigFileName
+			}
+
 			if jsonOutput {
 				return outputJSON(map[string]interface{}{
 					"key":      key,
 					"value":    value,
-					"location": "config.yaml",
+					"location": location,
 				})
 			}
 			if value == "" {
-				fmt.Printf("%s (not set in config.yaml)\n", key)
+				fmt.Printf("%s (not set in %s)\n", key, location)
 			} else {
 				fmt.Printf("%s\n", value)
 			}
@@ -523,7 +545,15 @@ func showConfigYAMLOverrides(dbConfig map[string]string) {
 		}
 		val := config.GetString(key)
 		if val != "" {
-			yamlOverrides = append(yamlOverrides, fmt.Sprintf("  %s = %s", key, val))
+			// Name the file per line. GetValueSource reports SourceConfigFile
+			// for both workspace files, so without this a sidecar value is
+			// listed under a heading that points at the tracked file it is not
+			// in — and an operator edits the wrong one.
+			if _, local := config.MachineLocalYamlValue(key); local {
+				yamlOverrides = append(yamlOverrides, fmt.Sprintf("  %s = %s  (%s)", key, val, config.LocalConfigFileName))
+			} else {
+				yamlOverrides = append(yamlOverrides, fmt.Sprintf("  %s = %s  (config.yaml)", key, val))
+			}
 		}
 	}
 
@@ -541,7 +571,10 @@ func showConfigYAMLOverrides(dbConfig map[string]string) {
 	}
 
 	if len(yamlOverrides) > 0 {
-		fmt.Println("\nAlso set in config.yaml (not shown above):")
+		// GetValueSource cannot distinguish the two workspace files — both
+		// report SourceConfigFile — so this heading names the pair rather than
+		// asserting the tracked one and being wrong for every sidecar value.
+		fmt.Println("\nAlso set in the workspace config files (not shown above):")
 		for _, line := range yamlOverrides {
 			fmt.Println(line)
 		}
@@ -599,6 +632,18 @@ var configUnsetCmd = &cobra.Command{
 				}
 			} else {
 				fmt.Printf("Unset %s (in %s)\n", key, location)
+				// A machine-local unset clears THIS machine's override only. If
+				// the tracked config.yaml still defines the key, the effective
+				// value does not change, and saying nothing would leave the
+				// operator believing it did.
+				if location == config.LocalConfigFileName {
+					if cfgPath := config.ConfigFileUsed(); cfgPath != "" {
+						if v, ok := config.TrackedYamlValueFor(cfgPath, key); ok {
+							fmt.Printf("  note: config.yaml still sets %s = %s (shared default, tracked in git).\n", key, v)
+							fmt.Printf("        %s is now that value; edit config.yaml to change it for everyone.\n", key)
+						}
+					}
+				}
 			}
 			printConfigSideEffects(checkConfigUnsetSideEffects(key))
 			return nil
