@@ -567,13 +567,13 @@ func GetYamlConfig(key string) string {
 // file — and, when the value lived only in config.yaml, the previous behavior
 // was worse still: unset silently did nothing while config_side_effects
 // announced that automatic backups had stopped.
-func UnsetYamlConfigReporting(key string) (trackedValue string, clearedTracked bool, err error) {
+func UnsetYamlConfigReporting(key string) (trackedValue string, clearedTracked, clearedLocal bool, err error) {
 	if !IsMachineLocalKey(key) {
-		return "", false, UnsetYamlConfig(key)
+		return "", false, true, UnsetYamlConfig(key)
 	}
 	configPath, err := findProjectConfigYaml()
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	return unsetMachineLocalYamlConfig(configPath, key)
 }
@@ -590,7 +590,7 @@ func UnsetYamlConfig(key string) error {
 	// config.yaml — see UnsetYamlConfigReporting for why, and use that variant
 	// when the caller can tell the operator which files it touched.
 	if IsMachineLocalKey(key) {
-		_, _, err := unsetMachineLocalYamlConfig(configPath, key)
+		_, _, _, err := unsetMachineLocalYamlConfig(configPath, key)
 		return err
 	}
 
@@ -699,7 +699,14 @@ func updateYamlKey(content, key, value string) (string, error) {
 			return updated, nil
 		}
 	}
+	return updateFlatYamlKey(content, key, value)
+}
 
+// updateFlatYamlKey writes `key: value` as a single flat line, never descending
+// into a nested mapping. Callers that need a predictable key SHAPE — the
+// machine-local sidecar, where a nested key would lose to a flat one in the
+// tracked file under viper's longest-prefix lookup — use this directly.
+func updateFlatYamlKey(content, key, value string) (string, error) {
 	formattedValue := formatYamlValue(value)
 	newLine := fmt.Sprintf("%s: %s", key, formattedValue)
 

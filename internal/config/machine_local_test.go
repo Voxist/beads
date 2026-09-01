@@ -178,27 +178,6 @@ func TestMachineLocalSidecarWinsOnRead(t *testing.T) {
 	}
 }
 
-func TestUnsetMachineLocalKeyLeavesTrackedConfigAlone(t *testing.T) {
-	beadsDir, configPath, localPath := newWorkspace(t, trackedConfigFixture)
-
-	if err := SetYamlConfigInDir(beadsDir, "dolt.mode", "server"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	before := readFile(t, configPath)
-
-	t.Chdir(filepath.Dir(beadsDir))
-	if err := UnsetYamlConfig("dolt.mode"); err != nil {
-		t.Fatalf("UnsetYamlConfig: %v", err)
-	}
-
-	if after := readFile(t, configPath); after != before {
-		t.Errorf("unsetting a machine-local key modified config.yaml:\n%s", after)
-	}
-	if _, ok := readYamlValueAtPath(localPath, "dolt.mode"); ok {
-		t.Errorf("dolt.mode still live in %s after unset", LocalConfigFileName)
-	}
-}
-
 func TestIsMachineLocalKeyIsExactNotPrefix(t *testing.T) {
 	local := []string{"dolt.mode", "dolt.host", "backup.enabled", "backup.interval"}
 	for _, key := range local {
@@ -380,7 +359,7 @@ func TestUnsetMachineLocalKeyClearsBothFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tracked, cleared, err := unsetMachineLocalYamlConfig(configPath, "dolt.mode")
+	tracked, cleared, _, err := unsetMachineLocalYamlConfig(configPath, "dolt.mode")
 	if err != nil {
 		t.Fatalf("unset: %v", err)
 	}
@@ -409,7 +388,7 @@ func TestUnsetMachineLocalKeyNeverSetCreatesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := unsetMachineLocalYamlConfig(configPath, "dolt.socket"); err != nil {
+	if _, _, _, err := unsetMachineLocalYamlConfig(configPath, "dolt.socket"); err != nil {
 		t.Fatalf("unset: %v", err)
 	}
 

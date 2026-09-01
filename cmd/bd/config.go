@@ -598,7 +598,7 @@ var configUnsetCmd = &cobra.Command{
 			location := "config.yaml"
 			var unsetErr error
 			var trackedValue string
-			var clearedTracked bool
+			var clearedTracked, clearedLocal bool
 			if config.IsUserGlobalKey(key) {
 				unsetErr = config.UnsetUserYamlConfig(key)
 				location = config.UserConfigYamlDisplayPath()
@@ -606,16 +606,47 @@ var configUnsetCmd = &cobra.Command{
 				if config.IsMachineLocalKey(key) {
 					location = config.LocalConfigFileName
 				}
-				trackedValue, clearedTracked, unsetErr = config.UnsetYamlConfigReporting(key)
+				trackedValue, clearedTracked, clearedLocal, unsetErr = config.UnsetYamlConfigReporting(key)
 			}
 			if unsetErr != nil {
 				return HandleError("unsetting config: %v", unsetErr)
+			}
+
+			// Name only files actually edited, and do not claim a removal that
+			// did not happen: a key inside a YAML flow mapping is out of the
+			// line-based remover's reach, and a key that was never set has
+			// nothing to remove. Both used to print success plus a
+			// config_side_effects consequence.
+			if config.IsMachineLocalKey(key) {
+				switch {
+				case clearedLocal && clearedTracked:
+					location = config.LocalConfigFileName + " and config.yaml"
+				case clearedLocal:
+					location = config.LocalConfigFileName
+				case clearedTracked:
+					location = "config.yaml"
+				}
+			}
+			removedSomething := clearedLocal || clearedTracked
+
+			if !removedSomething {
+				if jsonOutput {
+					return outputJSON(map[string]interface{}{
+						"key":     key,
+						"removed": false,
+						"reason":  "not set in config.local.yaml or config.yaml, or defined inside a YAML flow mapping that must be edited by hand",
+					})
+				}
+				fmt.Printf("%s was not removed: it is not set in %s or config.yaml.\n", key, config.LocalConfigFileName)
+				fmt.Printf("  (a key written inside a flow mapping, e.g. `dolt: {mode: server}`, must be edited by hand)\n")
+				return nil
 			}
 
 			if jsonOutput {
 				payload := map[string]interface{}{
 					"key":      key,
 					"location": location,
+					"removed":  true,
 				}
 				// A machine-local unset can touch BOTH files. Reporting only
 				// the sidecar told a scripted caller — this repo's own tooling

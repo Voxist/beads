@@ -111,13 +111,46 @@ func setMachineLocalYamlConfig(configPath, key, value string) error {
 	// commented out; committing the result sends every other clone back to
 	// embedded storage — a different, empty database. Leaving the tracked file
 	// alone costs nothing, because precedence already does the job.
-	return setYamlConfigAtPath(localPath, normalizeYamlKey(key), value)
+	return setSidecarYamlKey(localPath, normalizeYamlKey(key), value)
+}
+
+// setSidecarYamlKey writes a key into the sidecar in the FLAT dotted form,
+// always, whatever shape the file is already in.
+//
+// The form is load-bearing, not cosmetic. viper's key lookup tries the longest
+// joined prefix first, so a flat `dolt.port:` BEATS a nested `dolt: {port:}`
+// regardless of merge order — the sidecar being merged last does not save it.
+// setYamlConfigAtPath picks the shape by accident of file state: a fresh
+// sidecar is comment-only so updateNestedYamlKey bails and the key lands flat,
+// while every later write finds a mapping and lands nested. A stock `bd init`
+// config.yaml is comment-only too, so the first machine-local key old bd wrote
+// there is flat as well.
+//
+// Combine those and the sidecar silently loses: `bd config set dolt.port 3307`
+// reports success while merged viper keeps returning the tracked 9999, and
+// GetStringFromDir (sidecar-first) returns 3307 — the two read paths disagree,
+// so bootstrap provisions one port and the runtime dials another. Pinning the
+// flat form makes the sidecar's key at least as specific as anything in the
+// tracked file, so last-merge-wins holds.
+func setSidecarYamlKey(localPath, key, value string) error {
+	content, err := os.ReadFile(localPath) //nolint:gosec // localPath derives from a resolved config.yaml path
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", LocalConfigFileName, err)
+	}
+	updated, err := updateFlatYamlKey(string(content), key, value)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(localPath, []byte(updated), 0o600); err != nil {
+		return fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
+	}
+	return nil
 }
 
 // unsetMachineLocalYamlConfig comments a machine-local key out of the sidecar.
 // The tracked config.yaml is left alone: a value there is a shared default that
 // only an explicit edit should remove.
-func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, clearedTracked bool, err error) {
+func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, clearedTracked, clearedLocal bool, err error) {
 	localPath := LocalConfigPathFor(configPath)
 	normalized := normalizeYamlKey(key)
 
@@ -125,11 +158,12 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 	if content, readErr := os.ReadFile(localPath); readErr == nil { //nolint:gosec // localPath derives from a resolved config.yaml path
 		if updated := commentOutYamlKeyAnyForm(string(content), normalized); updated != string(content) {
 			if writeErr := os.WriteFile(localPath, []byte(updated), 0o600); writeErr != nil {
-				return "", false, fmt.Errorf("failed to write %s: %w", LocalConfigFileName, writeErr)
+				return "", false, false, fmt.Errorf("failed to write %s: %w", LocalConfigFileName, writeErr)
 			}
+			clearedLocal = true
 		}
 	} else if !os.IsNotExist(readErr) {
-		return "", false, fmt.Errorf("failed to read %s: %w", LocalConfigFileName, readErr)
+		return "", false, false, fmt.Errorf("failed to read %s: %w", LocalConfigFileName, readErr)
 	}
 
 	// Then clear the tracked value, because `bd config unset` is documented as
@@ -146,22 +180,26 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 	trackedRaw, readErr := os.ReadFile(configPath) //nolint:gosec // configPath is a resolved config.yaml path
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
-			return "", false, nil
+			return "", false, clearedLocal, nil
 		}
-		return "", false, fmt.Errorf("failed to read config.yaml: %w", readErr)
+		return "", false, clearedLocal, fmt.Errorf("failed to read config.yaml: %w", readErr)
 	}
 	value, found := yamlValueInContent(string(trackedRaw), normalized)
 	if !found {
-		return "", false, nil
+		return "", false, clearedLocal, nil
 	}
+	// commentOutYamlKeyAnyForm is line-based and cannot reach a key inside a
+	// FLOW mapping (`dolt: {mode: server}`). Reporting clearedTracked=false
+	// there is what lets the caller say nothing was removed, instead of
+	// printing success and a side-effect consequence that did not happen.
 	updated := commentOutYamlKeyAnyForm(string(trackedRaw), normalized)
 	if updated == string(trackedRaw) {
-		return "", false, nil
+		return "", false, clearedLocal, nil
 	}
 	if writeErr := os.WriteFile(configPath, []byte(updated), 0o600); writeErr != nil {
-		return "", false, fmt.Errorf("failed to write config.yaml: %w", writeErr)
+		return "", false, clearedLocal, fmt.Errorf("failed to write config.yaml: %w", writeErr)
 	}
-	return value, true, nil
+	return value, true, clearedLocal, nil
 }
 
 // TrackedYamlValueFor reports a machine-local key's value still present in the
@@ -211,7 +249,10 @@ func ensureSidecarIgnored(beadsDir string) {
 		updated += "\n"
 	}
 	updated += LocalConfigFileName + "\n"
-	_ = os.WriteFile(gitignorePath, []byte(updated), 0o600)
+	// 0644 matches doctor.ensureProjectGitignore, which has a test pinning that
+	// mode for this same file; 0600 here would make the two writers disagree
+	// depending on which one created it.
+	_ = os.WriteFile(gitignorePath, []byte(updated), 0o644) //nolint:gosec // .gitignore is not sensitive and must match doctor's mode
 }
 
 // ensureLocalConfigFile creates the sidecar with its header if absent. The
