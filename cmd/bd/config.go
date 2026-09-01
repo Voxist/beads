@@ -581,6 +581,9 @@ var configUnsetCmd = &cobra.Command{
 				unsetErr = config.UnsetUserYamlConfig(key)
 				location = config.UserConfigYamlDisplayPath()
 			} else {
+				if config.IsMachineLocalKey(key) {
+					location = config.LocalConfigFileName
+				}
 				unsetErr = config.UnsetYamlConfig(key)
 			}
 			if unsetErr != nil {
