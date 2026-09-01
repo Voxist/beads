@@ -682,15 +682,25 @@ func GetString(key string) string {
 	return v.GetString(key)
 }
 
-// GetStringFromDir reads a single string configuration value directly from
-// <beadsDir>/config.yaml without using or modifying global viper state.
-// This is intended for library consumers that call NewFromConfigWithOptions
-// without first invoking config.Initialize().
+// GetStringFromDir reads a single string configuration value for the workspace
+// at beadsDir without using or modifying global viper state. This is intended
+// for library consumers that call NewFromConfigWithOptions without first
+// invoking config.Initialize().
+//
+// It mirrors Initialize's precedence for the workspace's two files: a value in
+// the untracked config.local.yaml sidecar wins over the tracked config.yaml.
+// Without that, machine-local keys routed to the sidecar would be invisible
+// here — `bd bootstrap` resolves dolt.port through this path — and the caller
+// would silently fall back to a default while bd's merged config said
+// otherwise.
 //
 // The key uses dotted notation (e.g. "dolt.auto-start"). YAML booleans and
 // numbers are coerced to their string representations ("true", "false", etc.).
 // Returns "" if the file is absent, the key is not found, or any error occurs.
 func GetStringFromDir(beadsDir, key string) string {
+	if v, ok := readYamlValueAtPath(filepath.Join(beadsDir, LocalConfigFileName), key); ok {
+		return v
+	}
 	configPath := filepath.Join(beadsDir, "config.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {

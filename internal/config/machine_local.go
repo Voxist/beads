@@ -61,6 +61,11 @@ const localConfigHeader = `# bd machine-local configuration.
 // Deliberately NOT included, as shared project contract:
 //   - dolt.auto-start, dolt.disable-event-flush: fleet-wide policy about how
 //     the project's store is driven, committed on purpose.
+//   - dolt.shared-server: arguably machine-local — it selects a per-machine
+//     path under ~/.beads/shared-server/ — but bd's proxied-server migrations
+//     record it in config.yaml as workspace state and assert on it there, so
+//     it is left shared pending a deliberate decision rather than moved as a
+//     side effect of this change.
 //   - dolt.max-conns, dolt.pool-read-timeout, dolt.pool-write-timeout: tuning
 //     a project ships for all of its clones.
 //   - backup.git-push, backup.git-repo: where backups go is arguably a
@@ -70,14 +75,13 @@ const localConfigHeader = `# bd machine-local configuration.
 //     relocating it. Routing them here would silently downgrade that refusal.
 var MachineLocalKeys = map[string]bool{
 	// Which Dolt this host talks to, and how.
-	"dolt.mode":          true,
-	"dolt.host":          true,
-	"dolt.port":          true,
-	"dolt.socket":        true,
-	"dolt.user":          true,
-	"dolt.data-dir":      true,
-	"dolt.shared-server": true,
-	"dolt.debug":         true,
+	"dolt.mode":     true,
+	"dolt.host":     true,
+	"dolt.port":     true,
+	"dolt.socket":   true,
+	"dolt.user":     true,
+	"dolt.data-dir": true,
+	"dolt.debug":    true,
 
 	// Whether THIS host takes backups, and how often. Backups are written to
 	// .beads/backup/, which .beads/.gitignore already excludes as local-only.
@@ -118,6 +122,15 @@ func setMachineLocalYamlConfig(configPath, key, value string) error {
 // only an explicit edit should remove.
 func unsetMachineLocalYamlConfig(configPath, key string) error {
 	localPath := LocalConfigPathFor(configPath)
+	// Unset has to migrate first. Before the migration has run, the live value
+	// is still the one in config.yaml; clearing only the sidecar would report
+	// success while `bd config get` kept returning the old value.
+	if err := ensureLocalConfigFile(localPath); err != nil {
+		return err
+	}
+	if err := migrateMachineLocalKeys(configPath, localPath); err != nil {
+		return err
+	}
 	content, err := os.ReadFile(localPath) //nolint:gosec // localPath is derived from a resolved config.yaml path
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -197,17 +210,12 @@ func migrateMachineLocalKeys(configPath, localPath string) error {
 			return fmt.Errorf("migrating %s into %s: %w", key, LocalConfigFileName, err)
 		}
 	}
-	newLocal = withMigrationMarker(newLocal)
+	// Values first, marker last. If the config.yaml rewrite below fails (a
+	// read-only checkout, a full disk), a marker already on disk would make
+	// this one-time migration skip forever, stranding the keys in the tracked
+	// file. Writing the sidecar twice is cheap; it is untracked.
 	if err := os.WriteFile(localPath, []byte(newLocal), 0o600); err != nil {
 		return fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
-	}
-
-	// commentOutYamlKeyAnyForm rebuilds the file from scanned lines, which
-	// drops a trailing newline. Restoring it keeps the diff the operator has
-	// to commit to the lines that actually changed, with no "\ No newline at
-	// end of file" noise.
-	if strings.HasSuffix(string(trackedRaw), "\n") && !strings.HasSuffix(tracked, "\n") {
-		tracked += "\n"
 	}
 
 	// Only touch the tracked file when something actually moved.
@@ -215,6 +223,10 @@ func migrateMachineLocalKeys(configPath, localPath string) error {
 		if err := os.WriteFile(configPath, []byte(tracked), 0o600); err != nil {
 			return fmt.Errorf("failed to write config.yaml: %w", err)
 		}
+	}
+
+	if err := os.WriteFile(localPath, []byte(withMigrationMarker(newLocal)), 0o600); err != nil {
+		return fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
 	}
 	return nil
 }
