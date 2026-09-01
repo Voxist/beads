@@ -558,6 +558,26 @@ func GetYamlConfig(key string) string {
 	return v.GetString(normalizedKey)
 }
 
+// UnsetYamlConfigReporting is UnsetYamlConfig plus what a caller needs to tell
+// the operator the truth about a machine-local unset.
+//
+// It reports whether the TRACKED config.yaml was modified and what value was
+// removed from it, so the command can say so. Without that the operator sees
+// only "(in config.local.yaml)" while their git status grows a modified tracked
+// file — and, when the value lived only in config.yaml, the previous behavior
+// was worse still: unset silently did nothing while config_side_effects
+// announced that automatic backups had stopped.
+func UnsetYamlConfigReporting(key string) (trackedValue string, clearedTracked bool, err error) {
+	if !IsMachineLocalKey(key) {
+		return "", false, UnsetYamlConfig(key)
+	}
+	configPath, err := findProjectConfigYaml()
+	if err != nil {
+		return "", false, err
+	}
+	return unsetMachineLocalYamlConfig(configPath, key)
+}
+
 // UnsetYamlConfig removes a configuration value from the project's config.yaml file.
 // The key line is commented out (prefixed with "# ") to preserve it as documentation.
 func UnsetYamlConfig(key string) error {
@@ -566,11 +586,12 @@ func UnsetYamlConfig(key string) error {
 		return err
 	}
 
-	// A machine-local key lives in the sidecar, so that is what unset clears.
-	// A value in the tracked config.yaml is a shared default that only an
-	// explicit edit should remove.
+	// A machine-local key is cleared from the sidecar AND from the tracked
+	// config.yaml — see UnsetYamlConfigReporting for why, and use that variant
+	// when the caller can tell the operator which files it touched.
 	if IsMachineLocalKey(key) {
-		return unsetMachineLocalYamlConfig(configPath, key)
+		_, _, err := unsetMachineLocalYamlConfig(configPath, key)
+		return err
 	}
 
 	normalizedKey := normalizeYamlKey(key)

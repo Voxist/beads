@@ -355,27 +355,43 @@ func TestSetMachineLocalKeyNeverRewritesTrackedConfig(t *testing.T) {
 	}
 }
 
-// TestUnsetMachineLocalKeyLeavesTheSharedDefault pins that unset clears only
-// THIS machine's override and never reaches into the tracked file, whatever
-// order the operations happen in. The old code migrated first, so the same
-// command removed the key from config.yaml before a one-time marker existed
-// and left it afterwards — opposite outcomes decided by invisible state.
-func TestUnsetMachineLocalKeyLeavesTheSharedDefault(t *testing.T) {
+// TestUnsetMachineLocalKeyClearsBothFiles pins that `bd config unset` actually
+// unsets.
+//
+// An earlier revision of this change cleared only the sidecar, on the theory
+// that a tracked value is a shared default. That made the verb — documented as
+// "Delete a configuration value" — a silent no-op for every machine-local key
+// whose value lived only in config.yaml, while config_side_effects still
+// announced that automatic backups had stopped. The tell was that it required
+// rewriting a passing regression test (yaml_config_test.go's UnsetYamlConfig
+// case) to a different key.
+//
+// Removing the key the operator NAMED is not the silent rewrite the migration
+// did: that one moved keys nobody asked about, as a side effect of setting
+// something else. The caller reports the tracked edit so the git diff is never
+// a surprise.
+func TestUnsetMachineLocalKeyClearsBothFiles(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
-	tracked := "dolt:\n  mode: server\n"
-	if err := os.WriteFile(configPath, []byte(tracked), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("dolt:\n  mode: server\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := setMachineLocalYamlConfig(configPath, "dolt.mode", "embedded"); err != nil {
 		t.Fatal(err)
 	}
-	if err := unsetMachineLocalYamlConfig(configPath, "dolt.mode"); err != nil {
+
+	tracked, cleared, err := unsetMachineLocalYamlConfig(configPath, "dolt.mode")
+	if err != nil {
 		t.Fatalf("unset: %v", err)
 	}
-
-	if got := readFile(t, configPath); got != tracked {
-		t.Errorf("unset touched config.yaml:\n got: %q\nwant: %q", got, tracked)
+	if !cleared {
+		t.Error("clearedTracked = false, want true: config.yaml defined the key")
+	}
+	if tracked != "server" {
+		t.Errorf("trackedValue = %q, want %q — the caller reports this to the operator", tracked, "server")
+	}
+	if _, ok := yamlValueInContent(readFile(t, configPath), "dolt.mode"); ok {
+		t.Error("config.yaml still defines dolt.mode after unset")
 	}
 	if _, ok := yamlValueInContent(readFile(t, LocalConfigPathFor(configPath)), "dolt.mode"); ok {
 		t.Error("sidecar still defines dolt.mode after unset")
@@ -393,7 +409,7 @@ func TestUnsetMachineLocalKeyNeverSetCreatesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := unsetMachineLocalYamlConfig(configPath, "dolt.socket"); err != nil {
+	if _, _, err := unsetMachineLocalYamlConfig(configPath, "dolt.socket"); err != nil {
 		t.Fatalf("unset: %v", err)
 	}
 

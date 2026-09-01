@@ -1057,11 +1057,8 @@ other-setting: value
 	}
 	defer os.Chdir(oldWd)
 
-	// Test UnsetYamlConfig. "other-setting" is deliberately NOT a machine-local
-	// key: those route to the sidecar and leave the tracked file alone by
-	// design, so asserting a config.yaml rewrite for one would pin the very
-	// behaviour the sidecar exists to prevent.
-	if err := UnsetYamlConfig("other-setting"); err != nil {
+	// Test UnsetYamlConfig
+	if err := UnsetYamlConfig("backup.enabled"); err != nil {
 		t.Fatalf("UnsetYamlConfig() error = %v", err)
 	}
 
@@ -1072,11 +1069,11 @@ other-setting: value
 	}
 
 	contentStr := string(content)
-	if !strings.Contains(contentStr, "# other-setting: value") {
-		t.Errorf("config.yaml should contain commented-out other-setting, got:\n%s", contentStr)
+	if !strings.Contains(contentStr, "# backup.enabled: false") {
+		t.Errorf("config.yaml should contain commented-out backup.enabled, got:\n%s", contentStr)
 	}
-	if !strings.Contains(contentStr, "backup.enabled: false") {
-		t.Errorf("config.yaml should preserve the untouched setting, got:\n%s", contentStr)
+	if !strings.Contains(contentStr, "other-setting: value") {
+		t.Errorf("config.yaml should preserve other settings, got:\n%s", contentStr)
 	}
 }
 

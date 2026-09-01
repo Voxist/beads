@@ -117,36 +117,51 @@ func setMachineLocalYamlConfig(configPath, key, value string) error {
 // unsetMachineLocalYamlConfig comments a machine-local key out of the sidecar.
 // The tracked config.yaml is left alone: a value there is a shared default that
 // only an explicit edit should remove.
-func unsetMachineLocalYamlConfig(configPath, key string) error {
+func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, clearedTracked bool, err error) {
 	localPath := LocalConfigPathFor(configPath)
-	// Sidecar only, and no migration. Unsetting a machine-local key clears THIS
-	// machine's override; a value left in the tracked config.yaml is a shared
-	// default that only an explicit edit should remove — which is what this
-	// function's contract has always said.
-	//
-	// The previous version called migrateMachineLocalKeys first, which
-	// contradicted that contract and made the command mean two different
-	// things: before the one-time marker existed it removed the key from
-	// config.yaml as well, and after the marker it did not. Same command,
-	// opposite outcome, decided by invisible state.
-	//
-	// It also no longer creates the sidecar just to comment out a key that was
-	// never set. An unset in a clean workspace now leaves no file behind.
-	content, err := os.ReadFile(localPath) //nolint:gosec // localPath is derived from a resolved config.yaml path
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // nothing set on this machine
+	normalized := normalizeYamlKey(key)
+
+	// Clear this machine's override first.
+	if content, readErr := os.ReadFile(localPath); readErr == nil { //nolint:gosec // localPath derives from a resolved config.yaml path
+		if updated := commentOutYamlKeyAnyForm(string(content), normalized); updated != string(content) {
+			if writeErr := os.WriteFile(localPath, []byte(updated), 0o600); writeErr != nil {
+				return "", false, fmt.Errorf("failed to write %s: %w", LocalConfigFileName, writeErr)
+			}
 		}
-		return fmt.Errorf("failed to read %s: %w", LocalConfigFileName, err)
+	} else if !os.IsNotExist(readErr) {
+		return "", false, fmt.Errorf("failed to read %s: %w", LocalConfigFileName, readErr)
 	}
-	updated := commentOutYamlKeyAnyForm(string(content), normalizeYamlKey(key))
-	if updated == string(content) {
-		return nil // key was not set on this machine; nothing to write
+
+	// Then clear the tracked value, because `bd config unset` is documented as
+	// "Delete a configuration value" and an operator typing it expects the
+	// setting to stop applying. Leaving a tracked value in place made the verb
+	// a silent no-op for every machine-local key whose value lived only in
+	// config.yaml — and config_side_effects would still announce, wrongly,
+	// that automatic backups had stopped.
+	//
+	// This is NOT the silent rewrite that the migration did. That one moved
+	// keys the operator had not named, as a side effect of setting something
+	// else. This removes exactly the key they asked to remove, and the caller
+	// reports the tracked file it touched so the git diff is never a surprise.
+	trackedRaw, readErr := os.ReadFile(configPath) //nolint:gosec // configPath is a resolved config.yaml path
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to read config.yaml: %w", readErr)
 	}
-	if err := os.WriteFile(localPath, []byte(updated), 0o600); err != nil {
-		return fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
+	value, found := yamlValueInContent(string(trackedRaw), normalized)
+	if !found {
+		return "", false, nil
 	}
-	return nil
+	updated := commentOutYamlKeyAnyForm(string(trackedRaw), normalized)
+	if updated == string(trackedRaw) {
+		return "", false, nil
+	}
+	if writeErr := os.WriteFile(configPath, []byte(updated), 0o600); writeErr != nil {
+		return "", false, fmt.Errorf("failed to write config.yaml: %w", writeErr)
+	}
+	return value, true, nil
 }
 
 // TrackedYamlValueFor reports a machine-local key's value still present in the
@@ -165,6 +180,40 @@ func TrackedYamlValueFor(configPath, key string) (string, bool) {
 	return yamlValueInContent(string(raw), normalizeYamlKey(key))
 }
 
+// ensureSidecarIgnored adds exactly the config.local.yaml line to
+// .beads/.gitignore when it is missing, and nothing else.
+//
+// It lives here, at the funnel every sidecar write passes through, rather than
+// in one CLI branch: `bd config set-many` and `bd dolt set --update-config`
+// also create this file, and a guarantee that only `bd config set` honors is
+// not a guarantee — the untracked sidecar still shows up in git status for
+// every other writer.
+//
+// It writes ONE pattern deliberately. doctor.EnsureGitignoreForBeadsDir appends
+// every missing required pattern under an "# Added by bd" header — 27 lines in
+// a real workspace — and .beads/.gitignore is tracked, so calling it from a
+// config write turned `bd config set dolt.mode server` into a silent, unrelated
+// diff on a tracked file. Repairing the whole file is bd doctor --fix's job;
+// this only covers the file this package just created.
+func ensureSidecarIgnored(beadsDir string) {
+	gitignorePath := filepath.Join(beadsDir, ".gitignore")
+	content, err := os.ReadFile(gitignorePath) //nolint:gosec // beadsDir is a resolved workspace path
+	if err != nil && !os.IsNotExist(err) {
+		return // best effort: a config write must not fail on .gitignore
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(line) == LocalConfigFileName {
+			return
+		}
+	}
+	updated := string(content)
+	if updated != "" && !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	updated += LocalConfigFileName + "\n"
+	_ = os.WriteFile(gitignorePath, []byte(updated), 0o600)
+}
+
 // ensureLocalConfigFile creates the sidecar with its header if absent. The
 // 0600 posture matches every other config writer in this package.
 func ensureLocalConfigFile(localPath string) error {
@@ -176,6 +225,8 @@ func ensureLocalConfigFile(localPath string) error {
 	if err := os.WriteFile(localPath, []byte(localConfigHeader), 0o600); err != nil {
 		return fmt.Errorf("failed to create %s: %w", LocalConfigFileName, err)
 	}
+	// The file is untracked; the ignore rule must exist by the time it does.
+	ensureSidecarIgnored(filepath.Dir(localPath))
 	return nil
 }
 

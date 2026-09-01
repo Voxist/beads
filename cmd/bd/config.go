@@ -180,19 +180,6 @@ var configSetCmd = &cobra.Command{
 			if setErr != nil {
 				return HandleError("setting config: %v", setErr)
 			}
-			// Writing the sidecar creates an UNTRACKED file, so the ignore rule
-			// has to exist by the time it does. EnsureGitignoreForBeadsDir was
-			// reachable only from init/bootstrap/doctor --fix, which none of an
-			// already-initialized workspace's operators run before their next
-			// `bd config set` — so the first machine-local write left
-			// `?? .beads/config.local.yaml` in git status and the clean-tree
-			// guard failed exactly as it did before this change. Best-effort:
-			// a config write must not fail because .gitignore is unwritable.
-			if location == config.LocalConfigFileName {
-				if beadsDir := filepath.Dir(config.ConfigFileUsed()); beadsDir != "." {
-					_ = doctor.EnsureGitignoreForBeadsDir(beadsDir)
-				}
-			}
 
 			if jsonOutput {
 				if err := outputJSON(map[string]interface{}{
@@ -610,6 +597,8 @@ var configUnsetCmd = &cobra.Command{
 		if config.IsYamlOnlyKey(key) {
 			location := "config.yaml"
 			var unsetErr error
+			var trackedValue string
+			var clearedTracked bool
 			if config.IsUserGlobalKey(key) {
 				unsetErr = config.UnsetUserYamlConfig(key)
 				location = config.UserConfigYamlDisplayPath()
@@ -617,32 +606,32 @@ var configUnsetCmd = &cobra.Command{
 				if config.IsMachineLocalKey(key) {
 					location = config.LocalConfigFileName
 				}
-				unsetErr = config.UnsetYamlConfig(key)
+				trackedValue, clearedTracked, unsetErr = config.UnsetYamlConfigReporting(key)
 			}
 			if unsetErr != nil {
 				return HandleError("unsetting config: %v", unsetErr)
 			}
 
 			if jsonOutput {
-				if err := outputJSON(map[string]interface{}{
+				payload := map[string]interface{}{
 					"key":      key,
 					"location": location,
-				}); err != nil {
+				}
+				// A machine-local unset can touch BOTH files. Reporting only
+				// the sidecar told a scripted caller — this repo's own tooling
+				// among them — that the tracked file was untouched when it was
+				// not.
+				if clearedTracked {
+					payload["also_cleared"] = "config.yaml"
+					payload["tracked_value_removed"] = trackedValue
+				}
+				if err := outputJSON(payload); err != nil {
 					return err
 				}
 			} else {
 				fmt.Printf("Unset %s (in %s)\n", key, location)
-				// A machine-local unset clears THIS machine's override only. If
-				// the tracked config.yaml still defines the key, the effective
-				// value does not change, and saying nothing would leave the
-				// operator believing it did.
-				if location == config.LocalConfigFileName {
-					if cfgPath := config.ConfigFileUsed(); cfgPath != "" {
-						if v, ok := config.TrackedYamlValueFor(cfgPath, key); ok {
-							fmt.Printf("  note: config.yaml still sets %s = %s (shared default, tracked in git).\n", key, v)
-							fmt.Printf("        %s is now that value; edit config.yaml to change it for everyone.\n", key)
-						}
-					}
+				if clearedTracked {
+					fmt.Printf("  also removed %s = %s from config.yaml (tracked in git — commit the change)\n", key, trackedValue)
 				}
 			}
 			printConfigSideEffects(checkConfigUnsetSideEffects(key))
@@ -985,7 +974,16 @@ Examples:
 				if config.IsUserGlobalKey(p.key) {
 					location = config.UserConfigYamlDisplayPath()
 				} else if config.IsYamlOnlyKey(p.key) {
+					// set-many goes through the same SetYamlConfig, so a
+					// machine-local key lands in the sidecar here too. Naming
+					// config.yaml sent the operator to a file that is
+					// byte-identical — the misattribution the rest of this
+					// change removes, surviving in the one writer that was
+					// missed.
 					location = "config.yaml"
+					if config.IsMachineLocalKey(p.key) {
+						location = config.LocalConfigFileName
+					}
 				} else if p.key == "beads.role" {
 					location = "git config"
 				}
@@ -1005,6 +1003,9 @@ Examples:
 					location = fmt.Sprintf(" (in %s)", config.UserConfigYamlDisplayPath())
 				} else if config.IsYamlOnlyKey(p.key) {
 					location = " (in config.yaml)"
+					if config.IsMachineLocalKey(p.key) {
+						location = " (in " + config.LocalConfigFileName + ")"
+					}
 				} else if p.key == "beads.role" {
 					location = " (in git config)"
 				}
