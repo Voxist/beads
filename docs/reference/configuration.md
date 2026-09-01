@@ -27,7 +27,19 @@ Dolt is the only storage backend. Embedded mode (the default) stores data at `.b
 3. `<repo>/.beads/config.yaml` (project-level, walked up from the current directory)
 4. `$BEADS_DIR/config.yaml` (highest priority, when `BEADS_DIR` points at a different workspace)
 
-A `config.local.yaml` next to the project `config.yaml` is also merged in last for machine-specific overrides that should not be committed.
+A `config.local.yaml` next to the project `config.yaml` is merged in last, so anything in it wins.
+
+Some settings describe *this machine*, not the project — where the Dolt server listens, whether backups run here. Committing those to `config.yaml` makes every clone inherit one machine's answer. So `bd config set` routes them to `config.local.yaml` automatically; you do not have to remember which is which:
+
+```bash
+bd config set dolt.mode server
+# Set dolt.mode = server (in config.local.yaml)
+
+bd config set project.name my-app
+# Set project.name = my-app (in config.yaml)
+```
+
+The routed keys are `dolt.mode`, `dolt.host`, `dolt.port`, `dolt.socket`, `dolt.user`, `dolt.data-dir`, `dolt.debug`, `backup.enabled`, and `backup.interval`. `bd config get` and `bd config list` name the file each value came from, and `bd init` adds `config.local.yaml` to `.beads/.gitignore`.
 
 ## Precedence
 
@@ -535,7 +547,7 @@ output:
   title-length: 255
 ```
 
-For machine-specific overrides that should not be committed, drop them in `.beads/config.local.yaml`; it is merged in last.
+For machine-specific overrides that should not be committed, drop them in `.beads/config.local.yaml`; it is merged in last. The Dolt connection and backup keys go there on their own — see [Config Files](#config-files).
 
 ## Per-Command Override
 

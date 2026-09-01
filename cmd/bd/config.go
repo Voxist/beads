@@ -172,6 +172,9 @@ var configSetCmd = &cobra.Command{
 				setErr = config.SetUserYamlConfig(key, value)
 				location = config.UserConfigYamlDisplayPath()
 			} else {
+				if config.IsMachineLocalKey(key) {
+					location = config.LocalConfigFileName
+				}
 				setErr = config.SetYamlConfig(key, value)
 			}
 			if setErr != nil {
@@ -327,15 +330,24 @@ var configGetCmd = &cobra.Command{
 
 			value := config.GetYamlConfig(key)
 
+			// Attribute the file the value actually came from. Hard-coding
+			// "config.yaml" sends an operator to edit a file that does not
+			// contain the value — the misattribution the sidecar split exists
+			// to prevent, reintroduced at the reporting layer.
+			location := "config.yaml"
+			if _, ok := config.MachineLocalYamlValue(key); ok {
+				location = config.LocalConfigFileName
+			}
+
 			if jsonOutput {
 				return outputJSON(map[string]interface{}{
 					"key":      key,
 					"value":    value,
-					"location": "config.yaml",
+					"location": location,
 				})
 			}
 			if value == "" {
-				fmt.Printf("%s (not set in config.yaml)\n", key)
+				fmt.Printf("%s (not set in %s)\n", key, location)
 			} else {
 				fmt.Printf("%s\n", value)
 			}
@@ -406,6 +418,9 @@ func runConfigGetBackupEnabled() error {
 		sourceDesc = "env var"
 	case config.SourceConfigFile:
 		sourceDesc = "config.yaml"
+		if _, ok := config.MachineLocalYamlValue(key); ok {
+			sourceDesc = config.LocalConfigFileName
+		}
 	default: // SourceDefault — value came from auto-detection
 		switch {
 		case usesSQLServer():
@@ -517,7 +532,15 @@ func showConfigYAMLOverrides(dbConfig map[string]string) {
 		}
 		val := config.GetString(key)
 		if val != "" {
-			yamlOverrides = append(yamlOverrides, fmt.Sprintf("  %s = %s", key, val))
+			// Name the file per line. GetValueSource reports SourceConfigFile
+			// for both workspace files, so without this a sidecar value is
+			// listed under a heading that points at the tracked file it is not
+			// in — and an operator edits the wrong one.
+			if _, local := config.MachineLocalYamlValue(key); local {
+				yamlOverrides = append(yamlOverrides, fmt.Sprintf("  %s = %s  (%s)", key, val, config.LocalConfigFileName))
+			} else {
+				yamlOverrides = append(yamlOverrides, fmt.Sprintf("  %s = %s  (config.yaml)", key, val))
+			}
 		}
 	}
 
@@ -535,7 +558,10 @@ func showConfigYAMLOverrides(dbConfig map[string]string) {
 	}
 
 	if len(yamlOverrides) > 0 {
-		fmt.Println("\nAlso set in config.yaml (not shown above):")
+		// GetValueSource cannot distinguish the two workspace files — both
+		// report SourceConfigFile — so this heading names the pair rather than
+		// asserting the tracked one and being wrong for every sidecar value.
+		fmt.Println("\nAlso set in the workspace config files (not shown above):")
 		for _, line := range yamlOverrides {
 			fmt.Println(line)
 		}
@@ -571,25 +597,73 @@ var configUnsetCmd = &cobra.Command{
 		if config.IsYamlOnlyKey(key) {
 			location := "config.yaml"
 			var unsetErr error
+			var trackedValue string
+			var clearedTracked, clearedLocal bool
 			if config.IsUserGlobalKey(key) {
 				unsetErr = config.UnsetUserYamlConfig(key)
 				location = config.UserConfigYamlDisplayPath()
 			} else {
-				unsetErr = config.UnsetYamlConfig(key)
+				if config.IsMachineLocalKey(key) {
+					location = config.LocalConfigFileName
+				}
+				trackedValue, clearedTracked, clearedLocal, unsetErr = config.UnsetYamlConfigReporting(key)
 			}
 			if unsetErr != nil {
 				return HandleError("unsetting config: %v", unsetErr)
 			}
 
+			// Name only files actually edited, and do not claim a removal that
+			// did not happen: a key inside a YAML flow mapping is out of the
+			// line-based remover's reach, and a key that was never set has
+			// nothing to remove. Both used to print success plus a
+			// config_side_effects consequence.
+			if config.IsMachineLocalKey(key) {
+				switch {
+				case clearedLocal && clearedTracked:
+					location = config.LocalConfigFileName + " and config.yaml"
+				case clearedLocal:
+					location = config.LocalConfigFileName
+				case clearedTracked:
+					location = "config.yaml"
+				}
+			}
+			removedSomething := clearedLocal || clearedTracked
+
+			if !removedSomething {
+				if jsonOutput {
+					return outputJSON(map[string]interface{}{
+						"key":     key,
+						"removed": false,
+						"reason":  "not set in config.local.yaml or config.yaml, or defined inside a YAML flow mapping that must be edited by hand",
+					})
+				}
+				fmt.Printf("%s was not removed: it is not set in %s or config.yaml.\n", key, config.LocalConfigFileName)
+				fmt.Printf("  (a key written inside a flow mapping, e.g. `dolt: {mode: server}`, must be edited by hand)\n")
+				return nil
+			}
+
 			if jsonOutput {
-				if err := outputJSON(map[string]interface{}{
+				payload := map[string]interface{}{
 					"key":      key,
 					"location": location,
-				}); err != nil {
+					"removed":  true,
+				}
+				// A machine-local unset can touch BOTH files. Reporting only
+				// the sidecar told a scripted caller — this repo's own tooling
+				// among them — that the tracked file was untouched when it was
+				// not.
+				if clearedTracked {
+					payload["also_cleared"] = "config.yaml"
+					payload["tracked_value_removed"] = trackedValue
+				}
+				if err := outputJSON(payload); err != nil {
 					return err
 				}
 			} else {
 				fmt.Printf("Unset %s (in %s)\n", key, location)
+				if clearedTracked {
+					fmt.Printf("  also removed %s = %s from config.yaml (tracked in git — commit the change)\n", key, trackedValue)
+				}
 			}
 			printConfigSideEffects(checkConfigUnsetSideEffects(key))
 			return nil
@@ -931,7 +1005,16 @@ Examples:
 				if config.IsUserGlobalKey(p.key) {
 					location = config.UserConfigYamlDisplayPath()
 				} else if config.IsYamlOnlyKey(p.key) {
+					// set-many goes through the same SetYamlConfig, so a
+					// machine-local key lands in the sidecar here too. Naming
+					// config.yaml sent the operator to a file that is
+					// byte-identical — the misattribution the rest of this
+					// change removes, surviving in the one writer that was
+					// missed.
 					location = "config.yaml"
+					if config.IsMachineLocalKey(p.key) {
+						location = config.LocalConfigFileName
+					}
 				} else if p.key == "beads.role" {
 					location = "git config"
 				}
@@ -951,6 +1034,9 @@ Examples:
 					location = fmt.Sprintf(" (in %s)", config.UserConfigYamlDisplayPath())
 				} else if config.IsYamlOnlyKey(p.key) {
 					location = " (in config.yaml)"
+					if config.IsMachineLocalKey(p.key) {
+						location = " (in " + config.LocalConfigFileName + ")"
+					}
 				} else if p.key == "beads.role" {
 					location = " (in git config)"
 				}
