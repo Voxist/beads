@@ -108,11 +108,45 @@ preserved.
 Opened 2026-08-31 from `bourgois/beads-fork`, all with `maintainer_can_modify`.
 None is fork carry — each fixes an upstream bug the fork happened to hit.
 
+All four were rebased onto upstream `40b323245` on **2026-09-02**. Every red
+check on them before that rebase was environmental and none was reproducible:
+a Dolt testcontainer dying mid-run (`unexpected EOF`, then `connection refused`
+for the rest of the package — this is what `Test (storage domain + uow)` fails
+as, and it hit three unrelated PRs identically), a GitHub release CDN 504 on
+`install-dolt.sh`, a `proxy.golang.org` read error, and a
+`Differential Regression` job that exhausted its 20m budget with every test
+PASSING. Read a red check on these against that list before treating it as a
+defect. `#6098` was the one exception — see below.
+
 | PR | What |
 | --- | --- |
 | [#6096](https://github.com/gastownhall/beads/pull/6096) | `update-nix-vendorhash.sh` writes a stray `default.nix''` on BSD sed — `SED_INPLACE="sed -i ''"` cannot carry an empty argument, so the quotes survive word-splitting as a literal backup suffix. The stray carries the placeholder `sha256-AAAA…` hash, so `git add -A` can commit an unvalidatable `vendorHash`. |
 | [#6097](https://github.com/gastownhall/beads/pull/6097) | `TestProtocol_FieldsRoundTrip` fails wherever `TZ` differs from the system zone. `workspace.env()` is a whitelist and omits `TZ`, so the `bd` child falls back to `/etc/localtime` while the test process uses its own. Upstream CI misses it because its runners have `TZ` unset AND a UTC system zone. |
-| [#6098](https://github.com/gastownhall/beads/pull/6098) | `bd list --wisp-type X` is UNSATISFIABLE — wisp-typed beads are routed to the wisps table on write, `issues.wisp_type` defaults to `''`, and the plane is skipped, so the predicate is evaluated only against rows that cannot carry it. The golden corpus was recording the bug. |
+| [#6098](https://github.com/gastownhall/beads/pull/6098) | **Rewritten 2026-09-02.** `bd list --wisp-type X` cannot match a row for any input, and `bd list` exposes no flag that changes that. Now registers `--include-ephemeral` on `bd list` and refuses `--wisp-type` when no plane is admitted, hint included. `internal/workapi/list.go` and the golden corpus are untouched. |
+
+### Why #6098's first thesis was abandoned
+
+Worth not re-deriving. The original PR made `WispType` admit the ephemeral
+plane in `internal/workapi/list.go`. It was never green, on any run, and the
+cause was not flake: upstream's
+`RunReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt`
+(`backend/conformance/reader_contract.go`, from #5476, present at the PR's own
+base) pins the opposite, and names the PR's exact behaviour as the thing it
+exists to prevent — "a second, undocumented way to reach the ephemeral plane".
+The failure reproduced identically on `macos-latest` and Embedded Dolt.
+
+The observation underneath was still true — the write path routes on storage
+class, so a durable row structurally cannot carry a non-empty `wisp_type` — but
+upstream had already reached it and answered it at the API layer. What upstream
+had NOT done was expose the answer: `issueops.ListRequest`'s own doc names
+`IncludeEphemeral` as the combination that returns rows, and `bd list`
+registers no flag for it. The defect was a missing CLI flag, not a wrong plane
+rule.
+
+**Rule of thumb this cost:** when a conformance case in `backend/conformance/`
+contradicts a fix, read its comment before assuming flake. Those cases carry
+their rationale inline, and upstream writes them when it has already refused
+the obvious reading.
 
 Two more candidates, both gated on the `--include-ephemeral` work landing here
 first:
@@ -133,7 +167,12 @@ Not refused — simply never proposed. These are the real upstreaming backlog.
 | heartbeat/lease no-op auto-commit skip (vp-on8s) | `internal/storage/embeddeddolt/` |
 | `BD_NO_AUTO_MIGRATE` fleet-migration guard | `cmd/bd/` |
 | `GC_AGENT` actor resolution for `--claim` idempotency | `cmd/bd/` |
-| SEC-003: `/Users/Shared` as a safe `BEADS_DIR` boundary | `internal/beads/context.go` |
+
+SEC-003 (`/Users/Shared` as a safe `BEADS_DIR` boundary) was listed here until
+2026-09-02 and is **gone**: upstream carries the carve-out itself in
+`internal/beads/context.go`, and `git diff origin/main...main` on that file is
+empty. It was fixed upstream independently, not by us. Re-check a row here
+against the actual diff before working it.
 
 Ops-only, never upstreamable: `DEPLOY_BD` install guard, nix `vendorHash`
 recomputation, `prepared-dml-grandfather.txt`.
