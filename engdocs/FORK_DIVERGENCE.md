@@ -45,9 +45,10 @@ should not be re-proposed; carry it indefinitely and merge upstream *around* it.
   the central nil-store guard, and `storeForRawDoltSync` (direct-endpoint escape
   hatch for `dolt push` / `pull` / `commit` in proxied mode).
 - Depends on the pooling work above; shares its fate.
-- `gastownhall/beads#4313` (dolt-server.port clobber) is the one piece still
-  open upstream — converted to draft, blocked behind #4303, and awaiting a repro
-  recipe maintainers asked for twice. Branch:
+- `gastownhall/beads#4313` (dolt-server.port clobber) was the one piece still
+  open upstream. It was **closed on 2026-08-31** as a draft, blocked behind
+  #4303 and never given the repro recipe maintainers asked for twice. #4303
+  itself is still an open draft. Branch:
   `fix/proxied-routed-store-portfile-clobber`.
 
 ### be-pen9 shared backend (unmerged, fork-only)
@@ -103,10 +104,36 @@ preserved.
 > and teammates could not be inspected, so the name was left alone. Do not
 > reclaim it casually; if you ever want it, audit those first.
 
+### Landed 2026-09-03 — the personal-fork route worked
+
+`#6096`, `#6097` and `#6098` all merged upstream on **2026-09-03**, filed from
+`bourgois/beads-fork` with `maintainer_can_modify`. No replacement transport was
+needed for any of them; that is the whole difference the contribution rule above
+buys, and it is now demonstrated rather than argued.
+
+| Fork branch | Landed upstream as | Upstream commit |
+| --- | --- | --- |
+| `--include-ephemeral` on `bd list` | #6098 | `cbf84cb1c` |
+| `TZ` propagation to the `bd` child | #6097 | `b39636615` |
+| `sed_inplace` BSD-sed fix | #6096 | `a4afdef45` |
+
+Their fork-side originals were **dropped at the 2026-09-03 resync**, not merged
+alongside. `cmd/bd/list.go`, `cmd/bd/list_input.go` and
+`scripts/update-nix-vendorhash.sh` are byte-identical with upstream again, so
+three carry rows are gone. Upstream's `bd list` also now REFUSES `--wisp-type`
+without a plane, which the fork's version did not: taking upstream's file whole
+is what picks that up.
+
 ## Filed upstream, awaiting review
 
-Opened 2026-08-31 from `bourgois/beads-fork`, all with `maintainer_can_modify`.
-None is fork carry — each fixes an upstream bug the fork happened to hit.
+Filed from `bourgois/beads-fork` with `maintainer_can_modify`. None is fork
+carry — each fixes an upstream bug the fork happened to hit.
+
+**Only [#6125](https://github.com/gastownhall/beads/pull/6125) is still open**
+(machine-local config keys routed to the `config.local.yaml` sidecar; #6124 was
+its closed first attempt). The three below MERGED on 2026-09-03 — see *Landed
+upstream* above. The table is kept because the environmental-failure catalogue
+under it is what the next reader needs, not the PR states.
 
 All four were rebased onto upstream `40b323245` on **2026-09-02**. Every red
 check on them before that rebase was environmental and none was reproducible:
@@ -257,7 +284,6 @@ divergence CHANGED CHARACTER rather than disappearing, which is the real win:
 | `internal/workapi/count.go` | the one-line `!in.IncludeEphemeral` guard |
 | `issueops/counter.go` | the `CountRequest.IncludeEphemeral` field + doc |
 | `cmd/bd/count.go` | flag registration, read, examples line |
-| `cmd/bd/list.go`, `cmd/bd/list_input.go` | the pre-existing `--include-ephemeral` flag |
 | `internal/httpapi/reads.go` | reads `include_ephemeral` in `countFilters` |
 | `internal/httpapi/spec/openapi.v0.yaml` | the parameter on `countIssues` |
 | `internal/httpapi/apigen/types.gen.go` | GENERATED from that spec — `make api-gen` |
@@ -265,6 +291,10 @@ divergence CHANGED CHARACTER rather than disappearing, which is the real win:
 | `cmd/bd/count_filter_test.go` | the flag tripwire's map and `want` |
 | `internal/workapi/count_skipwisps_test.go` | fork-owned; no upstream conflict |
 | `cmd/bd/count_include_ephemeral_embedded_test.go` | fork-owned; no upstream conflict |
+
+`cmd/bd/list.go` and `cmd/bd/list_input.go` were in this table until
+2026-09-03 and are gone: upstream registers the `bd list` flag itself now, via
+#6098. Both files are byte-identical with upstream.
 
 The last two rows are ours and cost nothing at resync. The rest are
 upstream-owned — but every one is an ADDITIVE registration of a new flag, which
@@ -278,8 +308,15 @@ Two of them are still in-place edits of upstream TEST files
 pattern this change set out to remove, so it is worth being clear-eyed about:
 both are tripwires that FAIL LOUDLY when the flag is present and unregistered,
 rather than assertions that silently disagree. `count_test.go` also carries
-hand-maintained prose ("the role publishes 24 filters") that a resync will not
-update for you.
+hand-maintained prose ("the role publishes N filters") that a resync will not
+update for you, and no test reads it — it went stale unnoticed once already.
+It is **25** as of 2026-09-03, after upstream's `metadata_field` (#6024) landed
+beside the fork's `include_ephemeral`. Re-derive it rather than trusting it:
+
+```
+sed -n '/^var countFieldForParameter = map\[string\]string{/,/^}/p' \
+  internal/httpapi/count_test.go | grep -c '":'
+```
 
 **`openapi.v0.yaml` is the trap.** Miss that hunk on a resync and `make
 api-check` fails with a regeneration diff that reads like the fork's generated
@@ -291,18 +328,29 @@ file is stale, not like a dropped delta. Re-apply the spec hunk, then
 Recurring conflicts, roughly in descending pain:
 
 1. `internal/workapi/count.go`, `issueops/counter.go`, `cmd/bd/count.go`,
-   `cmd/bd/list.go`, `cmd/bd/list_input.go`, `internal/httpapi/reads.go`,
-   `internal/httpapi/spec/openapi.v0.yaml` (then `make api-gen`),
-   `internal/httpapi/count_test.go`, `cmd/bd/count_filter_test.go` — the
-   `--include-ephemeral` carry above. Additive, so it conflicts far less than
-   the delta it replaced, but it is NOT zero: see the table in that section for
-   what each file holds.
+   `internal/httpapi/reads.go`, `internal/httpapi/spec/openapi.v0.yaml` (then
+   `make api-gen`), `internal/httpapi/count_test.go`,
+   `cmd/bd/count_filter_test.go` — the `--include-ephemeral` carry above.
+   Additive, so it conflicts far less than the delta it replaced, but it is NOT
+   zero: see the table in that section for what each file holds. The two `bd
+   list` files left this zone on 2026-09-03 when #6098 landed.
+
+   The 2026-09-03 resync hit this zone against upstream's `#6024`
+   (`--metadata-field` on `bd count`), which touches the same command,
+   the same request struct, the same spec operation and the same two test
+   files. Nothing was mutually exclusive — every conflict was two additive
+   registrations landing on one line — but BOTH sides must survive each one.
+   `cmd/bd/count_filter_test.go` is the sharp edge: its `want` struct is
+   compared with `reflect.DeepEqual`, so dropping either field fails with a
+   whole-struct dump rather than a named field.
 2. `internal/storage/uow/*`, `internal/storage/dolt/store.go`,
    `internal/storage/issueops/commit_pending.go` — our originals vs the
    upstream re-lands. **Auto-merges cleanly and wrongly**; review by hand.
 3. `go.mod` / `go.sum` / `default.nix` — the fork adds `lumberjack` and
    `x/time` as direct deps, so `vendorHash` must be recomputed after every
-   resync.
+   resync. `scripts/update-nix-vendorhash.sh` left this zone on 2026-09-03:
+   #6096 landed the fork's own BSD-sed fix upstream, so the file is
+   byte-identical again and only the hash line in `default.nix` conflicts.
 4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
 
 ## Parked, deliberately not carried
@@ -361,10 +409,20 @@ None is a tree change you can prepare in advance; all are done per cycle.
    freshness` and `PR Policy (wrapper timing)`. Fix: `git push bfork
    refs/tags/<pin>`. Hit on the 2026-08-07 resync (v1.1.0) and again on
    2026-08-31 (v1.2.2).
+
+   **Check before pushing, do not push blind.** `git ls-remote --tags bfork
+   <pin>` against `git ls-remote --tags origin <pin>` answers it in one line.
+   The pin is only re-pushed when the RELEASE TAG BUMPS, so a cycle that does
+   not bump it has nothing to do here — 2026-09-03 was such a cycle: v1.2.2
+   was already on `bfork` at `8ed120b1b`, matching upstream.
 2. **Recompute `vendorHash`.** The fork's `go.sum` carries lumberjack, which
    upstream lacks, so upstream's hash never validates for us. Run
    `./scripts/update-nix-vendorhash.sh` (it falls back to a `nixos/nix` Docker
    image when nix is not installed).
+
+   Verified working 2026-09-03 with no nix installed: the Docker fallback ran
+   the real build, and #6096 having landed means no stray `default.nix''` is
+   produced any more.
 
 3. **`make install` cannot succeed in this fork — use `install-force`.** The
    `check-up-to-date` target compares HEAD against `origin/main`, and here
@@ -379,6 +437,32 @@ None is a tree change you can prepare in advance; all are done per cycle.
    `install-force` skips that check and is the correct target for this repo,
    not an override being abused. The inverted-remote convention showing up in
    the build system.
+
+## `go test ./...` is not green on the dev machine
+
+Recorded 2026-09-03 because it cost a full isolate-and-control pass, and the
+same six packages will fail on the next resync for the same reasons. **None of
+these is a resync defect. Do not treat a red full run as a merge problem
+without controlling for them first**, and do not treat "the machine is busy" as
+the diagnosis either — three of the five causes below are not load.
+
+Method that settles it: run the package ALONE, and run the same command against
+a tree built from the pre-merge commit (`git archive <sha> | tar -x -C /tmp/ctl`
+touches no shared git state) in the same environment. If both trees fail
+identically, the merge is exonerated.
+
+| Package | What actually happens |
+| --- | --- |
+| `internal/storage/uow` | **The default 10m package timeout, not a hang.** It needs 592s ALONE, which is eight seconds of headroom against `go test`'s 600s default. Run it with `-timeout 25m` and it passes. |
+| `cmd/bd`, `internal/storage/dolt` | Same 10m wall. Both are large Dolt-backed packages. |
+| `cmd/bd` `TestIssueIDCompletion` | Genuinely fails, and fails identically pre-merge. Unrelated to any resync. |
+| `internal/fdhygiene` `TestMarkInheritedCloexec_ChildDoesNotInherit` | Same: identical failure pre-merge, in 0.03s. |
+| `cmd/bd/doctor` | Every failing assertion expects an ABSENT environment — "no server", "not a git repository", "no database" — and finds a present one. The dev machine runs several `dolt sql-server` processes (fleet plus other sessions' test cities) and the tests run inside a git repo with `beads.role` set. The failing SET varies run to run; the package fails on both trees. |
+| `cmd/bd/doctor/fix` | In-package interference. `TestImportJSONLIntoStore` fails in a full package run and PASSES alone, on both trees. |
+
+`internal/storage/dolt`'s seven concurrency tests report `failed to initialize
+schema: context deadline exceeded` at their own 45s budget. That one IS
+contention, against those same live servers.
 
 ## Deploying a new bd to the fleet
 
