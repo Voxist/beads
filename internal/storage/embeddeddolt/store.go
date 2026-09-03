@@ -424,6 +424,21 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 	// Embedded mode relies on the dolthub/driver/v2's local file/concurrency
 	// controls; schema.MigrateUpWithLock requires a sql-server session lock.
 	if _, err := schema.MigrateUp(ctx, conn); err != nil {
+		var frozenErr *schema.MigrationFrozenError
+		if s.intent != openStrict && errors.As(err, &frozenErr) {
+			// A freeze exists to stop writes and schema changes on this
+			// database, not to stop someone looking at it: the CLI already
+			// refused every write command before this open, and a read
+			// must keep working during the maintenance window it announces.
+			// Continue on the current schema, without migrating — which is
+			// precisely the thing a freeze is for.
+			fmt.Fprintf(os.Stderr,
+				"Warning: %v\n"+
+					"  Read-only command: continuing on schema v%d without migrating.\n"+
+					"  Writes are refused until the freeze is cleared.\n",
+				frozenErr, frozenErr.CurrentVersion)
+			return nil
+		}
 		var dirtyErr *schema.DirtyTablesError
 		if s.intent != openStrict && errors.As(err, &dirtyErr) {
 			// The guard exists to keep dirty user data from being entangled
