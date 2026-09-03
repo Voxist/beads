@@ -43,8 +43,12 @@ func ValidateCountGroup(group issueops.CountGroup) (string, error) {
 // pinned by a golden-style test comparing this builder's output against
 // BuildListFilter's for the same request (count_test.go, GH#4387).
 //
-// cfg supplies the workspace's infra vocabulary and is only read under
-// IncludeInfra; a zero ListConfig falls back to the default infra set.
+// cfg supplies the workspace's infra vocabulary. It is read on EVERY request
+// that names a type, not only under IncludeInfra — naming an infra type decides
+// the plane and the ephemeral narrowing below, exactly as it does in
+// BuildListFilter. A zero ListConfig falls back to the DEFAULT infra set, which
+// is wrong for any workspace that configured types.infra, so both counters must
+// load it whenever IssueType is set (storecounter.filter, uow.countFilter).
 func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilter, error) {
 	filter := types.IssueFilter{
 		TitleSearch:         in.TitleSearch,
@@ -110,6 +114,25 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 	// `else`, which is the whole of the divergence. The clause below is
 	// list.go's, verbatim, minus the IncludeInfra term the branch above
 	// already consumed.
+	// Naming an infra type also NARROWS to the ephemeral rows of that type,
+	// which is BuildListFilter's second half of the same decision (list.go,
+	// `if cfg.IsInfra(in.IssueType)`). Admitting the plane without it counts
+	// MORE than the listing returns: an infra bead created --no-history lands
+	// in the wisps table with Ephemeral=false, and a nil Ephemeral merges both
+	// tables. Without this, `--include-infra` — which does set it — would make
+	// the count go DOWN, which is not a thing an "include" flag may do.
+	// Naming an infra type also NARROWS to the ephemeral rows of that type,
+	// which is BuildListFilter's second half of the same decision (list.go,
+	// `if cfg.IsInfra(in.IssueType)`). Admitting the plane without it counts
+	// MORE than the listing returns: an infra bead created --no-history lands
+	// in the wisps table with Ephemeral=false, and a nil Ephemeral merges both
+	// tables. Without this, `--include-infra` — which does set it — would make
+	// the count go DOWN, which is not a thing an "include" flag may do.
+	if in.IssueType != "" && cfg.IsInfra(in.IssueType) {
+		ephemeral := true
+		filter.Ephemeral = &ephemeral
+	}
+
 	if in.IncludeInfra {
 		applyCountIncludeInfra(&filter, in.IssueType, cfg)
 	} else if !in.IncludeEphemeral && (in.IssueType == "" || !cfg.IsInfra(in.IssueType)) {
@@ -143,8 +166,8 @@ func applyCountIncludeInfra(filter *types.IssueFilter, issueType string, cfg Lis
 		filter.ExcludeTypes = append(filter.ExcludeTypes, "gate")
 	}
 
-	if issueType != "" && cfg.IsInfra(issueType) {
-		ephemeral := true
-		filter.Ephemeral = &ephemeral
-	}
+	// The infra-type ephemeral narrowing that used to live here is now hoisted
+	// into BuildCountFilter, because the default path needs it too. Setting it
+	// again here would be a no-op with the same value; leaving it out keeps one
+	// writer for the field.
 }

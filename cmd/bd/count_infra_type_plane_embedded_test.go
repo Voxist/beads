@@ -39,6 +39,11 @@ func TestEmbeddedCountInfraTypeAgreesWithList(t *testing.T) {
 	// caught by the last subtest rather than passing quietly.
 	bdCreate(t, bd, dir, "agent one", "--type", "agent")
 	bdCreate(t, bd, dir, "agent two", "--type", "agent")
+	// A --no-history infra bead: it lands in the wisps TABLE like the others,
+	// but with Ephemeral=false. It exists so the count's ephemeral narrowing is
+	// load-bearing — a nil Ephemeral merges both tables and over-counts, and
+	// `--no-history` is documented as the way to make a permanent agent bead.
+	bdCreate(t, bd, dir, "agent no-history", "--type", "agent", "--no-history")
 	bdCreate(t, bd, dir, "durable task one", "--type", "task")
 	bdCreate(t, bd, dir, "durable task two", "--type", "task")
 	bdCreate(t, bd, dir, "durable task three", "--type", "task")
@@ -53,11 +58,25 @@ func TestEmbeddedCountInfraTypeAgreesWithList(t *testing.T) {
 		listed := len(bdListJSON(t, bd, dir, "--type", "agent", "--all", "--limit", "0"))
 		counted := countOf("--type", "agent")
 		if listed != 2 {
-			t.Fatalf("fixture: bd list --type agent returned %d, want 2", listed)
+			t.Fatalf("fixture: bd list --type agent returned %d, want 2 "+
+				"(the two ephemeral agents; the --no-history one is not ephemeral)", listed)
 		}
 		if counted != listed {
 			t.Errorf("bd count --type agent = %d, but bd list --type agent returns %d rows; "+
 				"the two must read the same plane", counted, listed)
+		}
+	})
+
+	t.Run("include-infra does not make the count go down", func(t *testing.T) {
+		// An "include more" flag that REDUCES the answer is the signature of a
+		// missing ephemeral narrowing on the default path: --include-infra sets
+		// it, the bare path did not, so the bare path merged both tables and
+		// counted the --no-history bead that --include-infra excludes.
+		bare := countOf("--type", "agent")
+		wider := countOf("--type", "agent", "--include-infra")
+		if wider < bare {
+			t.Errorf("bd count --type agent = %d but --include-infra = %d; "+
+				"adding an include flag must not reduce the count", bare, wider)
 		}
 	})
 
@@ -76,4 +95,51 @@ func TestEmbeddedCountInfraTypeAgreesWithList(t *testing.T) {
 			t.Errorf("bd count = %d, want 3 (durable rows only; infra beads live on the wisp plane)", got)
 		}
 	})
+}
+
+// TestEmbeddedCountConfiguredInfraTypeAgreesWithList covers what
+// TestCountAndListPlaneAgreement structurally cannot: the WORKSPACE's infra
+// vocabulary, read through the real caller.
+//
+// ListConfig.IsInfra falls back to domain.IsInfraType — {agent, role, message}
+// — when InfraSet is empty, so a zero ListConfig looks like a working config
+// for exactly those three words and silently wrong for every other. Both count
+// callers used to load the config only under IncludeInfra, which meant a plain
+// `bd count --type <configured infra type>` got that zero value and answered 0,
+// while `bd list` (which always loads) returned the rows.
+//
+// `worker` is deliberately NOT one of the three defaults: with the old
+// load-under-IncludeInfra-only guard this test fails and the sibling above
+// still passes, which is the whole point of having both.
+func TestEmbeddedCountConfiguredInfraTypeAgreesWithList(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
+	}
+	t.Parallel()
+
+	bd := buildEmbeddedBD(t)
+	dir, _, _ := bdInit(t, bd, "--prefix", "cc")
+
+	// types.infra REPLACES the default set, so the three defaults are named
+	// again alongside worker; dropping them would change what the rest of the
+	// workspace means by "infra" rather than just adding to it.
+	bdRunOK(t, bd, dir, "config", "set", "types.custom", "worker")
+	bdRunOK(t, bd, dir, "config", "set", "types.infra", "agent,role,message,worker")
+
+	bdCreate(t, bd, dir, "worker one", "--type", "worker")
+	bdCreate(t, bd, dir, "worker two", "--type", "worker")
+	bdCreate(t, bd, dir, "durable task", "--type", "task")
+
+	listed := len(bdListJSON(t, bd, dir, "--type", "worker", "--all", "--limit", "0"))
+	m := bdCountJSON(t, bd, dir, "--type", "worker")
+	counted := int(m["count"].(float64))
+
+	if listed != 2 {
+		t.Fatalf("fixture: bd list --type worker returned %d, want 2", listed)
+	}
+	if counted != listed {
+		t.Errorf("bd count --type worker = %d, but bd list --type worker returns %d rows; "+
+			"count must read the WORKSPACE's infra vocabulary, not the built-in default set",
+			counted, listed)
+	}
 }

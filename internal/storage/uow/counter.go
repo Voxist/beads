@@ -85,11 +85,14 @@ func (c *counter) CountByGroup(ctx context.Context, req publicops.CountByGroupRe
 }
 
 // countFilter builds the storage filter from the unit of work the call already
-// holds, loading configuration only when IncludeInfra can read it — the same two
-// decisions the store-backed body makes, through the same builder.
+// holds, loading configuration whenever the request can reach the infra
+// vocabulary — IncludeInfra, or a named IssueType, which decides the plane and
+// the ephemeral narrowing in BuildCountFilter. Same two decisions as the
+// store-backed body, through the same builder; they must stay identical or the
+// proxied route answers differently from the embedded one.
 func countFilter(ctx context.Context, uw UnitOfWork, req publicops.CountRequest) (types.IssueFilter, error) {
 	var cfg workapi.ListConfig
-	if req.IncludeInfra {
+	if req.IncludeInfra || req.IssueType != "" {
 		loaded, err := workapi.LoadUOWListConfig(ctx, uw)
 		if err != nil {
 			return types.IssueFilter{}, err
