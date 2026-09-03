@@ -3,8 +3,12 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // LocalConfigFileName is the untracked sidecar that sits beside a project's
@@ -27,7 +31,10 @@ const localConfigHeader = `# bd machine-local configuration.
 # host takes backups) rather than the project. bd merges this file last, so a
 # value here overrides the same key in the tracked config.yaml.
 #
-# This file must NOT be committed: .beads/.gitignore excludes it.
+# This file must NOT be committed. bd keeps git from seeing it: repositories
+# initialized after bd added the sidecar exclude it in the tracked
+# .beads/.gitignore, and in older ones bd adds a per-clone entry to
+# .git/info/exclude the first time it writes here.
 `
 
 // MachineLocalKeys are config keys whose value is a statement about the
@@ -89,6 +96,17 @@ var MachineLocalKeys = map[string]bool{
 	"backup.interval": true,
 }
 
+// sortedMachineLocalKeys returns the registry's keys in a stable order, so any
+// pass over it produces byte-identical output from identical input.
+func sortedMachineLocalKeys() []string {
+	keys := make([]string, 0, len(MachineLocalKeys))
+	for key := range MachineLocalKeys {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // IsMachineLocalKey reports whether key describes this machine rather than the
 // project, and so must be written to the untracked sidecar. Exact match only —
 // see MachineLocalKeys.
@@ -145,9 +163,17 @@ func unsetMachineLocalYamlConfig(configPath, key string) error {
 	return nil
 }
 
-// ensureLocalConfigFile creates the sidecar with its header if absent. The
-// 0600 posture matches every other config writer in this package.
+// ensureLocalConfigFile creates the sidecar with its header if absent, and
+// makes sure git ignores it. The 0600 posture matches every other config
+// writer in this package.
 func ensureLocalConfigFile(localPath string) error {
+	// The exclusion is ensured on every write, not only when the sidecar is
+	// created. A workspace that already has the sidecar from an earlier bd
+	// would otherwise stay dirty forever, since nothing else on the write path
+	// revisits the question.
+	if err := ensureSidecarIgnored(filepath.Dir(localPath)); err != nil {
+		return err
+	}
 	if _, err := os.Stat(localPath); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -157,6 +183,163 @@ func ensureLocalConfigFile(localPath string) error {
 		return fmt.Errorf("failed to create %s: %w", LocalConfigFileName, err)
 	}
 	return nil
+}
+
+// sidecarIgnoreComment introduces the appended entry. bd is not the only
+// writer of .git/info/exclude — `bd init --stealth` and `bd doctor --fix` add
+// sections there too — so an unexplained bare line would read as cruft.
+const sidecarIgnoreComment = "# bd machine-local config sidecar (per-clone; the tracked .beads/.gitignore covers it in repos initialized after bd added it)"
+
+// ensureSidecarIgnored makes git ignore the sidecar in this clone.
+//
+// Without this the routing change trades one self-dirtying file for another:
+// the tracked config.yaml stops being rewritten, but `git status` reports an
+// untracked .beads/config.local.yaml instead, and the release script, the
+// pre-commit hook and the CI clean-tree step still refuse. The pattern is in
+// cmd/bd/doctor's requiredPatterns, but that list is only applied by
+// `bd init`, `bd bootstrap` and `bd doctor --fix` — none of which a plain
+// `bd config set` runs — so a checkout whose .beads/.gitignore predates the
+// sidecar never picks it up.
+//
+// The entry goes in the clone-local .git/info/exclude, NOT the tracked
+// .beads/.gitignore. Appending to the tracked file would leave
+// ` M .beads/.gitignore` behind and fail the very clean-tree guards this
+// change exists to satisfy — the same sin as rewriting config.yaml, one file
+// over. .git/info/exclude is git's own mechanism for a per-clone exclusion, it
+// is never committed, and bd already writes there for stealth repos
+// (addProjectPatternsToGitExclude). The shared, tracked fix stays where it
+// was: `bd doctor --fix` adds config.local.yaml to .beads/.gitignore, and this
+// function does nothing when that entry is already present.
+func ensureSidecarIgnored(beadsDir string) error {
+	// Modern repos: the tracked .beads/.gitignore already covers it, so there
+	// is nothing per-clone to add.
+	if content, err := os.ReadFile(filepath.Join(beadsDir, ".gitignore")); err == nil { //nolint:gosec // beadsDir is a resolved .beads directory
+		if gitignoreListsPattern(string(content), LocalConfigFileName) {
+			return nil
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read .beads/.gitignore: %w", err)
+	}
+
+	pattern, excludePath, ok := sidecarExcludeTarget(beadsDir)
+	if !ok {
+		return nil // not in a git work tree: nothing can be dirty, nothing to do
+	}
+
+	content, err := os.ReadFile(excludePath) //nolint:gosec // excludePath is derived from git rev-parse output
+	switch {
+	case err == nil:
+		if gitignoreListsPattern(string(content), pattern) {
+			return nil
+		}
+	case os.IsNotExist(err):
+		content = nil
+	default:
+		return fmt.Errorf("failed to read %s: %w", excludePath, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o750); err != nil {
+		return fmt.Errorf("failed to create %s: %w", filepath.Dir(excludePath), err)
+	}
+
+	// Additive: an existing exclude keeps its content, its ordering and its
+	// trailing-newline shape. Operators and other bd code both write here.
+	updated := string(content)
+	if updated != "" && !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	if updated != "" {
+		updated += "\n"
+	}
+	updated += sidecarIgnoreComment + "\n" + pattern + "\n"
+
+	if err := os.WriteFile(excludePath, []byte(updated), 0o600); err != nil {
+		return fmt.Errorf("failed to update %s: %w", excludePath, err)
+	}
+	return nil
+}
+
+// sidecarExcludeTarget returns the exclude pattern for this workspace's sidecar
+// and the path of the exclude file to put it in.
+//
+// The pattern is anchored to the repository root and names exactly one file, so
+// it cannot mask anything else: a .beads directory that is not at the top level
+// (BEADS_DIR pointing into a subproject) gets its own entry. The exclude file
+// lives in the COMMON git dir, which is what git reads for a linked worktree
+// too — a per-worktree .git/info/exclude would be ignored.
+//
+// Both facts come from ONE rev-parse. gitDirsForRepo would give the common dir
+// on its own, but this runs on every machine-local write, and a second process
+// spawn to learn the top level is a cost with no payer.
+func sidecarExcludeTarget(beadsDir string) (pattern, excludePath string, ok bool) {
+	out, err := exec.Command("git", "-C", beadsDir, "rev-parse", "--git-common-dir", "--show-toplevel").Output()
+	if err != nil {
+		return "", "", false // not a git work tree, or a bare repo
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		return "", "", false
+	}
+
+	commonDir := gitPathForRepo(beadsDir, strings.TrimSpace(lines[0]))
+	topLevel := gitPathForRepo(beadsDir, strings.TrimSpace(lines[1]))
+	if commonDir == "" || topLevel == "" {
+		return "", "", false
+	}
+
+	rel, err := filepath.Rel(topLevel, filepath.Join(gitPathForRepo(beadsDir, beadsDir), LocalConfigFileName))
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", "", false // outside the work tree: git status would never show it
+	}
+
+	return "/" + filepath.ToSlash(rel), filepath.Join(commonDir, "info", "exclude"), true
+}
+
+// gitignoreListsPattern reports whether content already carries pattern as its
+// own entry. Matching is line-exact after trimming, mirroring
+// cmd/bd/doctor.containsGitignorePattern so the two agree on what "present"
+// means; a commented-out line does not count.
+func gitignoreListsPattern(content, pattern string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+// migrationAnchorKey is the scratch top-level key the migration uses to give a
+// comments-only sidecar a mapping to write into. It never reaches disk: it is
+// removed before the file is written. The name is deliberately not a valid bd
+// config key, so a crash between writes leaves something obviously bd's rather
+// than something viper would surface in `bd config list`.
+const migrationAnchorKey = "bd-migration-anchor"
+
+// hasYamlMapping reports whether content parses to a document with a top-level
+// mapping — the condition under which updateYamlKey takes its nested path.
+func hasYamlMapping(content string) bool {
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
+		return false
+	}
+	return len(root.Content) > 0 && root.Content[0].Kind == yaml.MappingNode
+}
+
+// dropYamlLine removes the top-level entry for key. It is textual on purpose:
+// re-marshaling to delete a node would be the whole-file reflow this package
+// avoids, and the header comments sit above the anchor line, so removing that
+// one line leaves them exactly where they are.
+func dropYamlLine(content, key string) string {
+	prefix := key + ":"
+	lines := strings.Split(content, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // migrateMachineLocalKeys performs the ONE-TIME move of machine-local keys out
@@ -189,8 +372,16 @@ func migrateMachineLocalKeys(configPath, localPath string) error {
 	}
 	tracked := string(trackedRaw)
 
+	// Sorted, not map order. updateYamlKey picks the flat or the nested form
+	// from what the document already contains, so the order keys are written
+	// in decides the shape of the result: ranging over the map produced a
+	// different sidecar on each run, including one carrying a top-level flat
+	// `dolt.mode` AND a separate nested `dolt:` block for the same namespace.
+	// The tracked-file rewrite below is order-sensitive for the same reason.
+	keys := sortedMachineLocalKeys()
+
 	migrated := make(map[string]string)
-	for key := range MachineLocalKeys {
+	for _, key := range keys {
 		value, found := yamlValueInContent(tracked, key)
 		if !found {
 			continue
@@ -204,11 +395,33 @@ func migrateMachineLocalKeys(configPath, localPath string) error {
 	}
 
 	newLocal := string(localContent)
-	for key, value := range migrated {
+	// A freshly created sidecar is header comments and nothing else, and
+	// updateYamlKey falls back to the FLAT dotted form on a document with no
+	// YAML content: its nested writer round-trips through yaml.Node, and a
+	// comment on an empty document has no node to survive on. Left alone that
+	// puts the first migrated key in flat form and every later one in nested
+	// form, so one namespace ends up represented twice in the same file. A
+	// scratch key anchors the mapping so every real key takes the nested path;
+	// it is dropped once they are all written.
+	anchored := false
+	if len(migrated) > 0 && !hasYamlMapping(newLocal) {
+		if newLocal, err = updateYamlKey(newLocal, migrationAnchorKey, ""); err != nil {
+			return fmt.Errorf("anchoring %s: %w", LocalConfigFileName, err)
+		}
+		anchored = true
+	}
+	for _, key := range keys {
+		value, ok := migrated[key]
+		if !ok {
+			continue
+		}
 		newLocal, err = updateYamlKey(newLocal, key, value)
 		if err != nil {
 			return fmt.Errorf("migrating %s into %s: %w", key, LocalConfigFileName, err)
 		}
+	}
+	if anchored {
+		newLocal = dropYamlLine(newLocal, migrationAnchorKey)
 	}
 	// Values first, marker last. If the config.yaml rewrite below fails (a
 	// read-only checkout, a full disk), a marker already on disk would make
