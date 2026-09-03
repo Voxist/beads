@@ -189,9 +189,34 @@ Two more classes joined the catalogue on 2026-09-03, both on the FORK's CI:
   '^TestEmbedded' ./...` with no `-timeout`, so `cmd/bd` gets Go's 10m default.
   Passing runs take 414–441s; the alarm fires at 601s; the test named under
   "running tests:" is simply whichever was in flight. It hit #40, #42 and #43
-  on one day and every rerun passed. Zero `--- FAIL` lines is the tell. Raising
-  the wall is one line; knowing why `-short` still costs 7 minutes there is the
-  real fix and has not been done.
+  on one day and every rerun passed. Zero `--- FAIL` lines is the tell.
+  Measured 2026-09-03 by reproducing the wrapper's exact environment
+  (`beads_test_env_enter`, so `BEADS_TEST_SKIP=dolt`, plus a prebuilt
+  `BEADS_TEST_BD_BINARY` and `-tags=gms_pure_go`) against `./cmd/bd` with
+  `-json`: **447s, 1876 top-level tests run and 495 skipped**. The spend is not
+  a hot spot and not a hang — 1725 of those tests (92%) cost 8.2s in total,
+  while 39 tests costing 5–20s each account for 378s (85%), and the slowest
+  single test is only 20.2s (4.5%). Two of the top consumers,
+  `TestWhereCommand_ReadsPrefixFromEmbeddedStore` (12.5s) and
+  `TestAutoMigrateStillRunsWithoutFreeze` (6.6s), are exactly the names CI
+  printed under "running tests:", confirming those were in flight, not stuck.
+  Those 39 are CLI subprocess tests: each does `git init` + `bd init` (an
+  embedded Dolt bootstrap) plus several more `bd` invocations, at roughly
+  2–5s per invocation, and none of them call `t.Parallel()` — the summed test
+  time (444.6s) equals the wall clock (447.4s), so `-parallel 4` buys nothing
+  here. The in-test `go build` cost is already gone: every builder funnels
+  through `findPrebuiltBDBinary()` behind a `sync.Once`, and the job exports
+  the prebuilt artifact. So there is no small, safe win available: `-short`
+  costs 7 minutes because the package is ~39 serial embedded-Dolt CLI
+  round-trips, and `testing.Short()` cannot be used to trim them —
+  `scripts/check-testing-short.sh` (a required `make ci-pr-policy` gate)
+  restricts it to an allowlist of 9 runtime/stress/large-fixture tests and
+  directs integration/e2e/API-boundary tests to build tags, environment
+  checks, or named wrappers instead. Fork PR: `scripts/ci/pr-core.sh` now
+  passes `-timeout` (`TEST_TIMEOUT`, default `25m`), the same per-package
+  deadline `scripts/test.sh` and `main.yml`'s test matrix already use
+  (upstream `fa53c7e2a`, wy-5b5fbl). That removes the false failure; making
+  the package actually faster remains open and is a real refactor.
 - **`internal/metrics` → `TestStartDetachedReapsExitedChild`: `child pid
   became a zombie (stat="Zl")`.** Not environmental — a bug in upstream's test
   (#5933): it `Fatalf`s on the first `Z` instead of waiting for its own 3s
