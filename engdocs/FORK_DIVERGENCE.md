@@ -124,6 +124,27 @@ three carry rows are gone. Upstream's `bd list` also now REFUSES `--wisp-type`
 without a plane, which the fork's version did not: taking upstream's file whole
 is what picks that up.
 
+**The obvious next question, answered so nobody re-derives it.** Fork commit
+`1da55672e` ("stray `default.nix''`, wisp-plane narrowing, coverage") holds the
+fork's own version of the #6096 sed fix, so it reads like a second thing to
+drop. It is not. Its wisp-plane half was ALREADY reverted by `96a40b308` before
+this resync, and `internal/workapi/list.go` plus
+`internal/workapi/testdata/list_filter_golden.json` were byte-identical with
+upstream going in. What survives from that commit is only the one-line
+`internal/workapi/count.go` guard and the fork-owned
+`internal/workapi/count_skipwisps_test.go`, both of which stay — upstream has
+no count-side flag. Check the DIFF, not the commit message.
+
+**Flag shape is deliberately upstream's.** `--include-ephemeral` is now
+registered on four commands: `bd list`, `bd ready` and `bd linear sync` are
+upstream's, `bd count` is ours. One registration each; the name, the
+`IncludeEphemeral` request field and the `include_ephemeral` wire parameter are
+identical across all of them. `bd count`'s help text follows `bd list`'s
+wording rather than its own, because the count side is the half still to be
+upstreamed and should read like the half that already landed. Its one addition
+is a trailing clause distinguishing it from `--include-infra`, which sits
+beside it on that command and advertises cardinality matching.
+
 ## Filed upstream, awaiting review
 
 Filed from `bourgois/beads-fork` with `maintainer_can_modify`. None is fork
