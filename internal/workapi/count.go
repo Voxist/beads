@@ -100,9 +100,19 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 		filter.IDs = ids
 	}
 
+	// The plane bit, and it must agree with BuildListFilter's. An infra type
+	// is ALWAYS written to the wisps table (dolt's useWispsTable includes
+	// IsInfraType), so naming one and then skipping that plane evaluates the
+	// type predicate only against rows that cannot carry it: the count is 0
+	// for every infra type, while `bd list --type <same>` returns rows.
+	//
+	// list.go admits the plane for a named infra type; this arm was a bare
+	// `else`, which is the whole of the divergence. The clause below is
+	// list.go's, verbatim, minus the IncludeInfra term the branch above
+	// already consumed.
 	if in.IncludeInfra {
 		applyCountIncludeInfra(&filter, in.IssueType, cfg)
-	} else if !in.IncludeEphemeral {
+	} else if !in.IncludeEphemeral && (in.IssueType == "" || !cfg.IsInfra(in.IssueType)) {
 		filter.SkipWisps = true
 	}
 	return filter, nil
