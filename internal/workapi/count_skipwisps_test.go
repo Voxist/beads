@@ -65,19 +65,22 @@ func TestBuildCountFilter_IncludeEphemeral(t *testing.T) {
 }
 
 // TestCountAndListPlaneAgreement pins how count and list decide the PLANE for
-// the same request — including the ONE case where they disagree.
+// the same request. They now agree on every case, including an infra type.
 //
-// The name is not "AgreeOnThePlane" because they do not always agree, and a
-// test that claimed they did would be asserting a property the code lacks. For
-// an INFRA type they diverge: list reads the plane (applyTypeSuppressions
-// exempts infra types) while count does not, so `bd count --type agent` answers
-// 0 where `bd list --type agent` returns rows.
+// They did not always. Upstream's count arm was a bare `else { SkipWisps =
+// true }`, so `bd count --type agent` answered 0 where `bd list --type agent`
+// returned rows; this file used to pin that divergence rather than fix it. It
+// is fixed now, in both builders, and the row below is the case that flipped.
 //
-// That divergence is UPSTREAM'S and predates the flag — upstream's count arm is
-// a bare `else { SkipWisps = true }`, so it answers 0 for an infra type too. It
-// is pinned here rather than fixed because fixing it inside the fork would
-// re-add the divergence this change exists to remove; it belongs upstream. The
-// fork's old wide default happened to mask it, which is why it surfaces now.
+// WHAT THIS TEST CANNOT SEE. It hands both builders a POPULATED ListConfig.
+// The real count path does not: storecounter.filter and uow.countFilter load
+// the workspace config, and loading it under IncludeInfra alone left a zero
+// ListConfig — which silently falls back to the DEFAULT infra set — on every
+// other request. A workspace that configured types.infra therefore still got 0
+// from count while list returned rows, and no case here could show it because
+// cfg is an argument. That gap is covered by
+// TestEmbeddedCountInfraTypeAgreesWithList's configured-infra-type subtest,
+// which goes through the real caller.
 //
 // It asserts the ABSOLUTE expected value as well as the agreement. Agreement
 // alone is satisfied by a regression that turns the flag into a no-op on BOTH

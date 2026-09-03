@@ -58,8 +58,12 @@ type CountRequest struct {
 	// IssueType restricts the type, with the same match-nothing-rather-than-fail
 	// treatment Status gets and no alias expansion at all.
 	//
-	// It has a SECOND effect under IncludeInfra: an infra type routes the count
-	// to the ephemeral tier. See that field.
+	// It has a SECOND effect, and it does NOT need IncludeInfra: a type the
+	// workspace calls infra routes the count to the EPHEMERAL TIER and narrows
+	// to the ephemeral rows of that type, because that is where an infra bead
+	// is written. This mirrors ListRequest.IssueType exactly — the two used to
+	// disagree, and `bd count --type agent` answered 0 where `bd list --type
+	// agent` returned rows.
 	IssueType string
 	// Assignee restricts to one actor's rows; NoAssignee restricts to rows with
 	// none. Setting both is not refused — they are handed to the filter as
@@ -122,9 +126,12 @@ type CountRequest struct {
 	// the implementation. A caller does not supply it and cannot: that is the
 	// config load this role exists to keep off both front doors.
 	//
-	// Unset, the count is durable-plane only and applies none of those four —
+	// Unset, the count applies none of those four and is durable-plane only —
 	// the historical `bd count` answer, kept exactly so a scripted caller reads
-	// the same number it read yesterday.
+	// the same number it read yesterday. With ONE exception, which is IssueType's
+	// and not this field's: naming an infra type reaches the ephemeral tier on
+	// its own (see IssueType). That is a deliberate correction, not drift — the
+	// alternative was a count of 0 for a type whose rows `bd list` returns.
 	IncludeInfra bool
 
 	// IncludeEphemeral admits the EPHEMERAL PLANE — the wisps TABLE — and
@@ -147,7 +154,8 @@ type CountRequest struct {
 	// it; only IncludeInfra sets out to reconcile cardinality, and it pays for
 	// that with three changes beyond the plane.
 	//
-	// Unset, the count is durable-plane only: the historical answer, unchanged.
+	// Unset, the count is durable-plane only: the historical answer, unchanged
+	// — subject to the same IssueType exception noted on IncludeInfra.
 	IncludeEphemeral bool
 }
 
