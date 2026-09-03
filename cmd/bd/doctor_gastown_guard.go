@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/steveyegge/beads/internal/beads"
 )
 
 // isOrchestratorRoot returns true when path looks like a multi-project
@@ -70,4 +72,26 @@ func findTownRoot() string {
 	}
 
 	return ""
+}
+
+// freezeRoot resolves the directory that holds the MIGRATION-FREEZE sentinel.
+//
+// A Gas Town town root wins whenever there is one, so a town-wide freeze keeps
+// behaving exactly as it did: one sentinel, every rig in the town stands down,
+// and `gt migrate thaw` is still the way out.
+//
+// Outside a town — which is every other beads workspace — findTownRoot returns
+// "" and migration.IsFrozen("") is false, so the freeze was UNREACHABLE: bd had
+// a fleet-wide migration stand-down that only Gas Town could arm. The fallback
+// is the .beads directory, the one workspace-scoped location every backend
+// already agrees on and the same directory the freeze exists to protect.
+//
+// Nothing changes when neither file exists, which is the overwhelmingly common
+// case: this returns a path, and IsFrozen still has to stat a file that is not
+// there.
+func freezeRoot() string {
+	if townRoot := findTownRoot(); townRoot != "" {
+		return townRoot
+	}
+	return beads.FindBeadsDir()
 }
