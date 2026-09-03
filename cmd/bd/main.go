@@ -1436,7 +1436,7 @@ var rootCmd = &cobra.Command{
 		// !policy.runMaintenance (strict --readonly) so the IsFrozen/
 		// findTownRoot filesystem walk isn't paid on that path, where these
 		// calls are already skipped for an unrelated reason.
-		frozenForMaintenance := policy.runMaintenance && migration.IsFrozen(findTownRoot())
+		frozenForMaintenance := policy.runMaintenance && migration.IsFrozen(freezeRoot())
 
 		// Track bd version changes unless strict readonly forbids repository mutation.
 		// Best-effort tracking - failures are silent.
