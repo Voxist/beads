@@ -562,6 +562,13 @@ func MigrateUpTo(ctx context.Context, db DBConn, maxVersion int) (int, error) {
 }
 
 func MigrateUp(ctx context.Context, db DBConn) (int, error) {
+	// A migration freeze is checked before anything below writes — including
+	// the dolt_ignore seed, which is a working-set write. Free when no freeze
+	// is set; see checkMigrationFreezeGate.
+	if err := checkMigrationFreezeGate(ctx, db); err != nil {
+		return 0, err
+	}
+
 	// Re-assert the canonical dolt_ignore patterns before anything else, and
 	// in particular before the migrationWorkNeeded short-circuit: a database
 	// whose migration cursors arrived at-latest without executing the seeding
