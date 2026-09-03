@@ -582,13 +582,20 @@ The order that works:
    command can start migrating.
 4. **Deploy canonically.** `bd-deploy` is referenced by the Makefile guard but
    does not exist on the dev machine; the working path is
-   `make install-force DEPLOY_BD=1 INSTALL_DIR=~/.gc/bin`, which builds,
+   `make install-force DEPLOY_BD=1 INSTALL_DIR=$HOME/.gc/bin`, which builds,
    codesigns, stages to a temp name and `rename(2)`s over the live path. Snapshot
    the outgoing binary first, following the convention already in `~/.gc/bin`:
    `bd.prev`, `bd.prev-<stamp>`, and `bd-<version>-<sha>`.
 5. **Let the rest migrate on first touch**, and watch them converge. A database
    caught mid-flight reports an intermediate version (`vp` sat at 65 for a few
    seconds); that is normal, but confirm it settles.
+   **`$HOME`, never a literal `~`.** make does not tilde-expand a variable
+   assignment. `INSTALL_DIR=~/.gc/bin` creates a real directory `./~/.gc/bin`
+   INSIDE the repo, installs there, prints "Installed bd to ~/.gc/bin/bd",
+   exits 0 — and the fleet binary is untouched. Worse, `check-deploy-bd`
+   compares realpaths, so the unexpanded literal never matches the canonical
+   dir and the `DEPLOY_BD=1` guard is skipped. Found on the 2026-09-03 deploy;
+   the target now refuses a leading `~` outright.
 
 Anything else still running an old `bd` against the shared server will break the
 moment its database migrates. Check other machines before deploying.

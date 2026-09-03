@@ -324,6 +324,13 @@ check-deploy-bd:
 ifneq ($(OS),Windows_NT)
 	@_dir="$(INSTALL_DIR)"; \
 	_gc="$(GC_BIN_DIR)"; \
+	case "$$_dir" in '~'*) \
+		echo "ERROR: INSTALL_DIR ($$_dir) begins with a literal '~'."; \
+		echo "  make does not tilde-expand variable assignments: this would create ./~/... INSIDE"; \
+		echo "  the repo, install there, exit 0, and skip this guard (the realpath compare below"; \
+		echo "  never matches an unexpanded '~'). Use INSTALL_DIR=\$$HOME/... instead."; \
+		exit 1;; \
+	esac; \
 	_dir_real=$$(cd "$$_dir" 2>/dev/null && pwd -P || echo "$$_dir"); \
 	_gc_real=$$(cd "$$_gc" 2>/dev/null && pwd -P || echo "$$_gc"); \
 	if [ "$$_dir_real" = "$$_gc_real" ] && [ "$(DEPLOY_BD)" != "1" ]; then \
