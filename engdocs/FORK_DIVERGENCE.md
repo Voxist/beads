@@ -228,6 +228,20 @@ being deleted. Removing it took 340 lines off the resync surface, including
 `internal/storage/issueops/commit_pending.go`, a "Known resync conflict zones"
 entry.
 
+**`BD_NO_AUTO_MIGRATE` was DROPPED on 2026-09-03. It never worked.** The guard
+lived in `autoMigrateOnVersionBump`, which is the REDUNDANT migration path:
+every store open migrates on its own (`schema.MigrateUp` in embedded,
+`MigrateUpWithLock` in server and proxied) and none of them read the variable.
+Measured with the guard set: `bd list` migrated the schema 60 -> 66 regardless.
+Its test asserted only that a global the guard never touched was still true,
+and passed on clean upstream with no guard present. The fleet's `city.toml`
+set it for every agent and `safe-migrate` unset it for itself — a complete
+designated-migrator design resting on a no-op. The replacement is upstream's
+own mechanism: a `MIGRATION-FREEZE` sentinel in `.beads/` (fork #39) that the
+store-open gate now honours (fork #43), with `bd migrate --force` as the
+designated migrator. Remove the `BD_NO_AUTO_MIGRATE = "1"` line from
+`voxist-city/city.toml` and the `environ.pop` from `safe-migrate` alongside.
+
 SEC-003 (`/Users/Shared` as a safe `BEADS_DIR` boundary) was listed here until
 2026-09-02 and is **gone**: upstream carries the carve-out itself in
 `internal/beads/context.go`, and `git diff origin/main...main` on that file is
