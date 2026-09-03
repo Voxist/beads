@@ -104,9 +104,11 @@ func TestCountAndListPlaneAgreement(t *testing.T) {
 		{"named type", "task", false, true, true},
 		{"include-ephemeral", "", true, false, true},
 		{"named type + include-ephemeral", "task", true, false, true},
-		// The known divergence. list reads the plane for an infra type, count
-		// does not; --include-ephemeral recovers count.
-		{"infra type diverges", "agent", false, true, false},
+		// Formerly the known divergence: list read the plane for an infra
+		// type and count did not, so `bd count --type agent` answered 0 while
+		// `bd list --type agent` returned rows. count's arm now carries
+		// list's clause, so the two agree with no flag at all.
+		{"infra type agrees", "agent", false, false, true},
 		{"infra type + include-ephemeral", "agent", true, false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
