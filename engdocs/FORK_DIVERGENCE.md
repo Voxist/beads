@@ -212,9 +212,21 @@ Not refused — simply never proposed. These are the real upstreaming backlog.
 
 | Area | Where |
 | --- | --- |
-| heartbeat/lease no-op auto-commit skip (vp-on8s) | `internal/storage/embeddeddolt/` |
-| `BD_NO_AUTO_MIGRATE` fleet-migration guard | `cmd/bd/` |
 | `GC_AGENT` actor resolution for `--claim` idempotency | `cmd/bd/` |
+
+**vp-on8s (heartbeat/lease no-op auto-commit skip) was DROPPED on 2026-09-03**,
+not upstreamed. Upstream solved the same incident at the schema level and
+better: migration `0055_move_leases_to_table` (bd-lrgn1) moved claim leases into
+a `dolt_ignore`d `leases` table and DROPPED `lease_expires_at` and
+`heartbeat_at` from both `issues` and `wisps`. Two of the guard's four watched
+columns no longer exist; `wisps` is in `doltIgnorePatterns` so that arm was
+unreachable; and `DiscardNoopIssueUpdates` closes the value-identical-update
+case before any SQL runs. The guard could not fire from any `bd` path, and its
+own test asserted `noop == false` in all three subtests — it passed against a
+stub returning false, so nothing distinguished the guard working from the guard
+being deleted. Removing it took 340 lines off the resync surface, including
+`internal/storage/issueops/commit_pending.go`, a "Known resync conflict zones"
+entry.
 
 SEC-003 (`/Users/Shared` as a safe `BEADS_DIR` boundary) was listed here until
 2026-09-02 and is **gone**: upstream carries the carve-out itself in
@@ -387,9 +399,10 @@ A watchdog that samples committed history for no-op-commit storms. Parked
 because **every storm source it watches for is already closed**, and nothing
 calls it:
 
-- `internal/storage/embeddeddolt/store.go` skips the auto-commit when only
-  operational columns changed — the vp-on8s lease/heartbeat case that motivated
-  it;
+- migration `0055` (bd-lrgn1) moved leases to a `dolt_ignore`d table and dropped
+  the heartbeat/lease columns from `issues` and `wisps`, so a heartbeat leaves
+  no pending working set at all — the schema-level resolution of the vp-on8s
+  case that motivated it, and stronger than the fork's since-removed skip;
 - upstream's `DiscardNoopIssueUpdates` gates value-identical updates inside `bd`;
 - the fleet's own direct-SQL writes (`gascity/internal/beads/bdstore.go`) are
   CAS-guarded, so they only match rows they actually change;
