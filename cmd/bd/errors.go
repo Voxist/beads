@@ -173,9 +173,34 @@ func CheckReadonly(operation string) {
 //     CheckReadonly at all today (a pre-existing, separate gap: readonlyMode
 //     doesn't block it either), so it cannot inherit the freeze check from
 //     caller 1 and needs its own explicit call.
+//
+// migrateForceOverridesFreeze is set by the root PersistentPreRunE when the
+// command is `bd migrate --force` / `bd migrate schema --force`. --force already
+// means "this process is the designated migrator" to the remote-migrate gate;
+// it means the same thing to a freeze, or a frozen fleet has no way to be
+// migrated except by thawing it first — which lets every other process race
+// in, which is what the freeze was for.
+var migrateForceOverridesFreeze bool
+
+// freezeOverrideWarned keeps the override warning to one line per process:
+// CheckMigrationFreeze runs from the root pre-run AND from the command's own
+// CheckReadonly, and the operator needs to be told once, not twice.
+var freezeOverrideWarned bool
+
 func CheckMigrationFreeze(operation string) {
 	root := freezeRoot()
 	if !migration.IsFrozen(root) {
+		return
+	}
+	if migrateForceOverridesFreeze {
+		if !freezeOverrideWarned {
+			freezeOverrideWarned = true
+			operator := "unknown"
+			if info := migration.Read(root); info != nil && info.Operator != "" {
+				operator = info.Operator
+			}
+			fmt.Fprintf(os.Stderr, "Warning: workspace is frozen for migration (by %s); continuing because --force names this process the designated migrator.\n", operator)
+		}
 		return
 	}
 
