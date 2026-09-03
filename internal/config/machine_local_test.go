@@ -759,3 +759,56 @@ dolt.user: alice
 		}
 	}
 }
+
+// TestSaveConfigValueRefusesMachineLocalKeys guards the one writer of the
+// tracked config.yaml that is deliberately NOT routed.
+//
+// SaveConfigValue takes an interface{} value and re-marshals the whole
+// document through viper, which is exactly the whole-file rewrite the sidecar
+// path exists to avoid; routing it would mean duplicating the validated
+// string-write path for a caller that does not need it. Its only caller writes
+// no-git-ops, a genuine project key. Refusing instead keeps the "no machine-
+// local key ever reaches config.yaml" invariant enforced at runtime for the
+// next key added to the registry, rather than leaving it to whoever notices.
+func TestSaveConfigValueRefusesMachineLocalKeys(t *testing.T) {
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	t.Cleanup(ResetForTesting)
+
+	for _, key := range sortedMachineLocalKeys() {
+		t.Run(key, func(t *testing.T) {
+			beadsDir, configPath, _ := newWorkspace(t, trackedConfigFixture)
+			before := readFile(t, configPath)
+
+			err := SaveConfigValue(key, sampleValueFor(key), beadsDir)
+			if err == nil {
+				t.Fatalf("SaveConfigValue(%s) succeeded; it must refuse a machine-local key", key)
+			}
+			if !strings.Contains(err.Error(), LocalConfigFileName) {
+				t.Errorf("error does not point the caller at the sidecar: %v", err)
+			}
+			if after := readFile(t, configPath); after != before {
+				t.Errorf("config.yaml was modified despite the refusal:\n%s", after)
+			}
+		})
+	}
+}
+
+// TestSaveConfigValueStillWritesSharedKeys is the surviving control for the
+// guard above: it fails if the refusal is applied too broadly and breaks the
+// no-git-ops caller in cmd/bd/init.go.
+func TestSaveConfigValueStillWritesSharedKeys(t *testing.T) {
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	t.Cleanup(ResetForTesting)
+
+	beadsDir, configPath, _ := newWorkspace(t, trackedConfigFixture)
+	if err := SaveConfigValue("no-git-ops", true, beadsDir); err != nil {
+		t.Fatalf("SaveConfigValue(no-git-ops): %v", err)
+	}
+	if !strings.Contains(readFile(t, configPath), "no-git-ops") {
+		t.Errorf("no-git-ops was not written to config.yaml:\n%s", readFile(t, configPath))
+	}
+}
