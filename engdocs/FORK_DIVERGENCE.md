@@ -150,11 +150,27 @@ beside it on that command and advertises cardinality matching.
 Filed from `bourgois/beads-fork` with `maintainer_can_modify`. None is fork
 carry — each fixes an upstream bug the fork happened to hit.
 
-**Only [#6125](https://github.com/gastownhall/beads/pull/6125) is still open**
-(machine-local config keys routed to the `config.local.yaml` sidecar; #6124 was
-its closed first attempt). The three below MERGED on 2026-09-03 — see *Landed
-upstream* above. The table is kept because the environmental-failure catalogue
-under it is what the next reader needs, not the PR states.
+**Open upstream as of 2026-09-03 evening:**
+
+| PR | From fork | What |
+| --- | --- | --- |
+| [#6125](https://github.com/gastownhall/beads/pull/6125) | #35 | machine-local config keys routed to the `config.local.yaml` sidecar (#6124 was its closed first attempt). 121 green, awaiting review. |
+| [#6240](https://github.com/gastownhall/beads/pull/6240) | #32 | `--include-ephemeral` on `bd count` — the other half of the pair #6098 landed. One red is the 20m `Differential Regression` budget, noted for maintainers. |
+| [#6251](https://github.com/gastownhall/beads/pull/6251) | #39 | `MIGRATION-FREEZE` findable in `.beads/` outside Gas Town. |
+
+**Queued, in order, each behind the one it needs** (GitHub cannot stack a PR on
+a branch in a different fork — learned on #6240 — so these wait for a merge
+rather than being filed as supersets):
+
+| Waits for | Branch on `mine` | From fork | What |
+| --- | --- | --- | --- |
+| #6251 | `feat/migration-freeze-gates-store-open` | #43 | the store-open gate: a read under a freeze no longer migrates. Already cherry-picked onto #6251's branch, all 14 freeze tests green there. |
+| #6240 | (rebuild from `main`) | #37 + #38 | `bd count --type <infra type>` reads the plane its rows live in. Must be rebuilt from BOTH squashes — the branch that carried #37 alone was deleted from `mine` on 2026-09-03 because #38 fixed two defects in it. |
+| #44 merging here | `fix/metrics-reap-test-waits-for-the-reap` | #44 | upstream's `TestStartDetachedReapsExitedChild` fails on the first zombie sighting instead of at its deadline. |
+
+The three below MERGED on 2026-09-03 — see *Landed upstream* above. The table is
+kept because the environmental-failure catalogue under it is what the next
+reader needs, not the PR states.
 
 All four were rebased onto upstream `40b323245` on **2026-09-02**. Every red
 check on them before that rebase was environmental and none was reproducible:
@@ -165,6 +181,22 @@ as, and it hit three unrelated PRs identically), a GitHub release CDN 504 on
 `Differential Regression` job that exhausted its 20m budget with every test
 PASSING. Read a red check on these against that list before treating it as a
 defect. `#6098` was the one exception — see below.
+
+Two more classes joined the catalogue on 2026-09-03, both on the FORK's CI:
+
+- **`PR Core (wrapper timing)` → `panic: test timed out after 10m0s` in
+  `cmd/bd`.** `scripts/ci/pr-core.sh` runs `go test -race -short -skip
+  '^TestEmbedded' ./...` with no `-timeout`, so `cmd/bd` gets Go's 10m default.
+  Passing runs take 414–441s; the alarm fires at 601s; the test named under
+  "running tests:" is simply whichever was in flight. It hit #40, #42 and #43
+  on one day and every rerun passed. Zero `--- FAIL` lines is the tell. Raising
+  the wall is one line; knowing why `-short` still costs 7 minutes there is the
+  real fix and has not been done.
+- **`internal/metrics` → `TestStartDetachedReapsExitedChild`: `child pid
+  became a zombie (stat="Zl")`.** Not environmental — a bug in upstream's test
+  (#5933): it `Fatalf`s on the first `Z` instead of waiting for its own 3s
+  deadline, and a just-exited child is legitimately `Z` until the reaper
+  goroutine's `wait4` returns. Fixed by fork #44, queued for upstream.
 
 | PR | What |
 | --- | --- |
@@ -196,15 +228,18 @@ contradicts a fix, read its comment before assuming flake. Those cases carry
 their rationale inline, and upstream writes them when it has already refused
 the obvious reading.
 
-Two more candidates, both gated on the `--include-ephemeral` work landing here
-first:
+The two candidates that used to be listed here are both DONE on the fork and
+in flight upstream (2026-09-03):
 
-- **`--include-ephemeral` on `bd list` and `bd count`** — additive, defaults
-  untouched. Landing it retires nearly all of the remaining carry in the wisps
-  section above.
-- **`bd count --type <infra type>` answers 0** while `bd list --type <infra
-  type>` returns rows. Upstream's asymmetry; pinned by
-  `TestCountAndListPlaneAgreement`'s `infra type diverges` case.
+- **`--include-ephemeral` on `bd list` and `bd count`** — the `list` half landed
+  upstream as #6098; the `count` half is #6240. When #6240 lands, the whole
+  `--include-ephemeral` carry in the wisps section above goes away.
+- **`bd count --type <infra type>` answers 0** — fixed by #37, then #38 fixed
+  two defects review found in #37 (the count callers loaded config only under
+  `IncludeInfra`, so a zero `ListConfig` fell back to the default infra set;
+  and `Ephemeral` was not narrowed like `list` does, so `--include-infra` made
+  the count go DOWN). `TestCountAndListPlaneAgreement`'s case is now `infra
+  type agrees`. Goes upstream after #6240, rebuilt from both squashes.
 
 ## Fork-local, no upstream path yet
 
