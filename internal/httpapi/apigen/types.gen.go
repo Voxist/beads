@@ -2347,6 +2347,9 @@ type CountIssuesParams struct {
 	// NoLabels Only issues carrying no label.
 	NoLabels *bool `form:"no_labels,omitempty" json:"no_labels,omitempty"`
 
+	// MetadataField Top-level metadata equality filter as `key=value`, split on the first `=`. Repeatable. An invalid key is a 400.
+	MetadataField *[]string `form:"metadata_field,omitempty" json:"metadata_field,omitempty"`
+
 	// IncludeEphemeral Admit the EPHEMERAL PLANE — the wisps table — and nothing else. Exactly the first of `include_infra`'s four changes, with none of the other three: no type exclusion is taken off, so a row whose TYPE a default count already excludes stays excluded.
 	//
 	// It exists because there was no way to ask for that one thing. The write path routes on STORAGE CLASS, not type, so a `no_history` bead lives in the wisps table while remaining ordinary durable work. Reaching it needed `include_infra`, which also drops template rows of the named type — one silent undercount traded for another.

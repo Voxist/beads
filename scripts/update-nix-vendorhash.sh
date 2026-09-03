@@ -124,12 +124,12 @@ cp default.nix default.nix.backup
 # argument to -i; GNU sed must NOT be given one.
 #
 # This is a function rather than a SED_INPLACE string because a string cannot
-# carry an EMPTY argument: after `SED_INPLACE="sed -i ''"` is word-split, the
-# two quote characters survive as a literal argument, so BSD sed reads '' as the
-# backup SUFFIX and writes `default.nix''` beside the real file on every run. A
-# `git add -A` then sweeps that stray in — it carries the placeholder
-# sha256-AAAA... hash, so anything reading it gets a vendorHash that can never
-# validate.
+# carry an EMPTY argument. After `SED_INPLACE="sed -i ''"` is word-split the two
+# quote characters survive as a literal argument, so BSD sed reads '' as the
+# backup SUFFIX and writes `default.nix''` beside the real file on every macOS
+# run. Nothing ignores that stray, and it holds the placeholder
+# sha256-AAAA... hash, so a `git add -A` can commit a vendorHash that never
+# validates.
 sed_inplace() {
     if sed --version 2>/dev/null | grep -q "GNU sed"; then
         sed -i "$@"

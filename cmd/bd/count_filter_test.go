@@ -64,6 +64,7 @@ func TestParseCountRequestCarriesEveryFilterFlag(t *testing.T) {
 		"empty-description": "true",
 		"no-assignee":       "true",
 		"no-labels":         "true",
+		"metadata-field":    "team=platform",
 		"priority":          "1",
 		"priority-min":      "0",
 		"priority-max":      "4",
@@ -117,11 +118,26 @@ func TestParseCountRequestCarriesEveryFilterFlag(t *testing.T) {
 		EmptyDesc:        true,
 		NoAssignee:       true,
 		NoLabels:         true,
+		MetadataFields:   map[string]string{"team": "platform"},
 		IncludeInfra:     true,
 		IncludeEphemeral: true,
 	}
 	if !reflect.DeepEqual(request, want) {
 		t.Errorf("parseCountRequest built\n %#v\nwant\n %#v", request, want)
+	}
+}
+
+func TestParseCountRequestRejectsInvalidMetadataField(t *testing.T) {
+	for _, value := range []string{"team", "bad$key=value"} {
+		t.Run(value, func(t *testing.T) {
+			flags := newCountFlagSet(t)
+			if err := flags.Flags().Set("metadata-field", value); err != nil {
+				t.Fatalf("set --metadata-field: %v", err)
+			}
+			if _, _, err := parseCountRequest(flags); err == nil {
+				t.Fatalf("parseCountRequest accepted --metadata-field %q", value)
+			}
+		})
 	}
 }
 
