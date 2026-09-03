@@ -376,7 +376,7 @@ func Initialize() error {
 
 		// Merge local config overrides if present (config.local.yaml)
 		// This allows machine-specific settings without polluting tracked config
-		localConfigPath := filepath.Join(filepath.Dir(primaryConfigPath), "config.local.yaml")
+		localConfigPath := filepath.Join(filepath.Dir(primaryConfigPath), LocalConfigFileName)
 		if _, err := os.Stat(localConfigPath); err == nil {
 			v.SetConfigFile(localConfigPath)
 			if err := v.MergeInConfig(); err != nil {
@@ -630,9 +630,23 @@ func LogOverride(override ConfigOverride) {
 // SaveConfigValue sets a key-value pair and writes it to the config file.
 // If no config file is currently loaded, it creates config.yaml in the given beadsDir.
 // Only the specified key is modified; other file contents are preserved.
+//
+// This writer is NOT routed to the machine-local sidecar, and refuses a
+// machine-local key rather than silently writing it to the tracked
+// config.yaml. Routing it would be wrong here for two reasons: it takes an
+// interface{} value where the sidecar writers take the validated string form,
+// and it re-marshals the whole document through viper, which is exactly the
+// whole-file rewrite the sidecar path exists to avoid. Its one caller
+// (cmd/bd/init.go, writing no-git-ops) is a genuine project key. The refusal
+// keeps the "every writer of config.yaml is covered" invariant enforced at
+// runtime for the next key added to MachineLocalKeys, instead of leaving it to
+// whoever notices; a caller that hits it should use SetYamlConfigInDir.
 func SaveConfigValue(key string, value interface{}, beadsDir string) error {
 	if v == nil {
 		return fmt.Errorf("config not initialized")
+	}
+	if IsMachineLocalKey(key) {
+		return fmt.Errorf("SaveConfigValue cannot write machine-local key %q to the tracked config.yaml; use SetYamlConfigInDir, which routes it to %s", key, LocalConfigFileName)
 	}
 	v.Set(key, value)
 
