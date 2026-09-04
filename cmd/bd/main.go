@@ -1452,7 +1452,7 @@ var rootCmd = &cobra.Command{
 		// silently rewritten mid-freeze anyway. Skip both calls under an
 		// active freeze without blocking the read itself. Short-circuits on
 		// !policy.runMaintenance (strict --readonly) so the IsFrozen/
-		// findTownRoot filesystem walk isn't paid on that path, where these
+		// freezeRoot walk isn't paid on that path, where these
 		// calls are already skipped for an unrelated reason.
 		//
 		// The sentinel is read once here and handed to the schema layer as
