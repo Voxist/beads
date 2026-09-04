@@ -124,3 +124,17 @@ func TestFixTrackedRuntimeFiles_WorktreeFallbackUsesSharedBeads(t *testing.T) {
 		t.Fatalf("expected runtime file to remain on disk after git rm --cached: %v", err)
 	}
 }
+
+// TestTrackedRuntime_IncludesMigrationFreeze pins the sentinel as a runtime
+// file, which is what makes `bd doctor --fix` untrack a copy committed before
+// the gitignore pattern existed. Ignoring a path does not untrack it — the
+// same gap last_pull is in this list for.
+func TestTrackedRuntime_IncludesMigrationFreeze(t *testing.T) {
+	const pattern = "MIGRATION-FREEZE"
+	for _, p := range trackedRuntimePatterns {
+		if p == pattern {
+			return
+		}
+	}
+	t.Errorf("trackedRuntimePatterns should contain %q: a sentinel committed before .gitignore covered it stays tracked, and freezes every clone that pulls it", pattern)
+}

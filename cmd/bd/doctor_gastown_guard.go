@@ -89,9 +89,23 @@ func findTownRoot() string {
 // Nothing changes when neither file exists, which is the overwhelmingly common
 // case: this returns a path, and IsFrozen still has to stat a file that is not
 // there.
+//
+// The workspace is the one bd is RUN IN (BEADS_DIR, or the .beads found from
+// the cwd; -C is applied before this runs). --db/--database do not feed it: a
+// command aimed at another workspace's database consults this workspace's
+// sentinel, the same way a town freeze covers whoever runs inside the town.
 func freezeRoot() string {
+	root, _ := freezeRootAndScope()
+	return root
+}
+
+// freezeRootAndScope is freezeRoot plus WHICH kind of root it found, so a
+// caller that words its message by that ("town is frozen" / "workspace is
+// frozen", `gt migrate thaw` / remove the file) cannot disagree with the path
+// it is reporting: one walk, one answer.
+func freezeRootAndScope() (root string, inTown bool) {
 	if townRoot := findTownRoot(); townRoot != "" {
-		return townRoot
+		return townRoot, true
 	}
-	return beads.FindBeadsDir()
+	return beads.FindBeadsDir(), false
 }

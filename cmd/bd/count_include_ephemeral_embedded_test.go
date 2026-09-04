@@ -10,12 +10,10 @@ import (
 // TestEmbeddedCountIncludeEphemeral covers the plane knob end to end, on the
 // same fixture shape TestEmbeddedCountIncludeInfra uses.
 //
-// It is a SEPARATE file rather than a subtest of that function on purpose: this
-// fork used to assert the wide behavior by editing upstream's test in place,
-// which meant re-applying the edit on every resync and, once, forgetting the
-// proxied twin — the two then disagreed on the same command until a resync
-// surfaced it. Upstream's count tests are now byte-identical here, and this
-// file carries what the fork actually needs.
+// It is a SEPARATE file rather than a subtest of that function on purpose:
+// TestEmbeddedCountIncludeInfra pins the existing --include-infra contract and
+// is left byte-for-byte untouched, so a reader can see at a glance that this
+// flag changed nothing it asserts.
 //
 // The distinction being pinned: --include-infra bundles four changes (see
 // issueops.CountRequest.IncludeInfra) and its template exclusion silently drops
@@ -47,7 +45,7 @@ func TestEmbeddedCountIncludeEphemeral(t *testing.T) {
 
 	t.Run("default stays durable-only", func(t *testing.T) {
 		if got := countOf("--type", "task"); got != 3 {
-			t.Errorf("bd count --type task = %d, want 3 (upstream's default, unchanged)", got)
+			t.Errorf("bd count --type task = %d, want 3 (the default before this change, unchanged)", got)
 		}
 	})
 

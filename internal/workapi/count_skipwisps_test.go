@@ -15,7 +15,7 @@ import (
 // IncludeEphemeral existed the only way was IncludeInfra, which ALSO drops
 // template rows of the named type: one silent undercount traded for another.
 //
-// The default is upstream's and must stay byte-identical: durable plane only.
+// The default before this change must stay byte-identical: durable plane only.
 func TestBuildCountFilter_IncludeEphemeral(t *testing.T) {
 	cfg := ListConfig{}
 
@@ -30,7 +30,7 @@ func TestBuildCountFilter_IncludeEphemeral(t *testing.T) {
 			wantSkipWisps: true,
 		},
 		{
-			name:          "a named type alone stays durable-only (upstream's default)",
+			name:          "a named type alone stays durable-only (the default before this change)",
 			in:            issueops.CountRequest{IssueType: "task"},
 			wantSkipWisps: true,
 		},
@@ -67,7 +67,7 @@ func TestBuildCountFilter_IncludeEphemeral(t *testing.T) {
 // TestCountAndListPlaneAgreement pins how count and list decide the PLANE for
 // the same request. They now agree on every case, including an infra type.
 //
-// They did not always. Upstream's count arm was a bare `else { SkipWisps =
+// They did not always. The count arm was a bare `else { SkipWisps =
 // true }`, so `bd count --type agent` answered 0 where `bd list --type agent`
 // returned rows; this file used to pin that divergence rather than fix it. It
 // is fixed now, in both builders, and the row below is the case that flipped.

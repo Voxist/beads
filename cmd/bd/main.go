@@ -1450,10 +1450,7 @@ var rootCmd = &cobra.Command{
 		// freeze the town, seed .local_version with a stale version, run
 		// `bd list` — exit 0 (correct, it's a read), but .local_version was
 		// silently rewritten mid-freeze anyway. Skip both calls under an
-		// active freeze without blocking the read itself. Short-circuits on
-		// !policy.runMaintenance (strict --readonly) so the IsFrozen/
-		// findTownRoot filesystem walk isn't paid on that path, where these
-		// calls are already skipped for an unrelated reason.
+		// active freeze without blocking the read itself.
 		//
 		// The sentinel is read once here and handed to the schema layer as
 		// well: the CLI check above refuses writes, but a read's store open

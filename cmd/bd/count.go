@@ -297,13 +297,12 @@ func registerCountFlags(cmd *cobra.Command) {
 	// exclusion, which --include-infra cannot do (it bundles four changes, and
 	// its template exclusion silently drops template rows of a named type).
 	//
-	// The sibling on `bd list` is UPSTREAM's now (#6098, cmd/bd/list.go), so
-	// the name and the help text deliberately follow its shape rather than
-	// their own — this is the half that still has to go upstream, and it
-	// should read like the half that already did. The trailing clause is the
-	// one addition: on `bd count` the wider `--include-infra` sits right
-	// beside this flag and advertises cardinality matching, so the contrast
-	// has to be legible in `--help` and not only in this comment.
+	// The sibling on `bd list` landed in #6098 (cmd/bd/list.go); the name and
+	// the help text deliberately follow its shape so the two halves of the
+	// pair read alike. The trailing clause is the one addition: on `bd count`
+	// the wider `--include-infra` sits right beside this flag and advertises
+	// cardinality matching, so the contrast has to be legible in `--help` and
+	// not only in this comment.
 	cmd.Flags().Bool("include-ephemeral", false, "Include ephemeral wisp-plane rows in the count (normally hidden), without lifting type exclusions")
 
 	// Grouping flags
