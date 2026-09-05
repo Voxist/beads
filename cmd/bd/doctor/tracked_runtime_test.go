@@ -28,6 +28,7 @@ func TestShouldFlagTrackedFile_RuntimeArtifacts(t *testing.T) {
 		flag bool
 	}{
 		{"last_pull", true}, // bd-578h9.6
+		{"MIGRATION-FREEZE", true},
 		{"last-touched", true},
 		{"push-state.json", true},
 		{"sync-state.json", true},

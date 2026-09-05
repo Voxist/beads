@@ -46,6 +46,11 @@ var trackedRuntimePatterns = []string{
 	// freezes every clone that pulls it, and the refusal names a local path
 	// so nobody suspects it arrived over the wire. Ignoring it does not
 	// untrack a copy committed before the pattern existed.
+	//
+	// Untracking is not unfreezing: `git rm --cached` leaves the working-tree
+	// file, so this clone stays frozen until the operator removes it — which
+	// is right, because bd cannot know whether the freeze is also live here.
+	// What it stops is the sentinel propagating any further.
 	"MIGRATION-FREEZE",
 	".local_version",
 	"redirect",
