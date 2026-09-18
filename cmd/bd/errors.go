@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -208,13 +209,35 @@ func CheckReadonly(operation string) {
 // callers that run before that — and returns "" rather than erroring when
 // there is no workspace at all, which Find skips.
 func freezeSearchRoots() []string {
+	var roots []string
 	if dir := os.Getenv("BEADS_DIR"); dir != "" {
-		return []string{dir}
+		roots = []string{dir}
+	} else if dir := beads.FindBeadsDir(); dir != "" {
+		roots = []string{dir}
 	}
-	if dir := beads.FindBeadsDir(); dir != "" {
-		return []string{dir}
+	return append(roots, townFreezeRoots()...)
+}
+
+// townFreezeRoots is a fork addition to the ancestor walk: the Gas Town root
+// named by GT_TOWN_ROOT / GT_ROOT, when that directory really is a town
+// (mayor/town.json). Upstream keys the walk on the cwd and the workspace only,
+// which finds a town-root marker from every rig INSIDE the town tree -- but a
+// process whose cwd and .beads both sit outside it (an agent scratch dir, a
+// worktree elsewhere) while it still writes to the town's shared server would
+// otherwise walk straight past a town freeze. The fork's earlier resolver read
+// these variables for exactly that case; this keeps it.
+func townFreezeRoots() []string {
+	var roots []string
+	for _, name := range []string{"GT_TOWN_ROOT", "GT_ROOT"} {
+		dir := os.Getenv(name)
+		if dir == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, "mayor", "town.json")); err == nil {
+			roots = append(roots, dir)
+		}
 	}
-	return nil
+	return roots
 }
 
 // migrationFreezeError reports the active migration freeze, if any: it

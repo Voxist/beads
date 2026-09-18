@@ -469,9 +469,11 @@ which dumps the entire release history.)
   layers without removing the marker; an unreadable marker still refuses.
   `MIGRATION-FREEZE` is in the `.beads/.gitignore` template and `bd doctor`'s
   untrack list, since a committed marker would freeze every clone that pulled
-  it. This replaces the fork's earlier town-root/workspace resolver, which the
-  upstream ancestor walk subsumes: a marker at a Gas Town root is an ancestor
-  of every rig and is found with no configuration.
+  it. This replaces the fork's earlier town-root/workspace resolver. The
+  upstream ancestor walk finds a town-root marker from every rig inside the
+  town tree; for a process whose cwd and `.beads` both sit outside it, the fork
+  also searches `$GT_TOWN_ROOT` / `$GT_ROOT` when that directory is a town
+  (`mayor/town.json`), as the old resolver did.
 
 - **`bd dep add` names the implicit `type=blocks` default, but only to an
   interactive operator** (#5854). Creating an edge with no `-t/--type` silently

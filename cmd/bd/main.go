@@ -1000,6 +1000,13 @@ var rootCmd = &cobra.Command{
 		commandDidWriteTipMetadata = false
 		commandTipIDsShown = make(map[string]struct{})
 		commandFreeze = migration.Result{}
+		// Fork: the --force freeze override and its warn-once latch are
+		// per-command too. Cleared here, ahead of the skip-store early
+		// return, so a re-run root command (tests, a future server mode)
+		// cannot carry a previous `bd migrate --force` into `bd init
+		// --reinit-local` or `bd bootstrap`, which consult the same refusal.
+		migrateForceOverridesFreeze = false
+		freezeOverrideWarned = false
 
 		// Set up signal-aware context with batch commit flush on shutdown.
 		// Unlike signal.NotifyContext, this also handles SIGHUP and flushes
@@ -1582,7 +1589,7 @@ var rootCmd = &cobra.Command{
 		// discipline as the --force override above.
 		schema.SetSharedMigrateConsent(isSchemaMigrateVerb(cmd) && !previewMode)
 
-		commandFreeze = migration.Find(beadsDir)
+		commandFreeze = migration.Find(append([]string{beadsDir}, townFreezeRoots()...)...)
 		if !useReadOnly {
 			if err := migrationFreezeGate(cmd, strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" "), commandFreeze); err != nil {
 				return err
