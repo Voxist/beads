@@ -13,8 +13,8 @@ import (
 
 // TestEmbeddedWorkspaceMigrationFreezeRefusesWrites drives the freeze end to
 // end in a workspace that is NOT a Gas Town: no mayor/town.json anywhere above
-// it, so findTownRoot returns "" and, before this change, migration.IsFrozen("")
-// was false and the sentinel was inert no matter where it was placed.
+// it. Before the fork's stand-down fix (and upstream's #6043 ancestor walk that
+// superseded it) the sentinel was inert there no matter where it was placed.
 //
 // The A/B on one file is the whole test: the same command must be refused with
 // the sentinel present and succeed with it gone. Asserting only the refusal
@@ -23,7 +23,14 @@ func TestEmbeddedWorkspaceMigrationFreezeRefusesWrites(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
 	}
-	t.Parallel()
+	// Not parallel: TestMain pins migration.EnvFreezeFile to a path that
+	// cannot exist, so an ambient MIGRATION-FREEZE on the machine cannot
+	// freeze the whole suite -- and that authoritative override also hides
+	// the marker this test writes. Clearing it re-enables the ancestor walk
+	// (upstream's freezeWalkEnv does the same per-run), and t.Setenv is only
+	// safe outside t.Parallel: a parallel test changing the process env would
+	// expose its neighbours to the ambient-marker hazard the pin exists for.
+	t.Setenv(migration.EnvFreezeFile, "")
 
 	bd := buildEmbeddedBD(t)
 	dir, _, _ := bdInit(t, bd, "--prefix", "fz")
@@ -34,8 +41,8 @@ func TestEmbeddedWorkspaceMigrationFreezeRefusesWrites(t *testing.T) {
 	}
 
 	out, code := bdRunFailCode(t, bd, dir, "create", "blocked by the freeze", "--type", "task")
-	if code != 1 {
-		t.Errorf("bd create under a freeze exited %d, want 1", code)
+	if code != ExitMigrationFrozen {
+		t.Errorf("bd create under a freeze exited %d, want %d (ExitMigrationFrozen)", code, ExitMigrationFrozen)
 	}
 	// The operator and reason come out of the file, so a refusal that printed a
 	// generic message would still fail here — the parse has to reach the caller.
