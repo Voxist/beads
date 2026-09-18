@@ -92,6 +92,13 @@ func TestTownFreezeRootsFindsATownMarkerFromOutsideTheTree(t *testing.T) {
 	if res := migration.Find(append([]string{filepath.Join(outside, ".beads")}, townFreezeRoots()...)...); !res.Frozen() {
 		t.Fatal("a town freeze must be found through GT_TOWN_ROOT when cwd and workspace are outside the town")
 	}
+	// Same through the production root list every write gate uses
+	// (freezeSearchRoots -> freezeRootsWith -> CheckReadonly, init, bootstrap,
+	// import), so dropping townFreezeRoots from it fails here too.
+	t.Setenv("BEADS_DIR", filepath.Join(outside, ".beads"))
+	if res := migration.Find(freezeSearchRoots()...); !res.Frozen() {
+		t.Fatal("freezeSearchRoots must carry the GT_TOWN_ROOT town root")
+	}
 
 	// A directory that is not a town (no mayor/town.json) is not consulted:
 	// the variable alone must not let an arbitrary path freeze bd.
