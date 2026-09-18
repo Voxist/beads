@@ -221,6 +221,15 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.91.0",
+		Date:    "2026-09-18",
+		Changes: []string{
+			"FORK RELEASE: this is a Voxist/beads release cut from the fork's own main line. It merges upstream v1.3.0 (Voxist/beads#54) onto the fork's v1.90.0 line and is NOT an upstream release.",
+			"SCHEMA: this binary is at schema 0067, one past upstream v1.3.0 (0066). Upstream's 0067 migration is carried unchanged, so a store already migrated to 0067 by 1.90.0 needs no migration. The [1.3.0] entry below describes the upstream changes this release includes; its v53->v66 migration notes apply only to stores still below 0067.",
+			"VERSION: 1.91.0 exists because the v1.90.0 tag predates the v1.3.0 merge. Cutting a new release keeps one version string per binary; the fork's deliberately high minor is unchanged in intent (see 1.90.0).",
+		},
+	},
+	{
 		Version: "1.3.0",
 		Date:    "2026-09-15",
 		Changes: []string{
