@@ -75,7 +75,7 @@ func startManagedPooledProxy(t *testing.T, poolSize int) (proxyAddr string, dolt
 	// Wait for the proxy port to accept connections.
 	proxyAddr = fmt.Sprintf("127.0.0.1:%d", proxyPort)
 	require.Eventually(t, func() bool {
-		return probePort(Endpoint{Host: "127.0.0.1", Port: proxyPort}, 300*time.Millisecond)
+		return proxyPortAccepts(proxyPort, 300*time.Millisecond)
 	}, 60*time.Second, 200*time.Millisecond, "proxy never became ready")
 	return proxyAddr, doltPort, stats
 }
@@ -228,7 +228,7 @@ func benchChurn(b *testing.B, poolSize int) {
 	go func() { _ = p.ListenAndServe(ctx) }()
 	addr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
 	require.Eventually(b, func() bool {
-		return probePort(Endpoint{Host: "127.0.0.1", Port: proxyPort}, 300*time.Millisecond)
+		return proxyPortAccepts(proxyPort, 300*time.Millisecond)
 	}, 60*time.Second, 200*time.Millisecond)
 
 	bctx := context.Background()
@@ -273,4 +273,18 @@ func benchFreePort(b *testing.B) int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
 	return port
+}
+
+// proxyPortAccepts is this file's readiness probe. It used to borrow
+// probePort from endpoint.go, which upstream deleted in wy-s8ytnw (#6122)
+// because a dial-and-close probe cost the shared dolt server a full MySQL
+// session per bd invocation. A test waiting for its own proxy to come up has
+// no such cost to avoid, so the probe lives here rather than in production.
+func proxyPortAccepts(port int, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
