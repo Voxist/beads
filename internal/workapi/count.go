@@ -114,13 +114,7 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 	// `else`, which is the whole of the divergence. The clause below is
 	// list.go's, verbatim, minus the IncludeInfra term the branch above
 	// already consumed.
-	// Naming an infra type also NARROWS to the ephemeral rows of that type,
-	// which is BuildListFilter's second half of the same decision (list.go,
-	// `if cfg.IsInfra(in.IssueType)`). Admitting the plane without it counts
-	// MORE than the listing returns: an infra bead created --no-history lands
-	// in the wisps table with Ephemeral=false, and a nil Ephemeral merges both
-	// tables. Without this, `--include-infra` — which does set it — would make
-	// the count go DOWN, which is not a thing an "include" flag may do.
+	//
 	// Naming an infra type also NARROWS to the ephemeral rows of that type,
 	// which is BuildListFilter's second half of the same decision (list.go,
 	// `if cfg.IsInfra(in.IssueType)`). Admitting the plane without it counts
@@ -134,7 +128,7 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 	}
 
 	if in.IncludeInfra {
-		applyCountIncludeInfra(&filter, in.IssueType, cfg)
+		applyCountIncludeInfra(&filter, in.IssueType)
 	} else if !in.IncludeEphemeral && (in.IssueType == "" || !cfg.IsInfra(in.IssueType)) {
 		filter.SkipWisps = true
 	}
@@ -156,7 +150,7 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 //
 // A count without IncludeInfra never calls this and keeps its historical
 // durable-only semantics.
-func applyCountIncludeInfra(filter *types.IssueFilter, issueType string, cfg ListConfig) {
+func applyCountIncludeInfra(filter *types.IssueFilter, issueType string) {
 	filter.SkipWisps = false
 
 	isTemplate := false
