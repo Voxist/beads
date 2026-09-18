@@ -221,15 +221,6 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
-		Version: "1.90.0",
-		Date:    "2026-09-13",
-		Changes: []string{
-			"FORK RELEASE: this is a Voxist/beads release cut from the fork's own main line, 244 commits past v1.2.1. It is NOT an upstream release and carries fork-only fixes on top of the upstream code it merges.",
-			"SCHEMA: this binary is at schema 0067, not the 0053 of the v1.2.2 recovery below. The v1.2.2 entry's statement that 1.2.x-only features (leases, events journal, sync federation, HTTP API server, provenance) are absent DOES NOT APPLY to this binary — it has them, and its recovery guidance is for a different lineage.",
-			"VERSION: 1.90.0 is deliberately above any version upstream will reach. The fork shares the github.com/steveyegge/beads module path, so a high minor is what makes a fork tag unambiguous on sight; it is not a claim of 88 intervening minor releases.",
-		},
-	},
-	{
 		Version: "1.3.0",
 		Date:    "2026-09-15",
 		Changes: []string{
@@ -247,6 +238,15 @@ var versionChanges = []VersionChange{
 			"CHANGE: 'bd import' now ERRORS on a redirected stdin with no source argument instead of importing the default JSONL — use 'bd import -' or name the file. 'bd hooks install --chain/--force' are accepted no-ops; marker sections always preserve non-bd hook content.",
 			"FIX: 'bd purge'/'bd prune' select candidates by tier (#5995), so typed wisps minted before the ephemeral column are reachable again — the first purge after upgrade may clear considerably more than usual.",
 			"NEW: a two-level cooperative gate writes *.gate.lock files beside .beads and beside the Dolt physical root (e.g. .beads/embeddeddolt.gate.lock). They are flock names, never deleted; 'bd doctor --fix' adds the *.gate.lock* gitignore pattern.",
+		},
+	},
+	{
+		Version: "1.90.0",
+		Date:    "2026-09-13",
+		Changes: []string{
+			"FORK RELEASE: this is a Voxist/beads release cut from the fork's own main line, 244 commits past v1.2.1. It is NOT an upstream release and carries fork-only fixes on top of the upstream code it merges.",
+			"SCHEMA: this binary is at schema 0067, not the 0053 of the v1.2.2 recovery below. The v1.2.2 entry's statement that 1.2.x-only features (leases, events journal, sync federation, HTTP API server, provenance) are absent DOES NOT APPLY to this binary — it has them, and its recovery guidance is for a different lineage.",
+			"VERSION: 1.90.0 is deliberately above any version upstream will reach. The fork shares the github.com/steveyegge/beads module path, so a high minor is what makes a fork tag unambiguous on sight; it is not a claim of 88 intervening minor releases.",
 		},
 	},
 	{
