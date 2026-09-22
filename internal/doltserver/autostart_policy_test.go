@@ -121,3 +121,31 @@ func TestImplicitPathsRefuseToSpawnWhenWorkspaceDisablesAutoStart(t *testing.T) 
 		t.Errorf("KillStaleServers touched %v with auto-start disabled; bd does not own that server", killed)
 	}
 }
+
+// A value that is neither truthy nor falsy (`dolt.auto-start: disabled`) used
+// to fail open in silence. It still fails open — refusing every command over a
+// typo would be its own outage — but the operator is told once.
+func TestUnparseableAutoStartValueFailsOpenLoudly(t *testing.T) {
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	config.ResetForTesting()
+
+	for _, v := range []string{"disabled", "no-thanks", "0.5"} {
+		if !unparseableAutoStart(v) {
+			t.Errorf("unparseableAutoStart(%q) = false, want true", v)
+		}
+	}
+	for _, v := range []string{"", "true", "false", "off", "on", " 1 ", "0"} {
+		if unparseableAutoStart(v) {
+			t.Errorf("unparseableAutoStart(%q) = true; recognised values must not warn", v)
+		}
+	}
+
+	// The policy still permits auto-start for the typo, and the workspace that
+	// spells it correctly is still honoured.
+	if IsAutoStartDisabledFor(writeWorkspace(t, "disabled")) {
+		t.Error("an unparseable value must not silently disable auto-start either; it fails open")
+	}
+	if !IsAutoStartDisabledFor(writeWorkspace(t, "false")) {
+		t.Error("a correctly spelled false must still disable auto-start")
+	}
+}

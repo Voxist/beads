@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ApplyCLIAutoStart`, which read the same key through the same blind walk.
   Explicit `bd dolt start` is unchanged — it is a request, not an implicit open.
 
+  A value that is neither truthy nor falsy (`dolt.auto-start: disabled`) still
+  fails open — refusing every command over a typo would be its own outage — but
+  bd now says so once per process instead of silently spawning a server.
+
   The three sources are a disjunction, not a precedence chain: any of env,
   global config or workspace config may disable auto-start, and none re-enables
   it over another that says false, so `BEADS_DOLT_AUTO_START=1` does not

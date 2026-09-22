@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/servercfg"
@@ -194,13 +195,25 @@ func IsAutoStartDisabledFor(beadsDir string) bool {
 	if isFalsyBool(os.Getenv("BEADS_DOLT_AUTO_START")) {
 		return true
 	}
-	if isFalsyBool(config.GetString("dolt.auto-start")) {
-		return true
+	if global := config.GetString("dolt.auto-start"); global != "" {
+		if isFalsyBool(global) {
+			return true
+		}
+		if unparseableAutoStart(global) {
+			warnUnparseableAutoStart("the active config", global)
+		}
 	}
 	if beadsDir == "" {
 		return false
 	}
-	return isFalsyBool(config.GetStringFromDir(beadsDir, "dolt.auto-start"))
+	workspace := config.GetStringFromDir(beadsDir, "dolt.auto-start")
+	if isFalsyBool(workspace) {
+		return true
+	}
+	if unparseableAutoStart(workspace) {
+		warnUnparseableAutoStart(filepath.Join(beadsDir, "config.yaml"), workspace)
+	}
+	return false
 }
 
 // externalNonLocalhostHost reports the configured Dolt server host when
@@ -234,6 +247,33 @@ func externalNonLocalhostHost(beadsDir string) (string, bool) {
 		return "", false
 	}
 	return host, true
+}
+
+// unparseableAutoStart reports a non-empty value that is neither truthy nor
+// falsy, e.g. `dolt.auto-start: disabled`. Such a value used to fail OPEN --
+// isFalsyBool said "not false", so bd spawned a server against a workspace
+// whose author plainly meant to forbid it, silently. It still fails open
+// (refusing on a typo would be its own outage), but it says so once.
+func unparseableAutoStart(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "off") || strings.EqualFold(s, "on") {
+		return false
+	}
+	_, err := strconv.ParseBool(s)
+	return err != nil
+}
+
+// warnUnparseableAutoStart prints at most one warning per process: the policy
+// is consulted several times per invocation (pre-run, store open, status), and
+// an operator needs telling once, not once per call.
+var autoStartWarnOnce sync.Once
+
+func warnUnparseableAutoStart(source, value string) {
+	autoStartWarnOnce.Do(func() {
+		fmt.Fprintf(os.Stderr,
+			"Warning: %s sets dolt.auto-start to %q, which is neither true nor false; auto-start stays ENABLED. Use false to disable it.\n",
+			source, value)
+	})
 }
 
 // isFalsyBool returns true when s is a recognized "false" value:
