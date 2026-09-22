@@ -149,3 +149,18 @@ func TestUnparseableAutoStartValueFailsOpenLoudly(t *testing.T) {
 		t.Error("a correctly spelled false must still disable auto-start")
 	}
 }
+
+// unparseableAutoStart must stay the exact complement of the two recognisers
+// for every token either of them accepts, so widening one cannot leave the
+// warning firing on a value bd understands.
+func TestUnparseableAutoStartIsTheComplementOfTheRecognisers(t *testing.T) {
+	for _, v := range []string{"true", "false", "TRUE", "False", "1", "0", "t", "f", "on", "OFF", " true ", "off"} {
+		recognised := isFalsyBool(v) || isTruthyBool(v)
+		if !recognised {
+			t.Errorf("%q is accepted by neither recogniser; the table or the parsers drifted", v)
+		}
+		if unparseableAutoStart(v) {
+			t.Errorf("unparseableAutoStart(%q) = true for a recognised value", v)
+		}
+	}
+}

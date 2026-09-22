@@ -255,12 +255,25 @@ func externalNonLocalhostHost(beadsDir string) (string, bool) {
 // whose author plainly meant to forbid it, silently. It still fails open
 // (refusing on a typo would be its own outage), but it says so once.
 func unparseableAutoStart(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" || strings.EqualFold(s, "off") || strings.EqualFold(s, "on") {
+	if strings.TrimSpace(s) == "" {
 		return false
 	}
-	_, err := strconv.ParseBool(s)
-	return err != nil
+	// Defined as the negation of the two recognisers rather than by repeating
+	// their token lists, so widening either one cannot leave this warning
+	// firing on a value bd now understands.
+	return !isFalsyBool(s) && !isTruthyBool(s)
+}
+
+// isTruthyBool is isFalsyBool's partner: anything strconv.ParseBool accepts as
+// true, or "on" (case-insensitive), which pairs with the "off" that
+// isFalsyBool accepts.
+func isTruthyBool(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "on") {
+		return true
+	}
+	b, err := strconv.ParseBool(s)
+	return err == nil && b
 }
 
 // warnUnparseableAutoStart prints at most one warning per process: the policy
