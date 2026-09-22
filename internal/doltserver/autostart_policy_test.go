@@ -115,14 +115,33 @@ func TestIsAutoStartDisabledForEnvDisables(t *testing.T) {
 	}
 }
 
-// The call-site wiring, not just the policy helper. Neither assertion can spawn
-// a server: EnsureRunningDetailed gates before Start, and KillStaleServers
-// returns early, so a regression of either edit fails here instead of putting
-// an unmanaged sql-server on the shared port.
+// The call-site wiring, not just the policy helper.
+//
+// This test CAN spawn a server -- that is precisely its failure mode, and the
+// earlier comment here claiming otherwise was true only while the fix is
+// present, which is the one case the test does not exist to cover. The cleanup
+// below kills anything that starts, so a regression fails loudly instead of
+// leaking an orphan dolt onto the host (or CI) per run.
 func TestImplicitPathsRefuseToSpawnWhenWorkspaceDisablesAutoStart(t *testing.T) {
 	t.Setenv("BEADS_DOLT_AUTO_START", "")
 	config.ResetForTesting()
 	beadsDir := writeWorkspace(t, "false")
+
+	// The failure mode of this test is a REAL dolt sql-server: when the gate is
+	// missing, EnsureRunningDetailed reaches Start and the child reparents to
+	// PID 1 and outlives the test binary, still listening. On a host running the
+	// fleet that orphan IS the bug under test (ga-rpgvw). So the teardown is
+	// registered BEFORE the call, and it runs whether the call refuses, returns
+	// or panics.
+	serverDir := resolveServerDir(beadsDir)
+	t.Cleanup(func() {
+		if state, err := IsRunning(serverDir); err == nil && state != nil && state.Running {
+			t.Errorf("a server was started at %s (pid %d, port %d) despite auto-start being disabled; killing it", serverDir, state.PID, state.Port)
+			if stopErr := StopWithForce(serverDir, true); stopErr != nil {
+				t.Errorf("FAILED TO KILL the leaked server (pid %d): %v -- kill it by hand", state.PID, stopErr)
+			}
+		}
+	})
 
 	port, startedByUs, err := EnsureRunningDetailed(beadsDir)
 	if err == nil {

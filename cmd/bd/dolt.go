@@ -1387,17 +1387,15 @@ servers are preserved.`,
 		if !usesSQLServer() {
 			return HandleError("'bd dolt killall' is not supported in embedded mode (no Dolt server)")
 		}
-		if beadsDir == "" {
-			// Deliberately left empty, NOT ".": KillStaleServers now resolves the
-			// auto-start policy from this directory, and "." is the process working
-			// directory -- a repo root, where an unrelated config.yaml (mkdocs, CI,
-			// app config) carrying a dolt.auto-start key would silently turn an
-			// explicit `bd dolt killall` into a no-op while the orphan keeps the
-			// port. IsAutoStartDisabledFor("") reads no workspace files and answers
-			// from env and global config, which is the honest answer when there is
-			// no workspace.
-			beadsDir = ""
-		}
+		// beadsDir is deliberately left as-is when empty, NOT set to ".":
+		// KillStaleServers now resolves the
+		// auto-start policy from this directory, and "." is the process working
+		// directory -- a repo root, where an unrelated config.yaml (mkdocs, CI,
+		// app config) carrying a dolt.auto-start key would silently turn an
+		// explicit `bd dolt killall` into a no-op while the orphan keeps the
+		// port. IsAutoStartDisabledFor("") reads no workspace files and answers
+		// from env and global config, which is the honest answer when there is
+		// no workspace.
 
 		killed, err := doltserver.KillStaleServers(beadsDir)
 		if err != nil {

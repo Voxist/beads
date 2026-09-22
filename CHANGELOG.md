@@ -44,13 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bd config apply`, the server-mode refusal hint, and `bd dolt status`.
   Explicit `bd dolt start` is unchanged — it is a request, not an implicit open.
 
-  **The reader is what repairs a shared store**, not the policy gate. On a
-  shared server `ResolveServerMode` returns External and `EnsureRunningDetailed`
-  returns before its auto-start check, so the gate never runs there; what closes
-  ga-rpgvw on Gas City is the reader fix flowing into
+  Which half does the work depends on the workspace's server mode, and the
+  honest answer is that it varies. Where `ResolveServerMode` returns External —
+  an explicit port, or shared-server mode — `EnsureRunningDetailed` returns
+  before its auto-start check, so the gate never runs and only the reader (via
   `internal/storage/dolt/open.go`'s `ApplyCLIAutoStart`, which read the same key
-  through the same blind walk. The gate is defence in depth for owned-server
-  workspaces.
+  through the same blind walk) can refuse. Where it returns Owned, as a Gas City
+  rig does today (`dolt_mode: server` in metadata.json, no explicit
+  `dolt_server_port`, no `dolt.shared-server`), the gate is reachable and both
+  paths apply.
 
   Known gaps, deliberately NOT closed here: `doltserver.Start` itself is
   ungated, so the policy is hand-applied at four call sites and a fifth would

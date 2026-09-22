@@ -285,17 +285,21 @@ func isTruthyBool(s string) bool {
 	return err == nil && b
 }
 
-// warnUnparseableAutoStart prints at most one warning per process: the policy
-// is consulted several times per invocation (pre-run, store open, status), and
-// an operator needs telling once, not once per call.
-var autoStartWarnOnce sync.Once
+// warnUnparseableAutoStart de-duplicates per (source, value) rather than once
+// per process. The policy is consulted several times per invocation (pre-run,
+// store open, status), so an operator must not be told the same thing four
+// times -- but a single process-wide sync.Once was wrong for the library
+// consumers this change exists to serve: in `bd serve`, the db-proxy child or
+// any process spanning workspaces, the first bad value silenced every later
+// workspace, which is the precise silence this warning was added to remove.
+var autoStartWarned sync.Map
 
 func warnUnparseableAutoStart(source, value string) {
-	autoStartWarnOnce.Do(func() {
+	if _, seen := autoStartWarned.LoadOrStore(source+"\x00"+value, true); !seen {
 		fmt.Fprintf(os.Stderr,
 			"Warning: %s sets dolt.auto-start to %q, which bd reads as neither true nor false, so it is NOT treated as a request to disable auto-start. Use false to disable it.\n",
 			source, value)
-	})
+	}
 }
 
 // isFalsyBool returns true when s is a recognized "false" value:

@@ -1007,6 +1007,20 @@ func isDuration(s string) bool {
 	return isNumeric(s[:len(s)-1])
 }
 
+// isBoolLikeConfigValue reports whether value is one doltserver's auto-start
+// reader will understand: anything strconv.ParseBool accepts, plus on/off.
+// Deliberately a copy rather than an import -- internal/doltserver imports this
+// package, so the dependency cannot run the other way -- which is why the
+// parity test exists.
+func isBoolLikeConfigValue(value string) bool {
+	v := strings.TrimSpace(value)
+	if strings.EqualFold(v, "on") || strings.EqualFold(v, "off") {
+		return true
+	}
+	_, err := strconv.ParseBool(v)
+	return err == nil
+}
+
 // validateYamlConfigValue validates a configuration value before setting.
 // Returns an error if the value is invalid for the given key.
 func validateYamlConfigValue(key, value string) error {
@@ -1030,9 +1044,18 @@ func validateYamlConfigValue(key, value string) error {
 		// the read-side warning fires from the auto-start policy, and that policy
 		// is only consulted once a server is already missing -- i.e. during the
 		// outage it was meant to prevent.
-		lower := strings.ToLower(value)
-		if lower != "true" && lower != "false" {
-			return fmt.Errorf("dolt.auto-start must be \"true\" or \"false\", got %q", value)
+		//
+		// Validated against the READER's vocabulary, not a stricter one. The
+		// nearby dolt.shared-server / dolt.debug cases demand exactly
+		// "true"/"false" because their readers do an exact EqualFold("true");
+		// doltserver's isFalsyBool/isTruthyBool honor strconv.ParseBool's set
+		// plus on/off, so refusing `bd config set dolt.auto-start off` -- or `0`,
+		// the spelling of the BEADS_DOLT_AUTO_START=0 stand-down an operator is
+		// most likely to be translating into the file mid-incident -- would
+		// refuse a value bd then honors. Keep this in step with those two
+		// functions; TestAutoStartValidationMatchesReaderVocabulary pins it.
+		if !isBoolLikeConfigValue(value) {
+			return fmt.Errorf("dolt.auto-start must be a boolean (true/false, 1/0, t/f, on/off), got %q", value)
 		}
 	case "dolt.debug":
 		lower := strings.ToLower(value)
