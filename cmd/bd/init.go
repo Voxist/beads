@@ -1432,7 +1432,17 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// Gateway mode also skips this: it connects to a remote authenticating
 		// server and must not start a local shared server or create/write
 		// beads_global (see shouldInitSharedGlobalDB).
-		if !externalServer && shouldInitSharedGlobalDB(sharedServer, doltserver.IsSharedServerMode(), doltCfg.Gateway) {
+		// A workspace that disables auto-start manages its server elsewhere:
+		// starting one here would be the same unmanaged-server bug the implicit
+		// paths just closed (ga-rpgvw), and on a shared store it lands during
+		// the managed server's restart window. Skip with a message rather than
+		// failing: a later store open reports an unreachable server precisely.
+		// Same shape as `bd config apply` (config_apply.go applyServer).
+		if !externalServer && doltserver.IsAutoStartDisabledFor(beadsDir) {
+			if !quiet {
+				fmt.Printf("  %s Shared Dolt server not started: auto-start is disabled; the server is externally managed\n", ui.RenderSkipIcon())
+			}
+		} else if !externalServer && shouldInitSharedGlobalDB(sharedServer, doltserver.IsSharedServerMode(), doltCfg.Gateway) {
 			if sharedDir, err := doltserver.SharedServerDir(); err == nil {
 				state, _ := doltserver.IsRunning(sharedDir)
 				if state == nil || !state.Running {

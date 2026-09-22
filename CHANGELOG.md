@@ -37,18 +37,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`dolt.auto-start: false`) that bd writes itself and that every Gas City
   workspace uses — a dir-aware fallback alone would still have missed it.
   `config.yaml` is now read with the same reader as `config.local.yaml`
-  (flat and nested, sidecar first), and a new `IsAutoStartDisabledFor(beadsDir)`
-  backs every implicit auto-start path: `EnsureRunningDetailed`, the stale-server
-  sweep, `KillStaleServers`, `bd config apply`, the server-mode refusal hint, and
-  `bd dolt status`. Explicit `bd dolt start` is unchanged — it is a request, not
-  an implicit open. On the Gas City shared store the old behaviour started an
+  (flat and nested, sidecar first; where a file carries both, the flat form
+  wins, matching viper's own resolution of that file), and a new
+  `IsAutoStartDisabledFor(beadsDir)` backs the implicit auto-start paths:
+  `EnsureRunningDetailed`, the stale-server sweep, `KillStaleServers`,
+  `bd config apply`, `bd init`'s shared-global-database start, the server-mode
+  refusal hint, and `bd dolt status`. The reader fix alone also repairs the
+  main implicit store-open path, `internal/storage/dolt/open.go`'s
+  `ApplyCLIAutoStart`, which read the same key through the same blind walk.
+  Explicit `bd dolt start` is unchanged — it is a request, not an implicit open.
+
+  The three sources are a disjunction, not a precedence chain: any of env,
+  global config or workspace config may disable auto-start, and none re-enables
+  it over another that says false, so `BEADS_DOLT_AUTO_START=1` does not
+  override a workspace that forbids it. That fails closed, which is what a
+  shared store wants. On the Gas City shared store the old behaviour started an
   unmanaged sql-server holding the shared port, which blocked the managed
   server's restart and contributed to repeated outages on 2026-09-22; only
   `BEADS_DOLT_AUTO_START=0` worked as a stand-down before this.
 
   Side effect worth knowing: other `GetStringFromDir` readers (`sync.remote`,
   `dolt.port`, `dolt.shared-server`, `issue-prefix`, `no-git-ops`) were equally
-  blind to the flat dotted form and now resolve values they previously missed.
+  blind to the flat dotted form and now resolve values they previously missed
+  (`sync.git-remote` included).
 
 ## [1.3.0] - 2026-09-15
 

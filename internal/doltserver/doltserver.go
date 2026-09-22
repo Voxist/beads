@@ -184,8 +184,12 @@ func IsAutoStartDisabled() bool {
 // env var was reliably honored, which is why BEADS_DOLT_AUTO_START=0 was the
 // standing workaround.
 //
-// Precedence is unchanged where it already worked: env var, then global
-// config, then -- new -- the workspace's own config files.
+// This is a DISJUNCTION, not a precedence chain: ANY of the three sources may
+// disable auto-start, and none of them can re-enable it over another that
+// says false. BEADS_DOLT_AUTO_START=1 therefore does NOT override a workspace
+// whose config.yaml says false -- it only ever adds a reason to refuse. That
+// matches the pre-existing env/global behavior and fails closed, which is what
+// a shared store wants; to allow auto-start, no source may forbid it.
 func IsAutoStartDisabledFor(beadsDir string) bool {
 	if isFalsyBool(os.Getenv("BEADS_DOLT_AUTO_START")) {
 		return true

@@ -32,6 +32,14 @@ func TestGetStringFromDirReadsFlatDottedKeyInConfigYaml(t *testing.T) {
 			key:  "dolt.disable-event-flush", want: "true",
 		},
 		{
+			// Precedence when a file carries both: the flat form wins, which is
+			// what viper itself resolves for the same file, so a cmd-level read
+			// and a dir-level read cannot disagree.
+			name: "flat wins over a disagreeing nested value",
+			body: "dolt.auto-start: false\ndolt:\n  auto-start: true\n",
+			key:  "dolt.auto-start", want: "false",
+		},
+		{
 			name: "absent key stays empty",
 			body: "issue_prefix: vc\n",
 			key:  "dolt.auto-start", want: "",
