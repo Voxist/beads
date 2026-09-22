@@ -1053,7 +1053,9 @@ func validateYamlConfigValue(key, value string) error {
 		// the spelling of the BEADS_DOLT_AUTO_START=0 stand-down an operator is
 		// most likely to be translating into the file mid-incident -- would
 		// refuse a value bd then honors. Keep this in step with those two
-		// functions; TestAutoStartValidationMatchesReaderVocabulary pins it.
+		// functions; internal/doltserver's
+		// TestWriteTimeValidationAcceptsEveryValueTheReadersHonour pins it
+		// against those functions themselves rather than against a copy.
 		if !isBoolLikeConfigValue(value) {
 			return fmt.Errorf("dolt.auto-start must be a boolean (true/false, 1/0, t/f, on/off), got %q", value)
 		}
