@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/servercfg"
@@ -168,11 +169,60 @@ func rotateDebugProfile(beadsDir string) {
 //
 // This is used by KillStaleServers and Start to avoid killing or
 // interfering with externally-managed dolt processes (GH#2641).
+// Deprecated: use IsAutoStartDisabledFor(beadsDir). Without a directory this
+// cannot see a workspace's own config.yaml -- which is the whole of ga-rpgvw --
+// so it answers only from the env var and globally-bound viper. It is kept for
+// callers that genuinely have no workspace in hand; every production call site
+// now passes one.
 func IsAutoStartDisabled() bool {
+	return IsAutoStartDisabledFor("")
+}
+
+// IsAutoStartDisabledFor is IsAutoStartDisabled for a caller that knows which
+// workspace it is about to act on.
+//
+// The dir matters because config.GetString reads global viper, which is empty
+// unless config.Initialize has run: every library consumer, and any bd path
+// that resolves a server before config init, therefore saw "unset" and spawned
+// a server against a workspace whose config.yaml plainly said not to. On the
+// Gas City shared store that spawned an UNMANAGED server holding the shared
+// port, which then blocked the managed server's restart (ga-rpgvw). Only the
+// env var was reliably honored, which is why BEADS_DOLT_AUTO_START=0 was the
+// standing workaround.
+//
+// This is a DISJUNCTION, not a precedence chain: ANY of the three sources may
+// disable auto-start, and none of them can re-enable it over another that
+// says false. BEADS_DOLT_AUTO_START=1 therefore does NOT override a workspace
+// whose config.yaml says false -- it only ever adds a reason to refuse. That
+// matches the pre-existing env/global behavior and fails closed, which is what
+// a shared store wants; to allow auto-start, no source may forbid it.
+func IsAutoStartDisabledFor(beadsDir string) bool {
 	if isFalsyBool(os.Getenv("BEADS_DOLT_AUTO_START")) {
 		return true
 	}
-	return isFalsyBool(config.GetString("dolt.auto-start"))
+	if global := config.GetString("dolt.auto-start"); global != "" {
+		if isFalsyBool(global) {
+			return true
+		}
+		if unparseableAutoStart(global) {
+			warnUnparseableAutoStart("the active config", global)
+		}
+	}
+	if beadsDir == "" {
+		return false
+	}
+	workspace := config.GetStringFromDir(beadsDir, "dolt.auto-start")
+	if isFalsyBool(workspace) {
+		return true
+	}
+	if unparseableAutoStart(workspace) {
+		// Named as the workspace, not a specific file: GetStringFromDir reads
+		// config.local.yaml FIRST, so claiming "config.yaml" sends an operator
+		// to a file that may not hold the key -- or worse, one holding a
+		// correct value the untracked sidecar is overriding.
+		warnUnparseableAutoStart(beadsDir+" (config.yaml or config.local.yaml)", workspace)
+	}
+	return false
 }
 
 // externalNonLocalhostHost reports the configured Dolt server host when
@@ -208,11 +258,63 @@ func externalNonLocalhostHost(beadsDir string) (string, bool) {
 	return host, true
 }
 
+// unparseableAutoStart reports a non-empty value that is neither truthy nor
+// falsy, e.g. `dolt.auto-start: disabled`. Such a value used to fail OPEN --
+// isFalsyBool said "not false", so bd spawned a server against a workspace
+// whose author plainly meant to forbid it, silently. It still fails open
+// (refusing on a typo would be its own outage), but it says so once.
+func unparseableAutoStart(s string) bool {
+	if strings.TrimSpace(s) == "" {
+		return false
+	}
+	// Defined as the negation of the two recognisers rather than by repeating
+	// their token lists, so widening either one cannot leave this warning
+	// firing on a value bd now understands.
+	return !isFalsyBool(s) && !isTruthyBool(s)
+}
+
+// isTruthyBool is isFalsyBool's partner: anything strconv.ParseBool accepts as
+// true, or "on" (case-insensitive), which pairs with the "off" that
+// isFalsyBool accepts.
+func isTruthyBool(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "on") {
+		return true
+	}
+	b, err := strconv.ParseBool(s)
+	return err == nil && b
+}
+
+// warnUnparseableAutoStart de-duplicates per (source, value) rather than once
+// per process. The policy is consulted several times per invocation (pre-run,
+// store open, status), so an operator must not be told the same thing four
+// times -- but a single process-wide sync.Once was wrong for the library
+// consumers this change exists to serve: in `bd serve`, the db-proxy child or
+// any process spanning workspaces, the first bad value silenced every later
+// workspace, which is the precise silence this warning was added to remove.
+var autoStartWarned sync.Map
+
+func warnUnparseableAutoStart(source, value string) {
+	if _, seen := autoStartWarned.LoadOrStore(source+"\x00"+value, true); !seen {
+		fmt.Fprintf(os.Stderr,
+			"Warning: %s sets dolt.auto-start to %q, which bd reads as neither true nor false, so it is NOT treated as a request to disable auto-start. Use false to disable it.\n",
+			source, value)
+	}
+}
+
 // isFalsyBool returns true when s is a recognized "false" value:
 // anything strconv.ParseBool accepts as false, or "off" (case-insensitive).
 // Leading/trailing whitespace is trimmed before parsing.
 func isFalsyBool(s string) bool {
 	s = strings.TrimSpace(s)
+	// Deliberately NOT widened to yes/no/y/n. TestIsAutoStartDisabled documents
+	// "no" among "unrecognized values -> enabled (fail-open, not disabled)",
+	// beside "disabled" and "nope", so honoring it would silently change what
+	// BEADS_DOLT_AUTO_START=no does for anyone relying on that. The mismatch
+	// with cmd/bd/doctor/config_values.go isValidBoolString -- which calls
+	// yes/no/y/n valid booleans -- is real and reported separately; the write-time
+	// check added for dolt.auto-start keeps such a value out of config.yaml in
+	// the first place, and an existing one still warns.
 	if strings.EqualFold(s, "off") {
 		return true
 	}
@@ -1083,7 +1185,7 @@ func EnsureRunningDetailed(beadsDir string) (port int, startedByUs bool, err err
 	// Defense-in-depth: if dolt.auto-start is explicitly disabled in
 	// config.yaml or env, never spawn a server even if the caller
 	// somehow reached this point (e.g. stale AutoStart=true in config).
-	if IsAutoStartDisabled() {
+	if IsAutoStartDisabledFor(beadsDir) {
 		cfg := DefaultConfig(beadsDir)
 		if host, ok := externalNonLocalhostHost(beadsDir); ok {
 			return 0, false, fmt.Errorf("Configured Dolt server at %s:%d is unreachable, and auto-start "+
@@ -1852,10 +1954,11 @@ func killStaleServersForDir(beadsDir string, allPIDs []int, inDir func(int, stri
 
 	// If auto-start is disabled the server is externally managed (e.g., by
 	// systemd or a manual bd dolt start), so we must not kill any processes.
-	// IsAutoStartDisabled covers the BEADS_DOLT_AUTO_START env var and
-	// dolt.auto-start config; ResolveServerMode covers explicit port/shared
+	// IsAutoStartDisabledFor covers the BEADS_DOLT_AUTO_START env var, the
+	// globally-bound config and the workspace's own dolt.auto-start;
+	// ResolveServerMode covers explicit port/shared
 	// server/embedded configurations. Both indicate "not our server" (GH#2641).
-	if IsAutoStartDisabled() || ResolveServerMode(beadsDir) == ServerModeExternal {
+	if IsAutoStartDisabledFor(beadsDir) || ResolveServerMode(beadsDir) == ServerModeExternal {
 		return nil, nil
 	}
 
@@ -1908,7 +2011,7 @@ func killStaleServersForDir(beadsDir string, allPIDs []int, inDir func(int, stri
 // false), this function is a no-op — the dolt server is externally managed
 // and must not be killed by bd (GH#2641).
 func KillStaleServers(beadsDir string) ([]int, error) {
-	if IsAutoStartDisabled() {
+	if IsAutoStartDisabledFor(beadsDir) {
 		return nil, nil
 	}
 	allPIDs := listDoltProcessPIDs()

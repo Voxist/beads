@@ -1925,7 +1925,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 					cfg.ServerHost, cfg.ServerPort,
 					cfg.ServerHost, cfg.ServerPort,
 					cfg.ServerHost, cfg.ServerPort)
-			} else if !cfg.AutoStart && doltserver.IsAutoStartDisabled() {
+			} else if !cfg.AutoStart && doltserver.IsAutoStartDisabledFor(resolvedBeadsDir) {
 				hint = "Dolt server auto-start is disabled (dolt.auto-start: false).\n" +
 					"Start the server manually:\n  bd dolt start"
 			} else {

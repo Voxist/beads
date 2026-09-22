@@ -23,6 +23,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks in embedded, server, and proxied-server command paths; the legacy
   `<rig>:<bead-id>` await value remains accepted for compatibility.
 
+### Fixed
+
+- **`dolt.auto-start: false` in a workspace's own `config.yaml` is honoured
+  again — bd no longer spawns an unmanaged Dolt server against a workspace that
+  forbade it** (ga-rpgvw). Two gaps combined. `IsAutoStartDisabled` consulted
+  only `BEADS_DOLT_AUTO_START` and globally-bound viper, and viper is empty for
+  every library consumer and for any path that resolves a server before
+  `config.Initialize` — so the policy read as "unset" even though the workspace
+  had disabled it. `EnsureRunning(beadsDir)` held the directory the whole time
+  but never passed it. Separately, `GetStringFromDir` walked `config.yaml` with
+  a nested-only reader, so it could not see the FLAT dotted form
+  (`dolt.auto-start: false`) that bd writes itself and that every Gas City
+  workspace uses — a dir-aware fallback alone would still have missed it.
+  `config.yaml` is now read with the same reader as `config.local.yaml`
+  (flat and nested, sidecar first; where a file carries both, the flat form
+  wins, matching viper's own resolution of that file), and a new
+  `IsAutoStartDisabledFor(beadsDir)` backs several implicit auto-start paths:
+  `EnsureRunningDetailed`, the stale-server sweep, `KillStaleServers`,
+  `bd config apply`, the server-mode refusal hint, and `bd dolt status`.
+  Explicit `bd dolt start` is unchanged — it is a request, not an implicit open.
+
+  Which half does the work depends on the workspace's server mode, and the
+  honest answer is that it varies. Where `ResolveServerMode` returns External —
+  an explicit port, or shared-server mode — `EnsureRunningDetailed` returns
+  before its auto-start check, so the gate never runs and only the reader (via
+  `internal/storage/dolt/open.go`'s `ApplyCLIAutoStart`, which read the same key
+  through the same blind walk) can refuse. Where it returns Owned, as a Gas City
+  rig does today (`dolt_mode: server` in metadata.json, no explicit
+  `dolt_server_port`, no `dolt.shared-server`), the gate is reachable and both
+  paths apply.
+
+  Known gaps, deliberately NOT closed here: `doltserver.Start` itself is
+  ungated, so the policy is hand-applied at four call sites and a fifth would
+  reintroduce this silently; and a gate that asks one workspace's config about
+  the machine-global shared server answers the wrong question, since another
+  workspace can still spawn on the shared port. Both want the refusal inside
+  `Start(serverDir)`, resolved from the directory being started — a bigger
+  change than this entry, tracked separately.
+
+  The reader also stops a flat key from hiding a nested one: a flat
+  `dolt.auto-start:` written with no value (or with a map/list) now falls
+  through to the nested form instead of answering "", which would have been
+  this reader failing open in the direction it exists to close.
+
+  A value that is neither truthy nor falsy (`dolt.auto-start: disabled`) still
+  fails open — refusing every command over a typo would be its own outage — but
+  bd now says so once per process instead of silently spawning a server. That
+  warning only reaches paths that consult the policy, which happens once a
+  server is already missing, so the typo itself is caught earlier: `bd config
+  set dolt.auto-start <not-a-bool>` is now refused at write time, next to the
+  existing `dolt.shared-server` and `dolt.debug` checks. The falsy vocabulary is
+  deliberately unchanged (`strconv.ParseBool`'s set plus `off`): `bd doctor` and
+  `bd config validate` call `yes`/`no`/`y`/`n` valid booleans while this policy
+  does not, but `TestIsAutoStartDisabled` documents `no` as fail-open, so
+  honouring it here would silently change what `BEADS_DOLT_AUTO_START=no` does.
+  That inconsistency is worth closing on its own; the write-time check keeps such
+  a value out of `config.yaml` meanwhile, and an existing one still warns.
+
+  The three sources are a disjunction, not a precedence chain: any of env,
+  global config or workspace config may disable auto-start, and none re-enables
+  it over another that says false, so `BEADS_DOLT_AUTO_START=1` does not
+  override a workspace that forbids it. That fails closed, which is what a
+  shared store wants. On the Gas City shared store the old behaviour started an
+  unmanaged sql-server holding the shared port, which blocked the managed
+  server's restart and contributed to repeated outages on 2026-09-22; only
+  `BEADS_DOLT_AUTO_START=0` worked as a stand-down before this.
+
+  Side effect worth knowing: the other **dotted** keys read through
+  `GetStringFromDir` were equally blind to the flat form and now resolve values
+  they previously missed — `sync.remote` (4 call sites, including
+  `cmd/bd/doctor/legacy.go` and `internal/storage/domain/fs/context.go`),
+  `sync.git-remote` (3), `dolt.shared-server` and `dolt.port`. Single-segment
+  keys are NOT affected: the old walk split on the first dot, found no dot, and
+  read the root map directly, so `issue-prefix`, `issue_prefix` and `no-git-ops`
+  always resolved. Scope regression tests to the dotted keys.
+
 ## [1.3.0] - 2026-09-15
 
 The first tested release off `main` since the 1.1 line. [1.2.2] was a recovery
