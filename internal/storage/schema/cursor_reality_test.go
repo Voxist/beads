@@ -283,8 +283,8 @@ func TestMigrationWorkNeededWhenLeaseGrantedNodeAbsent(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta("FROM INFORMATION_SCHEMA.TABLES")).
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	}
-	mock.ExpectQuery(regexp.QuoteMeta("FROM INFORMATION_SCHEMA.COLUMNS")).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta("SHOW COLUMNS FROM leases LIKE 'granted_node'")).
+		WillReturnRows(sqlmock.NewRows([]string{"Field", "Type", "Null", "Key", "Default", "Extra"}))
 
 	needed, err := migrationWorkNeeded(context.Background(), db)
 	if err != nil {
