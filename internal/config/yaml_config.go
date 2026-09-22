@@ -455,7 +455,15 @@ func yamlValueFromBytes(data []byte, key string) (string, bool) {
 		return "", false
 	}
 	if raw, ok := root[key]; ok { // flat dotted form
-		return yamlScalarString(raw)
+		// Only a USABLE scalar ends the search here. A flat key present with a
+		// null, or with a map/list value, must fall through to the nested form
+		// below: returning on it would let `dolt.auto-start:` (no value) hide a
+		// nested `dolt.auto-start: false`, which is this reader failing open in
+		// the very direction it exists to close, and would diverge from viper,
+		// whose prefix walk moves on to the next candidate in the same case.
+		if v, ok := flatScalarValue(raw); ok {
+			return v, true
+		}
 	}
 	var node interface{} = root // nested form
 	for _, part := range strings.Split(key, ".") {
@@ -469,6 +477,18 @@ func yamlValueFromBytes(data []byte, key string) (string, bool) {
 		}
 	}
 	return yamlScalarString(node)
+}
+
+// flatScalarValue converts a flat dotted key's value when it is a scalar bd can
+// use. nil (a key written with no value) and container values report false so
+// the caller keeps looking, rather than answering "" or a Go map literal like
+// "map[x:1]" for a key an operator never spelled that way.
+func flatScalarValue(raw interface{}) (string, bool) {
+	switch raw.(type) {
+	case nil, map[string]interface{}, []interface{}:
+		return "", false
+	}
+	return yamlScalarString(raw)
 }
 
 func yamlScalarString(v interface{}) (string, bool) {
@@ -1004,6 +1024,15 @@ func validateYamlConfigValue(key, value string) error {
 		lower := strings.ToLower(value)
 		if lower != "true" && lower != "false" {
 			return fmt.Errorf("dolt.shared-server must be \"true\" or \"false\", got %q", value)
+		}
+	case "dolt.auto-start":
+		// Caught at WRITE time, which is the only moment a typo can be pre-empted:
+		// the read-side warning fires from the auto-start policy, and that policy
+		// is only consulted once a server is already missing -- i.e. during the
+		// outage it was meant to prevent.
+		lower := strings.ToLower(value)
+		if lower != "true" && lower != "false" {
+			return fmt.Errorf("dolt.auto-start must be \"true\" or \"false\", got %q", value)
 		}
 	case "dolt.debug":
 		lower := strings.ToLower(value)

@@ -13,6 +13,22 @@ import (
 // `dolt.auto-start` in config.yaml.
 func writeWorkspace(t *testing.T, autoStart string) string {
 	t.Helper()
+	// Neutralise EVERY variable that steers server-mode resolution, not just
+	// BEADS_DOLT_AUTO_START. On a Gas City machine these are exported, and
+	// leaving them set makes resolveServerDir return the REAL
+	// ~/.beads/shared-server: EnsureRunningDetailed would then adopt the live
+	// managed server and EnsurePortFile would WRITE the operator's shared-server
+	// port file from a unit test. A test that can touch fleet state is not a
+	// unit test.
+	for _, k := range []string{
+		"BEADS_DOLT_SHARED_SERVER",
+		"BEADS_DOLT_SERVER_MODE",
+		"BEADS_DOLT_SERVER_HOST",
+		"BEADS_DOLT_SERVER_PORT",
+		"BEADS_DIR",
+	} {
+		t.Setenv(k, "")
+	}
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -77,6 +93,12 @@ func TestIsAutoStartDisabledForEnvIsNotAnOverrideBackToEnabled(t *testing.T) {
 // The env var disables in the other direction, and still applies for a caller
 // that passes no directory.
 func TestIsAutoStartDisabledForEnvDisables(t *testing.T) {
+	// Same hermetic precondition as its siblings: without it, a config.Initialize
+	// elsewhere in this binary (doltserver_test.go's TestIsAutoStartDisabled_Sources
+	// does exactly that, with no cleanup) leaks a bound viper and turns the
+	// "stays enabled" assertion below into a pass that proves nothing. Today it
+	// survives only because Go compiles test files in filename order.
+	config.ResetForTesting()
 	enabled := writeWorkspace(t, "true")
 
 	t.Setenv("BEADS_DOLT_AUTO_START", "0")
@@ -113,13 +135,13 @@ func TestImplicitPathsRefuseToSpawnWhenWorkspaceDisablesAutoStart(t *testing.T) 
 		t.Errorf("refusal must name the policy; got: %v", err)
 	}
 
-	killed, err := KillStaleServers(beadsDir)
-	if err != nil {
-		t.Fatalf("KillStaleServers: %v", err)
-	}
-	if len(killed) != 0 {
-		t.Errorf("KillStaleServers touched %v with auto-start disabled; bd does not own that server", killed)
-	}
+	// NOT asserted here: KillStaleServers. With this fixture it returns an
+	// empty slice whether or not the gate is present -- the workspace has no
+	// dolt-server.pid, so killStaleServersForDir returns early at canonicalPID
+	// == 0 and the kill loop is unreachable. Asserting len(killed) == 0 would
+	// pass with the gate deleted, i.e. prove nothing. Making it real needs a PID
+	// file naming a live dolt process, which a unit test must not arrange on a
+	// host running the fleet's server.
 }
 
 // A value that is neither truthy nor falsy (`dolt.auto-start: disabled`) used
