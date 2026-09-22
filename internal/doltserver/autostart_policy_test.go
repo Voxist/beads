@@ -205,3 +205,43 @@ func TestUnparseableAutoStartIsTheComplementOfTheRecognisers(t *testing.T) {
 		}
 	}
 }
+
+// The write-time validator must accept exactly what the READERS honour.
+//
+// This assertion lives here, not in internal/config, on purpose. The validator
+// duplicates the vocabulary (as config.isBoolLikeConfigValue) because
+// internal/doltserver imports internal/config and the dependency cannot run
+// backwards — so a parity test inside config can only compare the validator to a
+// hardcoded table, and would still pass if someone later widened isFalsyBool or
+// isTruthyBool here. The CHANGELOG names `no` as exactly that candidate, given
+// bd doctor's isValidBoolString already calls it a valid boolean. From this
+// package the real functions are in scope, so widening a reader without widening
+// the writer fails the build's tests instead of silently refusing, at write
+// time, a value bd honours at read time.
+func TestWriteTimeValidationAcceptsEveryValueTheReadersHonour(t *testing.T) {
+	// Every spelling either reader might plausibly be widened to, plus values
+	// that must stay rejected.
+	candidates := []string{
+		"true", "TRUE", "True", "t", "T", "1",
+		"false", "FALSE", "False", "f", "F", "0",
+		"on", "ON", "off", "OFF", " false ", "\ttrue\n",
+		"yes", "no", "y", "n", "disabled", "nope", "2", "",
+	}
+
+	for _, v := range candidates {
+		beadsDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("issue_prefix: vc\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		honoured := isFalsyBool(v) || isTruthyBool(v)
+		err := config.SetYamlConfigInDir(beadsDir, "dolt.auto-start", v)
+
+		switch {
+		case honoured && err != nil:
+			t.Errorf("bd config set dolt.auto-start %q was REFUSED, but the readers honour it: %v", v, err)
+		case !honoured && err == nil:
+			t.Errorf("bd config set dolt.auto-start %q was ACCEPTED, but neither reader honours it", v)
+		}
+	}
+}
