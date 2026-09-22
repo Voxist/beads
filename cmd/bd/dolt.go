@@ -1123,12 +1123,12 @@ endpoint via SQL and reports reachability, server version, and database.`,
 		//   - local host with auto-start disabled (an orchestrator or
 		//     systemd manages the server lifecycle, be-0eyj)
 		//
-		// IsAutoStartDisabled reads the active (globally-bound) config and
-		// BEADS_DOLT_AUTO_START env, not the per-beadsDir cfg loaded above.
-		// That coupling is intentional and consistent with every
-		// other call site of IsAutoStartDisabled in this package — both
-		// resolve against the same active workspace at command time.
-		if cfg != nil && shouldUseExternalDoltStatus(cfg, doltserver.IsAutoStartDisabled(), doltserver.IsSharedServerMode()) {
+		// IsAutoStartDisabledFor reads the env var and the active
+		// (globally-bound) config, then falls back to beadsDir's own config
+		// files — so `bd dolt status` reports the same policy the open path
+		// now enforces, including for a workspace whose config.yaml is the
+		// only place auto-start is disabled (ga-rpgvw).
+		if cfg != nil && shouldUseExternalDoltStatus(cfg, doltserver.IsAutoStartDisabledFor(beadsDir), doltserver.IsSharedServerMode()) {
 			runExternalDoltStatus(beadsDir, cfg)
 			return nil
 		}

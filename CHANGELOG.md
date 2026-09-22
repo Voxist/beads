@@ -23,6 +23,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks in embedded, server, and proxied-server command paths; the legacy
   `<rig>:<bead-id>` await value remains accepted for compatibility.
 
+### Fixed
+
+- **`dolt.auto-start: false` in a workspace's own `config.yaml` is honoured
+  again — bd no longer spawns an unmanaged Dolt server against a workspace that
+  forbade it** (ga-rpgvw). Two gaps combined. `IsAutoStartDisabled` consulted
+  only `BEADS_DOLT_AUTO_START` and globally-bound viper, and viper is empty for
+  every library consumer and for any path that resolves a server before
+  `config.Initialize` — so the policy read as "unset" even though the workspace
+  had disabled it. `EnsureRunning(beadsDir)` held the directory the whole time
+  but never passed it. Separately, `GetStringFromDir` walked `config.yaml` with
+  a nested-only reader, so it could not see the FLAT dotted form
+  (`dolt.auto-start: false`) that bd writes itself and that every Gas City
+  workspace uses — a dir-aware fallback alone would still have missed it.
+  `config.yaml` is now read with the same reader as `config.local.yaml`
+  (flat and nested, sidecar first), and a new `IsAutoStartDisabledFor(beadsDir)`
+  backs every implicit auto-start path: `EnsureRunningDetailed`, the stale-server
+  sweep, `KillStaleServers`, `bd config apply`, the server-mode refusal hint, and
+  `bd dolt status`. Explicit `bd dolt start` is unchanged — it is a request, not
+  an implicit open. On the Gas City shared store the old behaviour started an
+  unmanaged sql-server holding the shared port, which blocked the managed
+  server's restart and contributed to repeated outages on 2026-09-22; only
+  `BEADS_DOLT_AUTO_START=0` worked as a stand-down before this.
+
+  Side effect worth knowing: other `GetStringFromDir` readers (`sync.remote`,
+  `dolt.port`, `dolt.shared-server`, `issue-prefix`, `no-git-ops`) were equally
+  blind to the flat dotted form and now resolve values they previously missed.
+
 ## [1.3.0] - 2026-09-15
 
 The first tested release off `main` since the 1.1 line. [1.2.2] was a recovery
