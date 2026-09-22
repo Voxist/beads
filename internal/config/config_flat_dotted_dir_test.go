@@ -71,26 +71,9 @@ func TestGetStringFromDirPrefersLocalSidecar(t *testing.T) {
 	}
 }
 
-// The write-time validator for dolt.auto-start must accept exactly what
-// doltserver's reader honours. It cannot import that package (the dependency
-// runs the other way), so this table is the contract: every value here is one
-// isFalsyBool or isTruthyBool accepts, and none may be refused at write time.
-// Refusing one would reject `bd config set dolt.auto-start off` -- or `0`, the
-// spelling of the BEADS_DOLT_AUTO_START=0 stand-down -- for a value bd honours.
-func TestAutoStartValidationMatchesReaderVocabulary(t *testing.T) {
-	honoured := []string{
-		"true", "TRUE", "True", "t", "T", "1",
-		"false", "FALSE", "False", "f", "F", "0",
-		"on", "ON", "off", "OFF", " false ", "\ttrue\n",
-	}
-	for _, v := range honoured {
-		if err := validateYamlConfigValue("dolt.auto-start", v); err != nil {
-			t.Errorf("validateYamlConfigValue(dolt.auto-start, %q) = %v; the reader honours this value", v, err)
-		}
-	}
-	for _, v := range []string{"disabled", "nope", "no", "yes", "y", "n", "2", ""} {
-		if err := validateYamlConfigValue("dolt.auto-start", v); err == nil {
-			t.Errorf("validateYamlConfigValue(dolt.auto-start, %q) accepted a value the reader does NOT honour", v)
-		}
-	}
-}
+// The write-time validator for dolt.auto-start is pinned by
+// TestWriteTimeValidationAcceptsEveryValueTheReadersHonour in
+// internal/doltserver, which is the only package that can reach BOTH sides: the
+// real isFalsyBool/isTruthyBool and this validator. A test here could only
+// compare the validator to a table transcribed by hand, which is what it used to
+// do -- and a transcription cannot notice a reader widening underneath it.

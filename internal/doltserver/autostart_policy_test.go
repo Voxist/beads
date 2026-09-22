@@ -205,3 +205,65 @@ func TestUnparseableAutoStartIsTheComplementOfTheRecognisers(t *testing.T) {
 		}
 	}
 }
+
+// The write-time validator must accept exactly what the READERS honour.
+//
+// This assertion lives here, not in internal/config, on purpose. The validator
+// duplicates the vocabulary (as config.isBoolLikeConfigValue) because
+// internal/doltserver imports internal/config and the dependency cannot run
+// backwards — so a parity test inside config can only compare the validator to a
+// hardcoded table, and would still pass if someone later widened isFalsyBool or
+// isTruthyBool here. The CHANGELOG names `no` as exactly that candidate, given
+// bd doctor's isValidBoolString already calls it a valid boolean. From this
+// package the real functions are in scope, so widening a reader without widening
+// the writer fails the build's tests instead of silently refusing, at write
+// time, a value bd honours at read time.
+//
+// The action goes through config.SetYamlConfigInDir, NOT the config.SetYamlConfig
+// that `bd config set` itself calls: that one resolves its target through
+// findProjectConfigYaml, which walks up from the working directory and would
+// rewrite the beads repo's own .beads/config.yaml during a test run. All three
+// writers call validateYamlConfigValue as their first statement, so this
+// exercises the same gate on a directory the test owns.
+func TestWriteTimeValidationAcceptsEveryValueTheReadersHonour(t *testing.T) {
+	// Every spelling either reader might plausibly be widened to, plus values
+	// that must stay rejected.
+	candidates := []string{
+		"true", "TRUE", "True", "t", "T", "1",
+		"false", "FALSE", "False", "f", "F", "0",
+		"on", "ON", "off", "OFF", " false ", "\ttrue\n",
+		"yes", "no", "y", "n", "disabled", "nope", "2", "",
+	}
+
+	var sawHonoured, sawRejected int
+	for _, v := range candidates {
+		beadsDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("issue_prefix: vc\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		honoured := isFalsyBool(v) || isTruthyBool(v)
+		err := config.SetYamlConfigInDir(beadsDir, "dolt.auto-start", v)
+
+		if honoured {
+			sawHonoured++
+		} else {
+			sawRejected++
+		}
+
+		switch {
+		case honoured && err != nil:
+			t.Errorf("the write-time validator (shared by bd config set) REFUSED dolt.auto-start=%q, but the readers honour it: %v", v, err)
+		case !honoured && err == nil:
+			t.Errorf("the write-time validator (shared by bd config set) ACCEPTED dolt.auto-start=%q, but neither reader honours it", v)
+		}
+	}
+
+	// Non-vacuity asserted, not inferred. candidates is a literal today, so an
+	// empty iteration cannot happen -- but this whole PR exists because an
+	// assertion's teeth depended on where it lived, and a later refactor to a
+	// generated list would make both branches silently unreachable.
+	if sawHonoured == 0 || sawRejected == 0 {
+		t.Fatalf("the candidate list must exercise BOTH verdicts: honoured=%d rejected=%d", sawHonoured, sawRejected)
+	}
+}
