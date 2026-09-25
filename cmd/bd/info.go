@@ -221,6 +221,18 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.92.0",
+		Date:    "2026-09-26",
+		Changes: []string{
+			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It carries the dolt.auto-start fixes in Voxist/beads#56 and #57 on top of 1.91.0.",
+			"SCHEMA: unchanged at 0067. This release contains NO migration — nothing under internal/*/migrations differs from 1.91.0 — so upgrading is a binary swap and a store opened by 1.92.0 stays readable by 1.91.0. Order still matters for anything else: binary first, migrations after.",
+			"FIX: 'dolt.auto-start: false' in a WORKSPACE's own .beads/config.yaml is now honored. Before this, only BEADS_DOLT_AUTO_START and the global config were consulted, so a per-workspace false was silently ignored and bd started an unmanaged dolt sql-server anyway. If you set that key and watched bd start a server regardless, that was this bug, not your config.",
+			"BEHAVIOR: the sources are a DISJUNCTION, not a precedence chain — the env var, the global config and the workspace config can each disable auto-start, and none of them can re-enable it once another has disabled it. Do not expect a workspace 'true' to override an ambient BEADS_DOLT_AUTO_START=0.",
+			"FIX: an unparseable dolt.auto-start value now warns and names the file it came from, instead of being silently treated as unset. The accepted falsy spellings are unchanged (false, 0, off, no and their case variants); 'bd config set dolt.auto-start' validates against the same reader that honors it, so the validator can no longer refuse a spelling the reader accepts.",
+			"OPERATIONAL: if you have been holding servers down with BEADS_DOLT_AUTO_START=0 because the config key did not work, that variable is no longer load-bearing once every client of a shared server is on 1.92.0 — the config key now does the job. The variable is still honored; remove it deliberately, per rig, after confirming the binary is deployed there, not before.",
+		},
+	},
+	{
 		Version: "1.91.0",
 		Date:    "2026-09-18",
 		Changes: []string{
