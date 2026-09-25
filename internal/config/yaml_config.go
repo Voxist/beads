@@ -1360,15 +1360,23 @@ func commentOutYamlKeyAnyForm(content, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// commentOutYamlKey drops the document's trailing newline (measured on
-	// origin/main 3c30a28d0, including for a key it does not find). Restoring
-	// it keeps an unset from showing up as a no-newline-at-end-of-file change
-	// on top of the line it meant to touch -- noise in exactly the diff this
-	// sidecar work exists to keep clean. Reported upstream separately; this
-	// only repairs the value this wrapper returns.
-	if strings.HasSuffix(content, "\n") && !strings.HasSuffix(out, "\n") {
-		out += "\n"
-	}
+	// commentOutYamlKey does not preserve the document's trailing newlines
+	// (measured on origin/main 3c30a28d0, including for a key it does not
+	// find). It reads with bufio.Scanner, which yields one empty token per
+	// blank line but drops the final terminator, so the join is always exactly
+	// ONE newline short whenever content ends in "\n".
+	//
+	// Restore the run EXACTLY rather than appending a single "\n" under a
+	// HasSuffix guard. The count is not what makes that guard miss: for a file
+	// ending "\n\n" the join ends "\n" -- the blank line's own newline -- so
+	// !HasSuffix(out, "\n") is already false and the missing newline is never
+	// restored. That matters beyond cosmetics here, because the line-count
+	// check below then reads a legitimate blank-line file as a broken
+	// invariant and refuses the write. Trimming both ends and re-attaching
+	// content's own run keeps the file's shape, does not depend on the count,
+	// and makes the check exact. Reported upstream separately (#6749); this
+	// repairs the value this wrapper returns.
+	out = strings.TrimRight(out, "\n") + content[len(strings.TrimRight(content, "\n")):]
 
 	parts := strings.Split(key, ".")
 	if len(parts) < 2 {
