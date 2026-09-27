@@ -1941,12 +1941,25 @@ var rootCmd = &cobra.Command{
 			// validateWorkspaceIdentity reads _project_id over the routed store
 			// and no-ops when the store is nil, so it is safe in best-effort mode.
 			if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
-				// Upstream made the store an explicit parameter; pass the routed
-				// store rather than letting the callee fetch it. getStore() may
-				// be nil in proxied mode, which validateWorkspaceIdentity
-				// already treats as "nothing to validate" -- the no-op this
-				// call site has always relied on.
-				_ = validateWorkspaceIdentity(rootCtx, getStore(), beadsDir) //nolint:errcheck // best-effort identity check; no-ops on nil store
+				// Upstream made the store an explicit parameter. Read the
+				// package-level global, NOT getStore().
+				//
+				// getStore() returns cmdCtx.Store unless shouldUseGlobals(),
+				// and the routed store above is installed with a bare
+				// `store = s` rather than setStore(), so cmdCtx.Store is not
+				// backfilled until syncCommandContext() runs -- three lines
+				// BELOW this call. getStore() would therefore hand
+				// validateWorkspaceIdentity a nil store on every production
+				// run, and its `if s == nil` guard would return immediately:
+				// the S4 check would be a permanent no-op, letting a write
+				// land on the wrong project's database through a misconfigured
+				// proxy. Tests would not have caught it either, because
+				// testModeUseGlobals makes getStore() fall back to this same
+				// global.
+				storeMutex.Lock()
+				routedStore := store
+				storeMutex.Unlock()
+				_ = validateWorkspaceIdentity(rootCtx, routedStore, beadsDir) //nolint:errcheck // best-effort identity check; no-ops when routing failed and left the store nil
 			}
 
 			syncCommandContext()

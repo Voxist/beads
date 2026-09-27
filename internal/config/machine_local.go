@@ -96,6 +96,22 @@ func LocalConfigPathFor(configPath string) string {
 // configPath, first migrating any machine-local keys already sitting in the
 // tracked config.yaml.
 func setMachineLocalYamlConfig(configPath, key, value string) error {
+	// The registry is the single decision point in BOTH directions:
+	// SaveConfigValue refuses a machine-local key, and this refuses one that is
+	// not. Without the second half a caller could re-create the split simply by
+	// picking a function.
+	if !IsMachineLocalKey(key) {
+		return fmt.Errorf("%q is not a machine-local key; use SetYamlConfig (or SetYamlConfigInDir) to write it to the tracked config.yaml", key)
+	}
+	// Run the SAME validation the literal writers run. Without this, moving the
+	// routing to the callers silently REMOVED a refusal: `bd config set
+	// dolt.mode bogus` is rejected by SetYamlConfigInDir but was accepted here,
+	// and the sidecar wins on read -- so the bad value became the live one.
+	// dolt.mode and dolt.debug both have cases in validateYamlConfigValue. A
+	// validator a caller escapes by choosing a destination is not a validator.
+	if err := validateYamlConfigValue(key, value); err != nil {
+		return err
+	}
 	localPath := LocalConfigPathFor(configPath)
 	if err := ensureLocalConfigFile(localPath); err != nil {
 		return err
@@ -154,18 +170,28 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 	localPath := LocalConfigPathFor(configPath)
 	normalized := key
 
-	// Clear this machine's override first.
+	// COMPUTE BOTH EDITS BEFORE WRITING EITHER.
+	//
+	// Since the 2026-09-27 resync, commentOutYamlKeyAnyForm can REFUSE a shape
+	// (#6574's unsupportedUnsetShape) rather than always succeeding. Writing
+	// the sidecar first and only then discovering the tracked file is, say, a
+	// flow mapping left the unset half-applied while the command exited
+	// non-zero: the operator was told it failed, and their machine-local
+	// override was gone anyway. Computing both first means a refusal on either
+	// file leaves BOTH untouched, and the caller's purpose-built "nothing was
+	// removed, edit it by hand" message stays reachable.
+	var (
+		localUpdated string
+		writeLocal   bool
+		localContent string
+	)
 	if content, readErr := os.ReadFile(localPath); readErr == nil { //nolint:gosec // localPath derives from a resolved config.yaml path
-		updated, unsetErr := commentOutYamlKeyAnyForm(string(content), normalized)
+		localContent = string(content)
+		updated, unsetErr := commentOutYamlKeyAnyForm(localContent, normalized)
 		if unsetErr != nil {
 			return "", false, false, unsetErr
 		}
-		if updated != string(content) {
-			if writeErr := os.WriteFile(localPath, []byte(updated), 0o600); writeErr != nil {
-				return "", false, false, fmt.Errorf("failed to write %s: %w", LocalConfigFileName, writeErr)
-			}
-			clearedLocal = true
-		}
+		localUpdated, writeLocal = updated, updated != localContent
 	} else if !os.IsNotExist(readErr) {
 		return "", false, false, fmt.Errorf("failed to read %s: %w", LocalConfigFileName, readErr)
 	}
@@ -184,13 +210,15 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 	trackedRaw, readErr := os.ReadFile(configPath) //nolint:gosec // configPath is a resolved config.yaml path
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
-			return "", false, clearedLocal, nil
+			clearedLocal, err = flushSidecarUnset(localPath, localUpdated, writeLocal)
+			return "", false, clearedLocal, err
 		}
-		return "", false, clearedLocal, fmt.Errorf("failed to read config.yaml: %w", readErr)
+		return "", false, false, fmt.Errorf("failed to read config.yaml: %w", readErr)
 	}
 	value, found := yamlValueInContent(string(trackedRaw), normalized)
 	if !found {
-		return "", false, clearedLocal, nil
+		clearedLocal, err = flushSidecarUnset(localPath, localUpdated, writeLocal)
+		return "", false, clearedLocal, err
 	}
 	// commentOutYamlKeyAnyForm is line-based and cannot reach a key inside a
 	// FLOW mapping (`dolt: {mode: server}`). Reporting clearedTracked=false
@@ -198,7 +226,14 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 	// printing success and a side-effect consequence that did not happen.
 	updated, unsetErr := commentOutYamlKeyAnyForm(string(trackedRaw), normalized)
 	if unsetErr != nil {
-		return "", false, clearedLocal, unsetErr
+		// Nothing has been written yet, so the sidecar override survives and
+		// the operator's state is exactly what it was before the command.
+		return "", false, false, unsetErr
+	}
+
+	// Both edits are known good; now write.
+	if clearedLocal, err = flushSidecarUnset(localPath, localUpdated, writeLocal); err != nil {
+		return "", false, false, err
 	}
 	if updated == string(trackedRaw) {
 		return "", false, clearedLocal, nil
@@ -207,6 +242,18 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 		return "", false, clearedLocal, fmt.Errorf("failed to write config.yaml: %w", writeErr)
 	}
 	return value, true, clearedLocal, nil
+}
+
+// flushSidecarUnset writes the sidecar edit computed by
+// unsetMachineLocalYamlConfig, once both edits are known to be applicable.
+func flushSidecarUnset(localPath, updated string, write bool) (bool, error) {
+	if !write {
+		return false, nil
+	}
+	if err := os.WriteFile(localPath, []byte(updated), 0o600); err != nil {
+		return false, fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
+	}
+	return true, nil
 }
 
 // TrackedYamlValueFor reports a machine-local key's value still present in the

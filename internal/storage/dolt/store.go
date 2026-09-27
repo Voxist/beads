@@ -2398,13 +2398,17 @@ func (s *DoltStore) verifyProjectIdentity(ctx context.Context, beadsDir string, 
 // Upstream's identity_mismatch_message_test.go asserts the contiguous string
 // "PROJECT IDENTITY MISMATCH — refusing to connect", so the fork's old trick of
 // interpolating the sentinel as ": %w" inside the header cannot be applied to
-// upstream's wording -- it would split that string and fail their test. But the
-// fork's automated fallback paths (beads_cgo.go, beads_nocgo.go,
-// open_backend.go) detect this condition with
-// errors.Is(err, storage.ErrStoreIdentityMismatch) and fall back instead of
-// silently serving the wrong or freshly created database, so losing the wrap
-// would be a SILENT behavior change -- a resync auto-merge that compiles and
-// quietly stops falling back.
+// upstream's wording -- it would split that string and fail their test.
+//
+// Why keep the wrap at all, stated accurately: storage.ErrStoreIdentityMismatch
+// is EXPORTED API, and internal/storage/storage.go documents that the detailed
+// open errors wrap it so callers can detect a mismatch without string matching.
+// An earlier version of this comment claimed beads_cgo.go, beads_nocgo.go and
+// open_backend.go branch on it with errors.Is; they do NOT -- they cite it in
+// prose and propagate the error unchanged, and nothing in this tree calls
+// errors.Is on it today. The wrap is kept because dropping it would silently
+// break that documented exported contract for any consumer that does, and
+// because a resync auto-merge can drop it while still compiling.
 //
 // Unwrap() []error keeps both: Error() is upstream's message verbatim, and
 // errors.Is finds the sentinel as well as anything upstream itself wrapped.

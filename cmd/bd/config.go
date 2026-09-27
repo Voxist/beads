@@ -1061,12 +1061,15 @@ Examples:
 				if config.IsUserGlobalKey(p.key) {
 					location = config.UserConfigYamlDisplayPath()
 				} else if config.IsYamlOnlyKey(p.key) {
-					// set-many goes through the same SetYamlConfig, so a
-					// machine-local key lands in the sidecar here too. Naming
-					// config.yaml sent the operator to a file that is
-					// byte-identical — the misattribution the rest of this
-					// change removes, surviving in the one writer that was
-					// missed.
+					// set-many ROUTES per key (see the write above), so a
+					// machine-local key lands in the sidecar and must be
+					// reported as such. Naming config.yaml would send the
+					// operator to a file that does not hold the value.
+					//
+					// This comment used to say set-many "goes through the same
+					// SetYamlConfig"; that stopped being true when the fork
+					// adopted upstream's design (b) and SetYamlConfig became
+					// literal.
 					location = "config.yaml"
 					if config.IsMachineLocalKey(p.key) {
 						location = config.LocalConfigFileName

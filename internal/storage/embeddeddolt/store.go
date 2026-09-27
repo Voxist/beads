@@ -638,7 +638,16 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 	// controls; schema.MigrateUpWithLock requires a sql-server session lock.
 	if _, err := schema.MigrateUp(ctx, conn); err != nil {
 		var frozenErr *schema.MigrationFrozenError
-		if s.intent != openStrict && errors.As(err, &frozenErr) {
+		// Name the intent explicitly rather than saying "not openStrict".
+		// Upstream's toleratesMigrationRefusal doc calls that phrasing out by
+		// name as "what would have silently enrolled" openRemoteSync, and
+		// openRemoteSync documents that it relaxes exactly ONE refusal (the
+		// data-behind gate) "and nothing else" -- a freeze is not that refusal.
+		// openWorkingSetReconcile is excluded too: it exists for `bd dolt
+		// commit`/`bd vc commit`, which are writes, and stopping writes is the
+		// whole purpose of a freeze. That leaves exactly the case this branch's
+		// warning already claims to be handling: a read-only command.
+		if s.intent == openReadOnlyCommand && errors.As(err, &frozenErr) {
 			// A freeze exists to stop writes and schema changes on this
 			// database, not to stop someone looking at it: the CLI already
 			// refused every write command before this open, and a read

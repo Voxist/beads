@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -419,5 +420,133 @@ func TestUnsetMachineLocalKeyNeverSetCreatesNothing(t *testing.T) {
 
 	if _, err := os.Stat(LocalConfigPathFor(configPath)); !os.IsNotExist(err) {
 		t.Errorf("unset of a never-set key created %s", LocalConfigFileName)
+	}
+}
+
+// sortedRegistryKeys gives MachineLocalKeys a stable order so the guards below
+// produce identical output from identical input.
+func sortedRegistryKeys() []string {
+	out := make([]string, 0, len(MachineLocalKeys))
+	for k := range MachineLocalKeys {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestSidecarWritesAreValidatedLikeTrackedWrites pins that routing a key to the
+// sidecar does not cost it its validation.
+//
+// This is a real regression that shipped and was caught in review: when the
+// routing moved from the library writers to the callers, the sidecar writer had
+// no validateYamlConfigValue call, so `bd config set dolt.mode bogus` — refused
+// by SetYamlConfigInDir — was accepted here and, because the sidecar is merged
+// last, the bad value became the LIVE one. A validator a caller escapes by
+// choosing a destination is not a validator.
+func TestSidecarWritesAreValidatedLikeTrackedWrites(t *testing.T) {
+	rejected := map[string]string{
+		"dolt.mode":  "bogus",     // neither server nor embedded
+		"dolt.debug": "sometimes", // neither true nor false
+	}
+	sawRejected := 0
+	for key, bad := range rejected {
+		t.Run(key, func(t *testing.T) {
+			if !IsMachineLocalKey(key) {
+				t.Fatalf("%s is not in MachineLocalKeys; this test's premise is stale", key)
+			}
+			beadsDir, _, localPath := newWorkspace(t, trackedConfigFixture)
+
+			// The literal writer's verdict is the control. If it accepts the
+			// value there is no refusal to match and this row proves nothing.
+			trackedErr := SetYamlConfigInDir(beadsDir, key, bad)
+			localErr := SetMachineLocalYamlConfigInDir(beadsDir, key, bad)
+			if trackedErr == nil {
+				t.Skipf("SetYamlConfigInDir accepts %s=%q, so there is no refusal to match", key, bad)
+			}
+			sawRejected++
+			if localErr == nil {
+				t.Fatalf("SetYamlConfigInDir refused %s=%q (%v) but the sidecar writer accepted it", key, bad, trackedErr)
+			}
+			if data, err := os.ReadFile(localPath); err == nil && strings.Contains(string(data), bad) {
+				t.Errorf("rejected value reached the sidecar anyway:\n%s", data)
+			}
+		})
+	}
+	if sawRejected == 0 {
+		t.Fatal("no row exercised a refusal; the test proved nothing")
+	}
+}
+
+// TestSidecarWritersRefuseSharedKeys is the other half of the registry
+// contract: SaveConfigValue refuses to put a machine-local key in the tracked
+// file, and this refuses to put a shared key in the sidecar. Together they make
+// MachineLocalKeys the single decision point in BOTH directions, so the split
+// cannot be re-created by a caller picking a function.
+func TestSidecarWritersRefuseSharedKeys(t *testing.T) {
+	for _, key := range []string{"dolt.auto-start", "dolt.max-conns", "export.auto", "issue_prefix"} {
+		t.Run(key, func(t *testing.T) {
+			if IsMachineLocalKey(key) {
+				t.Fatalf("%s is in MachineLocalKeys; this test's premise is stale", key)
+			}
+			beadsDir, configPath, localPath := newWorkspace(t, trackedConfigFixture)
+			before := readFile(t, configPath)
+
+			if err := SetMachineLocalYamlConfigInDir(beadsDir, key, sampleValueFor(key)); err == nil {
+				t.Errorf("SetMachineLocalYamlConfigInDir(%s) succeeded; it must refuse a shared key", key)
+			}
+			if after := readFile(t, configPath); after != before {
+				t.Errorf("config.yaml was modified despite the refusal:\n%s", after)
+			}
+			if data, err := os.ReadFile(localPath); err == nil && strings.Contains(string(data), key) {
+				t.Errorf("%s reached the sidecar despite the refusal:\n%s", key, data)
+			}
+		})
+	}
+}
+
+// TestSidecarWritersStillAcceptEveryRegistryKey is the control for both guards:
+// it fails if either is applied too broadly and starts rejecting the keys the
+// sidecar exists to hold.
+func TestSidecarWritersStillAcceptEveryRegistryKey(t *testing.T) {
+	for _, key := range sortedRegistryKeys() {
+		t.Run(key, func(t *testing.T) {
+			beadsDir, _, localPath := newWorkspace(t, trackedConfigFixture)
+			if err := SetMachineLocalYamlConfigInDir(beadsDir, key, sampleValueFor(key)); err != nil {
+				t.Fatalf("SetMachineLocalYamlConfigInDir(%s): %v", key, err)
+			}
+			if !strings.Contains(readFile(t, localPath), sampleValueFor(key)) {
+				t.Errorf("%s was not written to the sidecar:\n%s", key, readFile(t, localPath))
+			}
+		})
+	}
+}
+
+// TestUnsetLeavesBothFilesAloneWhenTheTrackedShapeIsRefused pins the ordering
+// fix found in review.
+//
+// commentOutYamlKeyAnyForm can REFUSE a shape (#6574's unsupportedUnsetShape).
+// The unset used to write the sidecar first and only then discover the refusal,
+// so it exited non-zero having already deleted the operator's machine-local
+// override — told them it failed, and did half of it anyway. A refusal must
+// leave BOTH files exactly as they were.
+func TestUnsetLeavesBothFilesAloneWhenTheTrackedShapeIsRefused(t *testing.T) {
+	// A flow mapping is the shape the line-based editor cannot touch.
+	beadsDir, configPath, localPath := newWorkspace(t, "issue_prefix: vp\ndolt: {mode: server}\n")
+	if err := SetMachineLocalYamlConfigInDir(beadsDir, "dolt.mode", "embedded"); err != nil {
+		t.Fatalf("seed sidecar: %v", err)
+	}
+	trackedBefore := readFile(t, configPath)
+	localBefore := readFile(t, localPath)
+
+	_, _, _, err := unsetMachineLocalYamlConfig(configPath, "dolt.mode")
+	if err == nil {
+		t.Skip("the tracked shape was not refused; this test's premise is stale")
+	}
+
+	if got := readFile(t, configPath); got != trackedBefore {
+		t.Errorf("config.yaml changed despite the refusal:\n--- before ---\n%s\n--- after ---\n%s", trackedBefore, got)
+	}
+	if got := readFile(t, localPath); got != localBefore {
+		t.Errorf("the machine-local override was cleared even though the unset failed:\n--- before ---\n%s\n--- after ---\n%s", localBefore, got)
 	}
 }

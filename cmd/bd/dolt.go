@@ -751,9 +751,14 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 			err       error
 		)
 		if usesProxiedServer() {
-			// Proxied mode never opens a store — the root pre-run returns
-			// before newDoltStore — so getStore() is nil here and the UOW
-			// provider is the only handle on the server. This is the flush
+			// Proxied mode routes through the UOW provider here. Upstream's
+			// wording for this branch said "proxied mode never opens a store
+			// ... so getStore() is nil here"; that invariant is NOT true in
+			// this fork, whose root pre-run does install a routed store in
+			// proxied mode (cmd/bd/main.go, newProxiedServerRoutedStore). The
+			// branch is still correct because it keys on usesProxiedServer()
+			// rather than on the store being nil — but do not build on the
+			// nil-store claim. This is the flush
 			// point dolt.auto-commit=batch/off defers to on that route
 			// (GH#4995). The message is built above so both routes name the
 			// same default.
