@@ -84,7 +84,7 @@ var MachineLocalKeys = map[string]bool{
 // project, and so must be written to the untracked sidecar. Exact match only —
 // see MachineLocalKeys.
 func IsMachineLocalKey(key string) bool {
-	return MachineLocalKeys[normalizeYamlKey(key)]
+	return MachineLocalKeys[key]
 }
 
 // LocalConfigPathFor returns the sidecar path beside the given config.yaml.
@@ -111,7 +111,7 @@ func setMachineLocalYamlConfig(configPath, key, value string) error {
 	// commented out; committing the result sends every other clone back to
 	// embedded storage — a different, empty database. Leaving the tracked file
 	// alone costs nothing, because precedence already does the job.
-	return setSidecarYamlKey(localPath, normalizeYamlKey(key), value)
+	return setSidecarYamlKey(localPath, key, value)
 }
 
 // setSidecarYamlKey writes a key into the sidecar in the FLAT dotted form,
@@ -152,11 +152,15 @@ func setSidecarYamlKey(localPath, key, value string) error {
 // only an explicit edit should remove.
 func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, clearedTracked, clearedLocal bool, err error) {
 	localPath := LocalConfigPathFor(configPath)
-	normalized := normalizeYamlKey(key)
+	normalized := key
 
 	// Clear this machine's override first.
 	if content, readErr := os.ReadFile(localPath); readErr == nil { //nolint:gosec // localPath derives from a resolved config.yaml path
-		if updated := commentOutYamlKeyAnyForm(string(content), normalized); updated != string(content) {
+		updated, unsetErr := commentOutYamlKeyAnyForm(string(content), normalized)
+		if unsetErr != nil {
+			return "", false, false, unsetErr
+		}
+		if updated != string(content) {
 			if writeErr := os.WriteFile(localPath, []byte(updated), 0o600); writeErr != nil {
 				return "", false, false, fmt.Errorf("failed to write %s: %w", LocalConfigFileName, writeErr)
 			}
@@ -192,7 +196,10 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 	// FLOW mapping (`dolt: {mode: server}`). Reporting clearedTracked=false
 	// there is what lets the caller say nothing was removed, instead of
 	// printing success and a side-effect consequence that did not happen.
-	updated := commentOutYamlKeyAnyForm(string(trackedRaw), normalized)
+	updated, unsetErr := commentOutYamlKeyAnyForm(string(trackedRaw), normalized)
+	if unsetErr != nil {
+		return "", false, clearedLocal, unsetErr
+	}
 	if updated == string(trackedRaw) {
 		return "", false, clearedLocal, nil
 	}
@@ -215,7 +222,7 @@ func TrackedYamlValueFor(configPath, key string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return yamlValueInContent(string(raw), normalizeYamlKey(key))
+	return yamlValueInContent(string(raw), key)
 }
 
 // ensureSidecarIgnored adds exactly the config.local.yaml line to
@@ -298,5 +305,5 @@ func MachineLocalYamlValue(key string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return readYamlValueAtPath(LocalConfigPathFor(configPath), normalizeYamlKey(key))
+	return readYamlValueAtPath(LocalConfigPathFor(configPath), key)
 }
