@@ -638,16 +638,16 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 	// controls; schema.MigrateUpWithLock requires a sql-server session lock.
 	if _, err := schema.MigrateUp(ctx, conn); err != nil {
 		var frozenErr *schema.MigrationFrozenError
-		// Name the intent explicitly rather than saying "not openStrict".
-		// Upstream's toleratesMigrationRefusal doc calls that phrasing out by
-		// name as "what would have silently enrolled" openRemoteSync, and
-		// openRemoteSync documents that it relaxes exactly ONE refusal (the
-		// data-behind gate) "and nothing else" -- a freeze is not that refusal.
-		// openWorkingSetReconcile is excluded too: it exists for `bd dolt
-		// commit`/`bd vc commit`, which are writes, and stopping writes is the
-		// whole purpose of a freeze. That leaves exactly the case this branch's
-		// warning already claims to be handling: a read-only command.
-		if s.intent == openReadOnlyCommand && errors.As(err, &frozenErr) {
+		// Use upstream's predicate rather than "not openStrict". That phrasing
+		// is what its doc calls out by name as "what would have silently
+		// enrolled" openRemoteSync -- an intent that documents relaxing exactly
+		// ONE refusal (the data-behind gate) "and nothing else", and a freeze is
+		// not that refusal. toleratesMigrationRefusal is openReadOnlyCommand or
+		// openWorkingSetReconcile, which is the set this branch actually wants:
+		// TestEmbeddedMigrationFreezeGate asserts OpenForWorkingSetReconcile
+		// must succeed under a freeze, because that open exists to CLEAR a dirty
+		// working set and failing it would deadlock the documented recovery.
+		if s.toleratesMigrationRefusal() && errors.As(err, &frozenErr) {
 			// A freeze exists to stop writes and schema changes on this
 			// database, not to stop someone looking at it: the CLI already
 			// refused every write command before this open, and a read
@@ -656,7 +656,7 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 			// precisely the thing a freeze is for.
 			fmt.Fprintf(os.Stderr,
 				"Warning: %v\n"+
-					"  Read-only command: continuing on schema v%d without migrating.\n"+
+					"  Non-migrating command: continuing on schema v%d without migrating.\n"+
 					"  Writes are refused until the freeze is cleared.\n",
 				frozenErr, frozenErr.CurrentVersion)
 			return nil
