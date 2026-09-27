@@ -289,6 +289,31 @@ func yamlValueInContent(content, key string) (string, bool) {
 	return yamlValueFromBytes([]byte(content), key)
 }
 
+// SetMachineLocalYamlConfig writes key to the machine-local sidecar beside the
+// project config.yaml the caller is standing in.
+//
+// This is the EXPLICIT half of the machine-local split (bd-zj95 / upstream
+// #6125). The library's own writers -- SetYamlConfig, SetYamlConfigInDir,
+// UnsetYamlConfig -- deliberately write exactly where they are told, so a
+// caller that names a file gets that file and upstream #6574's dotted-key
+// round-trip guarantees hold unchanged. The ROUTING decision belongs to the
+// caller that knows the user's intent: `bd config set` (single and set-many),
+// `bd dolt set --update-config` and `bd init --debug` each pick between this
+// and a literal writer via IsMachineLocalKey.
+func SetMachineLocalYamlConfig(key, value string) error {
+	configPath, err := findProjectConfigYaml()
+	if err != nil {
+		return err
+	}
+	return setMachineLocalYamlConfig(configPath, key, value)
+}
+
+// SetMachineLocalYamlConfigInDir is SetMachineLocalYamlConfig for a named
+// workspace, for callers that already hold the beads dir.
+func SetMachineLocalYamlConfigInDir(beadsDir, key, value string) error {
+	return setMachineLocalYamlConfig(filepath.Join(beadsDir, "config.yaml"), key, value)
+}
+
 // MachineLocalYamlValue reads a key from the project's config.local.yaml ONLY,
 // never the tracked config.yaml.
 //

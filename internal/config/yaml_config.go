@@ -282,11 +282,6 @@ func SetYamlConfig(key, value string) error {
 		return err
 	}
 
-	// Machine-local keys never touch the git-tracked config.yaml.
-	if IsMachineLocalKey(key) {
-		return setMachineLocalYamlConfig(configPath, key, value)
-	}
-
 	return setYamlConfigAtPath(configPath, key, value)
 }
 
@@ -306,11 +301,6 @@ func SetYamlConfigInDir(beadsDir, key, value string) error {
 			return fmt.Errorf("no config.yaml found in %s (run 'bd init' first)", beadsDir)
 		}
 		return fmt.Errorf("failed to stat config.yaml: %w", err)
-	}
-
-	// Machine-local keys never touch the git-tracked config.yaml.
-	if IsMachineLocalKey(key) {
-		return setMachineLocalYamlConfig(configPath, key, value)
 	}
 
 	return setYamlConfigAtPath(configPath, key, value)
@@ -668,14 +658,6 @@ func UnsetYamlConfigReporting(key string) (trackedValue string, clearedTracked, 
 func UnsetYamlConfig(key string) error {
 	configPath, err := findProjectConfigYaml()
 	if err != nil {
-		return err
-	}
-
-	// A machine-local key is cleared from the sidecar AND from the tracked
-	// config.yaml — see UnsetYamlConfigReporting for why, and use that variant
-	// when the caller can tell the operator which files it touched.
-	if IsMachineLocalKey(key) {
-		_, _, _, err := unsetMachineLocalYamlConfig(configPath, key)
 		return err
 	}
 

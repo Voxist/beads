@@ -75,13 +75,25 @@ func TestMachineLocalKeysNeverReachTrackedConfig(t *testing.T) {
 	// differently — SetYamlConfig discovers it, SetYamlConfigInDir is handed
 	// it — and `bd config set`, the command that produced the reported
 	// defect, goes through the discovering one.
+	// The ROUTING writers, not the literal ones. Since the fork adopted
+	// upstream's design (b), SetYamlConfig/SetYamlConfigInDir write exactly
+	// where they are told -- that literalness is what keeps upstream #6574's
+	// dotted-key round-trip suite honest -- and the routing lives at the
+	// callers (`bd config set`, `bd dolt set --update-config`,
+	// `bd init --debug`). The invariant this test protects is unchanged:
+	// a machine-local key must never dirty the tracked config.yaml. What
+	// changed is which function is responsible for honouring it.
+	//
+	// cmd/bd's TestNoLiteralWriterWritesAMachineLocalKey is the other half:
+	// it fails the build if any caller hands a machine-local key to a literal
+	// writer, which is the mistake this test can no longer catch.
 	writers := map[string]func(t *testing.T, beadsDir, key, value string) error{
-		"SetYamlConfigInDir": func(_ *testing.T, beadsDir, key, value string) error {
-			return SetYamlConfigInDir(beadsDir, key, value)
+		"SetMachineLocalYamlConfigInDir": func(_ *testing.T, beadsDir, key, value string) error {
+			return SetMachineLocalYamlConfigInDir(beadsDir, key, value)
 		},
-		"SetYamlConfig": func(t *testing.T, beadsDir, key, value string) error {
+		"SetMachineLocalYamlConfig": func(t *testing.T, beadsDir, key, value string) error {
 			t.Setenv("BEADS_DIR", beadsDir)
-			return SetYamlConfig(key, value)
+			return SetMachineLocalYamlConfig(key, value)
 		},
 	}
 
@@ -128,8 +140,17 @@ func TestSharedKeysStillReachTrackedConfig(t *testing.T) {
 				t.Fatalf("SetYamlConfigInDir(%s): %v", tc.key, err)
 			}
 
-			if after := readFile(t, configPath); after == before {
-				t.Errorf("config.yaml unchanged after writing SHARED key %q; it must still be written there", tc.key)
+			// Assert the VALUE is in the tracked file, not merely that the
+			// bytes changed. The fixture already carries
+			// `dolt.auto-start: false` with a trailing comment, so writing the
+			// same value is a legitimate no-op byte-wise -- and this assertion
+			// used to pass only because the fork's writer destroyed that
+			// trailing comment. Upstream's writer preserves it (that is what
+			// TestDottedSetKeepsTheTrailingCommentOnTheKeyItRewrites pins), so
+			// "bytes changed" was measuring the bug, not the contract.
+			if got, ok := yamlValueInContent(readFile(t, configPath), tc.key); !ok || got != tc.value {
+				t.Errorf("shared key %q reads back from config.yaml as %q (present=%v), want %q\n--- before ---\n%s\n--- after ---\n%s",
+					tc.key, got, ok, tc.value, before, readFile(t, configPath))
 			}
 			if _, err := os.Stat(localPath); err == nil {
 				t.Errorf("writing shared key %q created %s; only machine-local keys belong there", tc.key, LocalConfigFileName)
@@ -279,7 +300,11 @@ func TestCommentOutYamlKeyAnyForm(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := commentOutYamlKeyAnyForm(tc.content, tc.key); got != tc.want {
+			got, err := commentOutYamlKeyAnyForm(tc.content, tc.key)
+			if err != nil {
+				t.Fatalf("commentOutYamlKeyAnyForm(): %v", err)
+			}
+			if got != tc.want {
 				t.Errorf("commentOutYamlKeyAnyForm()\ngot:\n%s\nwant:\n%s", got, tc.want)
 			}
 		})

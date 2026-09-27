@@ -1785,7 +1785,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 
 			if debugMode {
-				if err := config.SetYamlConfig("dolt.debug", "true"); err != nil {
+				if err := config.SetMachineLocalYamlConfig("dolt.debug", "true"); err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to persist dolt.debug: %v\n", err)
 				} else if !quiet {
 					serverDir := doltserver.ResolveServerDir(beadsDir)

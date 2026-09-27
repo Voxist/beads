@@ -207,10 +207,13 @@ var configSetCmd = &cobra.Command{
 			if config.IsUserGlobalKey(key) {
 				setErr = config.SetUserYamlConfig(key, value)
 				location = config.UserConfigYamlDisplayPath()
+			} else if config.IsMachineLocalKey(key) {
+				// The CLI owns the routing decision; the library writers write
+				// exactly where they are told, which is what keeps #6574's
+				// round-trip suite honest (bd-zj95 / upstream #6125).
+				location = config.LocalConfigFileName
+				setErr = config.SetMachineLocalYamlConfig(key, value)
 			} else {
-				if config.IsMachineLocalKey(key) {
-					location = config.LocalConfigFileName
-				}
 				setErr = config.SetYamlConfig(key, value)
 			}
 			if setErr != nil {
@@ -996,6 +999,11 @@ Examples:
 			var setErr error
 			if config.IsUserGlobalKey(p.key) {
 				setErr = config.SetUserYamlConfig(p.key, p.value)
+			} else if config.IsMachineLocalKey(p.key) {
+				// set-many routes per key, exactly as the single-key path does.
+				// Reporting below already labels these config.local.yaml, so a
+				// literal write here would have made that label a lie.
+				setErr = config.SetMachineLocalYamlConfig(p.key, p.value)
 			} else {
 				setErr = config.SetYamlConfig(p.key, p.value)
 			}
