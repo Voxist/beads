@@ -10,6 +10,17 @@
 
 # Global prefilter — skip binary/vendor/node_modules paths before regex.
 # Reduces scan time and eliminates noisy false positives.
+#
+# `go.sum` is deliberately included: it holds base64 SHA-256 module content
+# hashes, not secrets — high entropy by construction, so `generic-api-key`
+# flags every line. Measured on this repo's full upstream history
+# (pre-PR scan for bead vp-ty88y): 47/47 findings were `generic-api-key`
+# hits inside go.sum/examples/*/go.sum, zero true positives. Without this
+# exclusion, any future PR or resync that bumps a Go dependency would add a
+# new go.sum line and reliably retrigger the same false positive, which
+# would make a required `secret-scan` check unusable for routine dependency
+# bumps — a structural issue, not a one-off resync exception, hence it lives
+# here rather than in the resync allowlist below.
 prefilter = '''
 matchesAny(attributes[?"path"].orValue(""), [
   r"""(?i)\.(?:bmp|gif|jpe?g|png|svg|tiff|pdf|exe|dll|so|dylib|woff2?|ttf|eot|ico|mp3|mp4|wav|ogg|webm|zip|tar\.gz|tgz)$""",
@@ -17,7 +28,8 @@ matchesAny(attributes[?"path"].orValue(""), [
   r"""(?:^|/)vendor(?:/.*)?$""",
   r"""(?:^|/)\.git(?:/.*)?$""",
   r"""(?:^|/)__pycache__(?:/.*)?$""",
-  r"""(?:^|/)\.beads/(?:metadata\.json|config\.yaml|interactions\.jsonl)$"""
+  r"""(?:^|/)\.beads/(?:metadata\.json|config\.yaml|interactions\.jsonl)$""",
+  r"""(?:^|/)go\.sum$"""
 ])
 '''
 
