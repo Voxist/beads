@@ -1,0 +1,93 @@
+# Voxist betterleaks configuration for the Voxist/beads fork (bead vp-ty88y).
+#
+# This file lives at a path upstream (gastownhall/beads) never touches, so a
+# resync from upstream never conflicts with it. Modeled on the shared Voxist
+# pack config (see voxist-platform packs/voxist-city and
+# livetranslate-webrtc's .betterleaks.toml, bead vc-yb93).
+#
+# BETTERLEAKS_VERSION: pinned to v1.3.1 (vetted 2026-05-30, T-000 va-qp3).
+# See voxist-platform SECURITY-SUPPLY-CHAIN.md §12 for pinning policy.
+
+# Global prefilter — skip binary/vendor/node_modules paths before regex.
+# Reduces scan time and eliminates noisy false positives.
+#
+# `go.sum` is deliberately included: it holds base64 SHA-256 module content
+# hashes, not secrets — high entropy by construction, so `generic-api-key`
+# flags every line. Measured on this repo's full upstream history
+# (pre-PR scan for bead vp-ty88y): 47/47 findings were `generic-api-key`
+# hits inside go.sum/examples/*/go.sum, zero true positives. Without this
+# exclusion, any future PR or resync that bumps a Go dependency would add a
+# new go.sum line and reliably retrigger the same false positive, which
+# would make a required `secret-scan` check unusable for routine dependency
+# bumps — a structural issue, not a one-off resync exception, hence it lives
+# here rather than in the resync allowlist below.
+prefilter = '''
+matchesAny(attributes[?"path"].orValue(""), [
+  r"""(?i)\.(?:bmp|gif|jpe?g|png|svg|tiff|pdf|exe|dll|so|dylib|woff2?|ttf|eot|ico|mp3|mp4|wav|ogg|webm|zip|tar\.gz|tgz)$""",
+  r"""(?:^|/)node_modules(?:/.*)?$""",
+  r"""(?:^|/)vendor(?:/.*)?$""",
+  r"""(?:^|/)\.git(?:/.*)?$""",
+  r"""(?:^|/)__pycache__(?:/.*)?$""",
+  r"""(?:^|/)\.beads/(?:metadata\.json|config\.yaml|interactions\.jsonl)$""",
+  r"""(?:^|/)go\.sum$"""
+])
+'''
+
+# Global post-match filter — remove known placeholder patterns, plus specific
+# public identifiers that are caught on entropy alone.
+#
+# "9d1c250a-e61b-44d9-88ed-5944d1962f5e" is the PUBLIC Claude Code OAuth
+# client id, shipped in the CLI binary and required by the refresh grant in
+# voxist-platform's packs/voxist-city/bin/provider-health-probe. A client id
+# is not a credential: it identifies the application, it authorises nothing,
+# and the OAuth refresh grant is useless without the refresh token that is
+# never committed. It is a 36-char UUID, so `generic-api-key` flags it on
+# entropy. Listed as the exact literal so nothing else is suppressed with it
+# (bead vc-zacb).
+filter = '''
+containsAny(finding["secret"], [
+  "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+  "EXAMPLE",
+  "CHANGEME",
+  "YOUR_API_KEY_HERE",
+  "INSERT_",
+  "FIXME",
+  "TODO",
+  "0000000000000000",
+  "XXXXXXXXXXXXXXXX",
+  "xxxxxxxxxxxxxxxx",
+  "sk-placeholder",
+  "test-key-do-not-use",
+  "fake-secret"
+])
+|| finding["secret"].size() < 8
+'''
+
+# Restore the built-in ruleset. `--config` REPLACES the default config
+# rather than extending it — a config carrying only prefilter/filter would
+# scan with an EMPTY ruleset: it reads every byte, matches nothing, and
+# reports green even with a real secret committed. See voxist-platform bead
+# vp-gwww5 and docs/betterleaks-setup.md.
+[extend]
+useDefault = true
+
+# --- Resync allowlist -------------------------------------------------
+#
+# This section exists so a future `bfork/main <- origin/main` resync PR can
+# unblock itself WITHOUT touching the two sections above. If the resync
+# brings in an upstream commit that trips a real finding against upstream's
+# own test fixtures, example keys in docs, or similar known-safe content,
+# add a `[[allowlists]]` path entry below in THAT resync PR — do not loosen
+# the global `filter`/`prefilter` for a single upstream file.
+#
+# Each entry needs a `paths` regex and a one-line reason. Keep entries
+# narrow (a fixture directory or a specific doc file), not broad globs.
+#
+# Currently empty: nothing upstream has tripped a finding yet.
+#
+# Example (uncomment and adapt when actually needed):
+# [[allowlists]]
+# description = "upstream test fixtures with fake credentials — <link to resync PR / upstream commit>"
+# paths = [
+#   r"""(?:^|/)testdata/(?:.*)$""",
+# ]
