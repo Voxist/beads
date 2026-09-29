@@ -59,3 +59,116 @@ func TestClassifySharedServerStartErrorSkipsOnAutoStartDisabled(t *testing.T) {
 		})
 	}
 }
+
+// TestInitSharedGlobalDatabase pins the three cases named in ga-dpbbw's
+// review that classifySharedServerStartError alone does not cover, because
+// it only tests the classification, not what the CALLER does with it. Before
+// this test existed, re-adding a skip or an early return anywhere in
+// initSharedGlobalDatabase's switch (the exact shape of the bug this whole
+// PR fixes in bd init) kept every other test in this package green -- these
+// assert on ensureGlobal actually being invoked or not, and on fatalErr,
+// which classifySharedServerStartError's own return value cannot show.
+func TestInitSharedGlobalDatabase(t *testing.T) {
+	sentinelGlobalErr := errors.New("dial tcp: connection refused")
+	sentinelFatalErr := errors.New("dolt is not installed (not found in PATH)")
+
+	t.Run("ErrAutoStartDisabled, reachable: ensureGlobal called, succeeds, no fatal error", func(t *testing.T) {
+		var globalCalls int
+		result := initSharedGlobalDatabase(false,
+			func() (*doltserver.State, error) { return nil, doltserver.ErrAutoStartDisabled },
+			func() error { globalCalls++; return nil },
+		)
+		if globalCalls != 1 {
+			t.Errorf("ensureGlobal called %d times, want 1", globalCalls)
+		}
+		if !result.globalCalled {
+			t.Error("result.globalCalled = false, want true")
+		}
+		if result.globalErr != nil {
+			t.Errorf("result.globalErr = %v, want nil", result.globalErr)
+		}
+		if result.fatalErr != nil {
+			t.Errorf("result.fatalErr = %v, want nil", result.fatalErr)
+		}
+		if result.startOutcome != sharedGlobalDBSkip {
+			t.Errorf("result.startOutcome = %v, want sharedGlobalDBSkip", result.startOutcome)
+		}
+	})
+
+	t.Run("ErrAutoStartDisabled, unreachable: ensureGlobal called, warning only, no fatal error", func(t *testing.T) {
+		var globalCalls int
+		result := initSharedGlobalDatabase(false,
+			func() (*doltserver.State, error) { return nil, doltserver.ErrAutoStartDisabled },
+			func() error { globalCalls++; return sentinelGlobalErr },
+		)
+		if globalCalls != 1 {
+			t.Errorf("ensureGlobal called %d times, want 1", globalCalls)
+		}
+		if !result.globalCalled {
+			t.Error("result.globalCalled = false, want true")
+		}
+		if !errors.Is(result.globalErr, sentinelGlobalErr) {
+			t.Errorf("result.globalErr = %v, want %v", result.globalErr, sentinelGlobalErr)
+		}
+		if result.fatalErr != nil {
+			t.Errorf("result.fatalErr = %v, want nil -- an unreachable server must warn, not fail bd init", result.fatalErr)
+		}
+	})
+
+	t.Run("other start error: fatal, ensureGlobal NOT called", func(t *testing.T) {
+		var globalCalls int
+		result := initSharedGlobalDatabase(false,
+			func() (*doltserver.State, error) { return nil, sentinelFatalErr },
+			func() error { globalCalls++; return nil },
+		)
+		if globalCalls != 0 {
+			t.Errorf("ensureGlobal called %d times, want 0 -- must not run after a genuine Start failure", globalCalls)
+		}
+		if result.globalCalled {
+			t.Error("result.globalCalled = true, want false")
+		}
+		if !errors.Is(result.fatalErr, sentinelFatalErr) {
+			t.Errorf("result.fatalErr = %v, want %v", result.fatalErr, sentinelFatalErr)
+		}
+		if result.startOutcome != sharedGlobalDBFatal {
+			t.Errorf("result.startOutcome = %v, want sharedGlobalDBFatal", result.startOutcome)
+		}
+	})
+
+	t.Run("nil start error: proceeds, ensureGlobal called", func(t *testing.T) {
+		var startCalls, globalCalls int
+		result := initSharedGlobalDatabase(false,
+			func() (*doltserver.State, error) { startCalls++; return &doltserver.State{Running: true}, nil },
+			func() error { globalCalls++; return nil },
+		)
+		if startCalls != 1 {
+			t.Errorf("start called %d times, want 1", startCalls)
+		}
+		if globalCalls != 1 {
+			t.Errorf("ensureGlobal called %d times, want 1", globalCalls)
+		}
+		if result.startOutcome != sharedGlobalDBProceed {
+			t.Errorf("result.startOutcome = %v, want sharedGlobalDBProceed", result.startOutcome)
+		}
+		if result.fatalErr != nil {
+			t.Errorf("result.fatalErr = %v, want nil", result.fatalErr)
+		}
+	})
+
+	t.Run("alreadyRunning: start never called, ensureGlobal still called", func(t *testing.T) {
+		var startCalls, globalCalls int
+		result := initSharedGlobalDatabase(true,
+			func() (*doltserver.State, error) { startCalls++; return nil, errors.New("must not be called") },
+			func() error { globalCalls++; return nil },
+		)
+		if startCalls != 0 {
+			t.Errorf("start called %d times, want 0 -- alreadyRunning must skip it entirely", startCalls)
+		}
+		if globalCalls != 1 {
+			t.Errorf("ensureGlobal called %d times, want 1", globalCalls)
+		}
+		if !result.globalCalled {
+			t.Error("result.globalCalled = false, want true")
+		}
+	})
+}

@@ -268,6 +268,65 @@ func classifySharedServerStartError(err error) sharedGlobalDBStartOutcome {
 	}
 }
 
+// sharedGlobalDBResult reports what initSharedGlobalDatabase actually did, so
+// its caller can print the right lines (respecting --quiet) without the
+// decision logic itself needing to know about printing or exit codes.
+type sharedGlobalDBResult struct {
+	// startOutcome classifies the (possibly skipped) Start attempt; see
+	// sharedGlobalDBStartOutcome. Left at its zero value, sharedGlobalDBProceed,
+	// when Start was never called because the server was already running.
+	startOutcome sharedGlobalDBStartOutcome
+	// fatalErr is set only when startOutcome == sharedGlobalDBFatal. The
+	// caller must exit bd init on this; ensureGlobal is never called when
+	// fatalErr is set.
+	fatalErr error
+	// globalCalled reports whether ensureGlobal was invoked at all. It is
+	// true for every startOutcome except sharedGlobalDBFatal.
+	globalCalled bool
+	// globalErr is ensureGlobal's return value when globalCalled is true;
+	// meaningless (always nil) otherwise. A non-nil globalErr is reported as
+	// a warning, never a fatal exit -- this mirrors doltserver.EnsureGlobalDatabase's
+	// own contract of connecting only, never spawning, so failure here just
+	// means the target was unreachable, not that anything went wrong.
+	globalErr error
+}
+
+// initSharedGlobalDatabase is bd init's shared-global-database bootstrap,
+// extracted so its DECISION logic (when to call Start, when to call
+// EnsureGlobalDatabase, when to treat a Start failure as fatal) is testable
+// without a real dolt binary, network, or filesystem -- start and
+// ensureGlobal are injected for exactly that reason. See
+// TestInitSharedGlobalDatabase for the three cases this pins, named during
+// ga-dpbbw's review:
+//  1. ErrAutoStartDisabled from start, ensureGlobal succeeds (the directory
+//     is reachable despite bd declining to start it) -> globalCalled=true,
+//     globalErr=nil, fatalErr=nil.
+//  2. ErrAutoStartDisabled from start, ensureGlobal fails (unreachable) ->
+//     globalCalled=true, globalErr set, fatalErr STILL nil -- a warning, not
+//     a fatal exit.
+//  3. Any OTHER start error -> fatalErr set, globalCalled=false: ensureGlobal
+//     must never be attempted after a genuine Start failure.
+//
+// alreadyRunning skips calling start entirely (the caller already knows the
+// server is up via its own IsRunning check) but still calls ensureGlobal --
+// matching the base behavior of running EnsureGlobalDatabase on every bd
+// init regardless of whether Start ran.
+func initSharedGlobalDatabase(alreadyRunning bool, start func() (*doltserver.State, error), ensureGlobal func() error) sharedGlobalDBResult {
+	result := sharedGlobalDBResult{startOutcome: sharedGlobalDBProceed}
+	if !alreadyRunning {
+		_, startErr := start()
+		result.startOutcome = classifySharedServerStartError(startErr)
+		if result.startOutcome == sharedGlobalDBFatal {
+			result.fatalErr = startErr
+			return result
+		}
+	}
+
+	result.globalCalled = true
+	result.globalErr = ensureGlobal()
+	return result
+}
+
 // warnHalfIdentifiedSubstrate reports a substrate carrying one identity marker
 // and not the other.
 //
@@ -1479,62 +1538,65 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if !externalServer && shouldInitSharedGlobalDB(sharedServer, doltserver.IsSharedServerMode(), doltCfg.Gateway) {
 			if sharedDir, err := doltserver.SharedServerDir(); err == nil {
 				state, _ := doltserver.IsRunning(sharedDir)
-				if state == nil || !state.Running {
-					_, startErr := doltserver.Start(sharedDir)
-					switch classifySharedServerStartError(startErr) {
-					case sharedGlobalDBSkip:
-						// The shared server directory's own auto-start
-						// policy forbids spawning it here. It may still be
-						// an externally-managed server that is already up
-						// (systemd, etc.) and simply has no bd-tracked PID
-						// file -- IsRunning above only checked that file, so
-						// "not running" here means "not running under bd",
-						// not "unreachable". Do NOT skip EnsureGlobalDatabase
-						// below on this signal (ga-dpbbw follow-up): it only
-						// CONNECTS and never spawns, so falling through is
-						// safe, and skipping it here would regress the case
-						// Start used to handle by adopting the existing
-						// listener via reclaimPort.
-						if !quiet {
-							fmt.Fprintf(os.Stderr, "%s Shared Dolt server auto-start is disabled; not starting it, but still checking whether it's reachable\n", ui.RenderWarn("!"))
-						}
-					case sharedGlobalDBFatal:
-						fmt.Fprintf(os.Stderr, "Error: failed to start shared Dolt server: %v\n", startErr)
-						return &exitError{Code: 1}
-					default: // sharedGlobalDBProceed
-						if !quiet {
-							fmt.Printf("  %s Shared Dolt server started\n", ui.RenderPass("✓"))
-						}
-					}
-				} else if debugMode {
+				alreadyRunning := state != nil && state.Running
+				if alreadyRunning && debugMode {
 					fmt.Fprintf(os.Stderr, "Warning: shared Dolt server (PID %d, port %d) is already running without debug flags.\n", state.PID, state.Port)
 					fmt.Fprintf(os.Stderr, "  Restart to pick up debug mode:\n")
 					fmt.Fprintf(os.Stderr, "    bd dolt stop && bd dolt start\n")
 				}
-			}
 
-			// Ensure the global beads_global database exists on the shared server.
-			// This is idempotent — safe to run on every init, and safe even
-			// when the block above declined to start the server: this call
-			// only CONNECTS (CREATE DATABASE IF NOT EXISTS over an existing
-			// connection), it never spawns anything.
-			globalHost := configfile.DefaultDoltServerHost
-			if serverHost != "" {
-				globalHost = serverHost
-			}
-			globalPort := initPort
-			if globalPort == 0 {
-				globalPort = doltserver.DefaultSharedServerPort
-			}
-			globalUser := configfile.DefaultDoltServerUser
-			if serverUser != "" {
-				globalUser = serverUser
-			}
-			if err := doltserver.EnsureGlobalDatabase(globalHost, globalPort, globalUser, ""); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to create global database: %v\n", err)
-				// Non-fatal — project init should succeed even if global DB creation fails
-			} else if !quiet {
-				fmt.Printf("  %s Global database %s available\n", ui.RenderPass("✓"), doltserver.GlobalDatabaseName)
+				globalHost := configfile.DefaultDoltServerHost
+				if serverHost != "" {
+					globalHost = serverHost
+				}
+				globalPort := initPort
+				if globalPort == 0 {
+					globalPort = doltserver.DefaultSharedServerPort
+				}
+				globalUser := configfile.DefaultDoltServerUser
+				if serverUser != "" {
+					globalUser = serverUser
+				}
+
+				result := initSharedGlobalDatabase(alreadyRunning,
+					func() (*doltserver.State, error) { return doltserver.Start(sharedDir) },
+					func() error { return doltserver.EnsureGlobalDatabase(globalHost, globalPort, globalUser, "") },
+				)
+
+				switch result.startOutcome {
+				case sharedGlobalDBSkip:
+					// The shared server directory's own auto-start policy
+					// forbids spawning it here. It may still be an
+					// externally-managed server that is already up
+					// (systemd, etc.) and simply has no bd-tracked PID file
+					// -- the IsRunning check above only looked at that file,
+					// so "not alreadyRunning" here means "not running under
+					// bd", not "unreachable". initSharedGlobalDatabase does
+					// NOT skip ensureGlobal on this signal (ga-dpbbw
+					// follow-up): EnsureGlobalDatabase only CONNECTS and
+					// never spawns, so calling it is safe, and skipping it
+					// here would regress the case Start used to handle by
+					// silently adopting an existing listener via reclaimPort.
+					if !quiet {
+						fmt.Fprintf(os.Stderr, "%s Shared Dolt server auto-start is disabled; not starting it, but still checking whether it's reachable\n", ui.RenderWarn("!"))
+					}
+				case sharedGlobalDBFatal:
+					fmt.Fprintf(os.Stderr, "Error: failed to start shared Dolt server: %v\n", result.fatalErr)
+					return &exitError{Code: 1}
+				default: // sharedGlobalDBProceed
+					if !alreadyRunning && !quiet {
+						fmt.Printf("  %s Shared Dolt server started\n", ui.RenderPass("✓"))
+					}
+				}
+
+				if result.globalCalled {
+					if result.globalErr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to create global database: %v\n", result.globalErr)
+						// Non-fatal — project init should succeed even if global DB creation fails
+					} else if !quiet {
+						fmt.Printf("  %s Global database %s available\n", ui.RenderPass("✓"), doltserver.GlobalDatabaseName)
+					}
+				}
 			}
 		}
 

@@ -57,21 +57,27 @@ var ErrServerNotRunning = errors.New("dolt server is not running")
 //
 // Start is the only function that spawns a bd-MANAGED, non-proxied dolt
 // sql-server, and before this existed the refusal was hand-applied at each
-// call site instead: a caller that forgot the check (or a new call site)
-// reached a fully ungated Start. This makes the check part of Start itself,
-// so every implicit caller of Start inherits it by construction. It does
-// NOT cover the proxied backend (internal/storage/dbproxy/server.DoltServer,
+// call site that applied it at all instead -- which was only two of Start's
+// four call sites (applyServer, EnsureRunningDetailed); bd init's shared-
+// global-database block had no check whatsoever, and the explicit `bd dolt
+// start` deliberately had none by design. A caller that forgot the check
+// (or a new call site) reached a fully ungated Start. This makes the check
+// part of Start itself, so every implicit caller of Start inherits it by
+// construction. It does NOT cover the proxied backend
+// (internal/storage/dbproxy/server.DoltServer,
 // spawned by `bd db-proxy-child` via internal/storage/dbproxy/proxy),
 // which spawns its own `dolt sql-server` through a completely separate
-// path with no auto-start policy check at all -- see ga-dpbbw's follow-up
-// bead for that gap.
+// path with no auto-start policy check at all -- see ga-kcebr for that gap.
 //
-// Callers on an implicit path (bd init's shared-global-database block,
-// config_apply's applyServer) should use errors.Is against this sentinel
+// Callers on an implicit path should use errors.Is against this sentinel
 // and treat it as "skip starting this directory" -- the directory is not
-// broken, it is just not bd's to start; the target may still be reachable
-// as an externally-managed server, which is why those callers still
-// attempt a plain connection afterward rather than giving up outright.
+// broken, it is just not bd's to start. What each caller does next differs:
+// bd init's shared-global-database block still attempts a plain connection
+// afterward (EnsureGlobalDatabase, which only connects and never spawns),
+// since the target may still be reachable as an externally-managed server;
+// config_apply's applyServer does not attempt anything further -- it simply
+// reports the skip as its ApplyResult and stops, matching what its own
+// pre-check (the common case) already does.
 //
 // EnsureRunningDetailed does NOT surface this sentinel: it has its own
 // equivalent auto-start check ahead of calling Start (consulting the same

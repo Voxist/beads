@@ -105,12 +105,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gap" left open by the ga-rpgvw entry above: `Start` was the only function
   that spawns a bd-MANAGED, non-proxied `dolt sql-server` (the proxied
   backend spawns its own server through a separate path with no policy check
-  at all — see the known gaps below), and the policy was hand-applied at
-  four call sites (`bd dolt start`, `bd init`'s shared-global-database block,
-  `bd config apply`'s `applyServer`, `EnsureRunningDetailed`) plus the
-  `KillStaleServers` reap inside `Start`'s own lock — a fifth call site, or a
-  caller that simply forgot the check, would have reached a fully ungated
-  `Start`. Motivated in part by a 2026-09-29 near-miss (ga-xuapz): a session
+  at all — see the known gaps below). `Start` had four call sites, and the
+  policy was hand-applied at only TWO of them: `bd config apply`'s
+  `applyServer` and `EnsureRunningDetailed` both checked
+  `IsAutoStartDisabledFor` before calling `Start`. `bd init`'s shared-
+  global-database block had no check at all — a real gap, not a design
+  choice, and the thing the paragraph below this one fixes — and `bd dolt
+  start` deliberately had none by design, since it is the explicit override
+  this change gives its own name (`StartExplicit`) rather than removing.
+  Plus the `KillStaleServers` reap inside `Start`'s own lock — a fifth call
+  site, or a caller that simply forgot the check, would have reached a fully
+  ungated `Start`. Motivated in part by a 2026-09-29 near-miss (ga-xuapz): a session
   in a different workspace ran the EXPLICIT `bd dolt start`, which this
   change deliberately leaves ungated by design (see `StartExplicit` below),
   and briefly bound a live city's shared Dolt port with an empty server. This
@@ -153,6 +158,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already-reachable server" case the old unconditional `Start` used to cover
   by accident, while still respecting the policy for the spawn itself. Any
   other `Start` failure still exits `bd init`, matching prior behavior.
+
+  Worth being explicit about rather than leaving implicit: on the skip path,
+  `EnsureGlobalDatabase` still runs `CREATE DATABASE IF NOT EXISTS
+  beads_global` against whatever is listening at the target host:port,
+  including a genuinely external, bd-unaware server. This is UNCHANGED from
+  base behavior — `EnsureGlobalDatabase` always ran unconditionally after the
+  old unconditional `Start` call — not a new write introduced by this PR; it
+  is called out here because the skip path is new, and it would be easy to
+  assume "skipped starting" also means "skipped touching the server," which
+  it does not.
 
   Known gaps, deliberately NOT closed here, each filed as its own bead
   (discovered-from ga-dpbbw) rather than folded in silently:

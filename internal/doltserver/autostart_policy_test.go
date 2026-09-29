@@ -165,14 +165,18 @@ func TestImplicitPathsRefuseToSpawnWhenWorkspaceDisablesAutoStart(t *testing.T) 
 }
 
 // TestStartRefusesWhenItsOwnDirectoryDisablesAutoStart pins the ga-dpbbw
-// funnel: Start(beadsDir) is the ONLY function that spawns a dolt sql-server,
-// and it must refuse on its own -- before doing anything else -- when
-// beadsDir's own auto-start policy says no. Before this fix the refusal was
-// hand-applied at each call site (EnsureRunningDetailed, applyServer, bd
-// init's shared-global-database block); a caller that forgot the check, or a
-// new fifth call site, reached a fully ungated Start. Routing the check
-// through Start itself means there is no route to a spawned server that does
-// not pass through it.
+// funnel: Start(beadsDir) is the ONLY function that spawns a bd-MANAGED,
+// non-proxied dolt sql-server (the proxied backend spawns its own through a
+// separate path -- ga-kcebr), and it must refuse on its own -- before doing
+// anything else -- when beadsDir's own auto-start policy says no. Before
+// this fix Start had four call sites and the check was hand-applied at only
+// TWO of them (EnsureRunningDetailed, applyServer); bd init's shared-global-
+// database block had no check at all (a real gap, not a design choice), and
+// bd dolt start deliberately had none by design (it is the explicit
+// override). A caller that forgot the check, or a new fifth call site,
+// reached a fully ungated Start. Routing the check through Start itself
+// means there is no route to a spawned server that does not pass through
+// it.
 //
 // The refusal must arrive as ErrAutoStartDisabled (errors.Is) and must arrive
 // before the dolt binary is even looked up, so this test needs no dolt on
@@ -245,6 +249,25 @@ func TestStartRefusesForSharedServerDirWithItsOwnConfig(t *testing.T) {
 	}
 	if !errors.Is(err, ErrAutoStartDisabled) {
 		t.Errorf("Start error does not wrap ErrAutoStartDisabled: %v", err)
+	}
+
+	// Control, so this test cannot pass vacuously: prove the refusal above
+	// came from sharedDir's config.yaml specifically, not from some ambient
+	// env var or leaked global viper state that would have disabled
+	// auto-start regardless of that file's content. Rewriting the SAME file
+	// under the SAME env to a value that does NOT disable auto-start must
+	// flip the policy read back to "enabled" -- if it didn't, the refusal
+	// above would have been caused by something else, and this test would
+	// have "passed" without ever exercising the shared-server config.yaml
+	// path at all. Checked via IsAutoStartDisabledFor directly rather than
+	// a second Start call, so the control never spawns a process itself.
+	if err := os.WriteFile(filepath.Join(sharedDir, "config.yaml"), []byte("dolt.auto-start: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if IsAutoStartDisabledFor(sharedDir) {
+		t.Fatal("control failed: IsAutoStartDisabledFor(sharedDir) is still true after rewriting config.yaml to " +
+			"dolt.auto-start: true -- the earlier refusal was not actually caused by this file's content " +
+			"(ambient env or global config may be disabling auto-start on its own), so this test proves nothing")
 	}
 }
 
