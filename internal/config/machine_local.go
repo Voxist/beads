@@ -7,10 +7,11 @@ import (
 	"strings"
 )
 
-// LocalConfigFileName is the untracked sidecar that sits beside a project's
-// .beads/config.yaml. Initialize() already merges it LAST, so a value here
-// wins over the tracked config.yaml for the same key.
-const LocalConfigFileName = "config.local.yaml"
+// LocalConfigFileName moved to config.go when upstream adopted the same
+// constant with the identical value ("config.local.yaml"). Declaring it here
+// too would be a redeclaration, so this file now uses upstream's. The sidecar
+// still behaves as this package documents: Initialize() merges it LAST, so a
+// value there wins over the tracked config.yaml for the same key.
 
 const localConfigHeader = `# bd machine-local configuration.
 #

@@ -29,6 +29,7 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "doltserver_exit_unix_test.go",
         "doltserver_test.go",
         "external_dolt_server_test.go",
         "testmain_test.go",
@@ -47,3 +48,16 @@ go_test(
         "@com_github_stretchr_testify//require",
     ],
 )
+
+# --- begin go_srcs (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        allow_empty = True,
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+# --- end go_srcs ---

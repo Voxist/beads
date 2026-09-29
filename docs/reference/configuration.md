@@ -100,9 +100,11 @@ The full namespaces routed to YAML are:
 
 Plus these individual keys:
 
-`no-db`, `json`, `db`, `actor`, `identity`, `no-push`, `no-git-ops`, `agent.profile`, `create.require-description`, `import.auto`, `import.path`, `prime.max-memories`, `prime.max-memory-chars`, and the secret keys `github.token`, `gitlab.token`, `jira.api_token`, `ado.pat`, `linear.api_key`, `linear.oauth_client_id`, `linear.oauth_client_secret`.
+`no-db`, `json`, `db`, `actor`, `identity`, `no-push`, `no-git-ops`, `agent.profile`, `create.require-description`, `import.auto`, `import.path`, `prime.max-memories`, `prime.max-memory-chars`, and the secret keys `github.token`, `gitlab.token`, `jira.api_token`, `ado.pat`, `linear.api_key`, `linear.oauth_client_id`, `linear.oauth_client_secret`, `notion.token`.
 
 Any key whose name contains `api_key`, `api-key`, `secret`, `token`, or `password` is treated as a secret: it is refused on git-tracked `config.yaml` files unless you pass `--force-git-tracked`. Prefer exporting the value as an environment variable instead (e.g. `LINEAR_API_KEY`).
+
+`bd config unset` on one of these secret keys clears the `config.yaml` entry and also deletes any copy an older bd stored in the database, reporting which of them it removed. Keys reached YAML routing at different points in bd's history, so a workspace configured before the move can still hold the value in a table that `bd dolt push` replicates. The database half is best effort: the command never creates a database to look in, so it is skipped where reaching the row would mean provisioning one — but not for a server-mode or proxied workspace whose database is real and simply not on local disk; a database that refuses the delete is reported as a row that is still stored. Deleting it locally does not unpublish it — rotate a secret that has already been pushed.
 
 ## Tool-Level Settings (config.yaml)
 
@@ -432,7 +434,7 @@ federation:
 
 ## Integration Configuration
 
-Tracker settings are project-level config under the tracker's namespace; secrets (`jira.api_token`, `linear.api_key`, `github.token`, `gitlab.token`, `ado.pat`) are YAML-routed and better supplied as environment variables. Every tracker records `<tracker>.last_sync` automatically after a sync, enabling incremental syncs.
+Tracker settings are project-level config under the tracker's namespace; secrets (`jira.api_token`, `linear.api_key`, `github.token`, `gitlab.token`, `ado.pat`, `notion.token`) are YAML-routed and better supplied as environment variables. Every tracker records `<tracker>.last_sync` automatically after a sync, enabling incremental syncs.
 
 ### Jira
 
@@ -514,6 +516,7 @@ Selected commonly-used variables:
 | `BD_DEBUG` | Enable debug logging |
 | `BD_MIGRATION_FREEZE_FILE` | Check this exact path for the freeze marker instead of walking ancestor directories; authoritative when set (see [Migration Freeze](#migration-freeze)) |
 | `BEADS_DIR` | Force the active beads workspace directory |
+| `BEADS_CEILING_DIRECTORIES` | Directories (separated like `PATH`) that `.beads` and `config.yaml` discovery never looks at or above, like git's `GIT_CEILING_DIRECTORIES`; the starting directory is always examined. For sandboxes such as `bazel test` that must not reach the user's own `~/.beads` |
 | `BEADS_ACTOR` | Actor identity (preferred over `BD_ACTOR`, which is a deprecated alias) |
 | `BEADS_IDENTITY` | Sender identity for `bd mail` |
 | `BEADS_FSCK_TIMEOUT` | Runtime-only timeout for the pre-push `dolt fsck --quiet` integrity check (default `30s`) |
