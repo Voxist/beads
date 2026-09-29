@@ -105,22 +105,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gap" left open by the ga-rpgvw entry above: `Start` was the only function
   that spawns a bd-MANAGED, non-proxied `dolt sql-server` (the proxied
   backend spawns its own server through a separate path with no policy check
-  at all — see the known gaps below). `Start` had four call sites, and the
-  policy was hand-applied at only TWO of them: `bd config apply`'s
-  `applyServer` and `EnsureRunningDetailed` both checked
-  `IsAutoStartDisabledFor` before calling `Start`. `bd init`'s shared-
-  global-database block had no check at all — a real gap, not a design
-  choice, and the thing the paragraph below this one fixes — and `bd dolt
+  at all — see the known gaps below).
+
+  `Start` had four call sites, and the policy was hand-applied at only TWO
+  of them: `bd config apply`'s `applyServer` and `EnsureRunningDetailed`
+  both checked `IsAutoStartDisabledFor` before calling `Start`. `bd init`'s
+  shared-global-database block had no check at all — a real gap, not a
+  design choice, and the thing a later paragraph below fixes — and `bd dolt
   start` deliberately had none by design, since it is the explicit override
   this change gives its own name (`StartExplicit`) rather than removing.
-  Plus the `KillStaleServers` reap inside `Start`'s own lock — a fifth call
-  site, or a caller that simply forgot the check, would have reached a fully
-  ungated `Start`. Motivated in part by a 2026-09-29 near-miss (ga-xuapz): a session
-  in a different workspace ran the EXPLICIT `bd dolt start`, which this
-  change deliberately leaves ungated by design (see `StartExplicit` below),
-  and briefly bound a live city's shared Dolt port with an empty server. This
-  change does not itself prevent that incident — see the known gaps below and
-  ga-y1s8x — but it is what that incident's report escalated ahead of.
+  There was also a fifth path INSIDE `Start` itself: the `KillStaleServers`
+  reap under `Start`'s own lock. Any caller that simply forgot the check, or
+  any new call site, would have reached a fully ungated `Start`.
+
+  Motivated in part by a 2026-09-29 near-miss (ga-xuapz): a session in a
+  different workspace ran the EXPLICIT `bd dolt start`, which this change
+  deliberately leaves ungated by design (see `StartExplicit` below), and
+  briefly bound a live city's shared Dolt port with an empty server. This
+  change does not itself prevent that incident — see the known gaps below
+  and ga-y1s8x — but it is what that incident's report escalated ahead of.
 
   The refusal is now inside `Start(beadsDir)` itself, resolved from
   `beadsDir` — the directory actually being started, which for a caller
@@ -131,13 +134,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and before spawning anything. The one caller that must bypass this policy —
   `bd dolt start`, which asks for a server by name — now calls the new
   `StartExplicit`, making the exception visible in the function it calls
-  rather than implied by a comment at the call site. An AST-based pair of
-  tests (`TestOnlyDoltStartCallsStartExplicit`,
-  `TestNoInternalDoltserverBypassOfStartInternal`) pins that no production
-  call site anywhere in the module — including an aliased import, a bare
-  method value, another command in the same file, or a same-package wrapper
-  around the unexported `startInternal(dir, true)` — can reach the bypass
-  except through that one function.
+  rather than implied by a comment at the call site.
+
+  Three AST-based guard tests pin how far this is enforced, each named for
+  what it actually scans: `TestOnlyDoltStartCallsStartExplicit` (every other
+  package in the module — including through an aliased import, a bare
+  method value, or another command in the same file as `bd dolt start`),
+  `TestNoInternalDoltserverBypassOfStartInternal` (no function OR METHOD
+  inside `doltserver` itself, other than the one receiver-less
+  `StartExplicit`, may call the unexported `startInternal(dir, true)`), and
+  `TestNoInternalDoltserverReferencesStartExplicitOutsideOwnDeclaration`
+  (nothing inside `doltserver` itself may reference `StartExplicit` as a
+  bare identifier outside that one declaration, whether or not it's called).
+  Together they catch every concrete bypass shape found during review,
+  including a method also literally named `StartExplicit`
+  (`func (Recovery) StartExplicit(dir string) (*State, error)`, called
+  elsewhere as `r.StartExplicit(dir)`) — each reproduced against the code
+  and confirmed caught before the probe was reverted. What they do NOT catch,
+  because it needs type-checking or dataflow analysis rather than a
+  syntactic AST walk: a reference or call laundered through a plain function
+  value (`var f = startInternal`), a parenthesized call
+  (`(startInternal)(dir, true)`), a boolean laundered through a variable
+  (`forced := true; startInternal(dir, forced)`), or a `//go:linkname`
+  directive binding a symbol straight to an unexported function through the
+  linker. See each test's own doc comment for the full list.
 
   Note on `~/.beads/shared-server/config.yaml`: `Start`'s gate is honoured
   there exactly as it is for any other directory, but **nothing in bd today
@@ -150,24 +170,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bd init`'s shared-global-database block had NO auto-start check at all on
   the base commit — `doltserver.Start(sharedDir)` would spawn a new server or
   silently ADOPT an already-listening one (via `reclaimPort`) regardless of
-  policy, and any failure for any reason exited `bd init` with code 1. It now
-  classifies the `Start` result: on `ErrAutoStartDisabled` it stops trying to
-  START the server, but still falls through to `EnsureGlobalDatabase`
-  afterward exactly as before, because that call only opens a connection and
-  never spawns anything — this preserves the "adopt an externally-managed,
-  already-reachable server" case the old unconditional `Start` used to cover
-  by accident, while still respecting the policy for the spawn itself. Any
-  other `Start` failure still exits `bd init`, matching prior behavior.
+  policy, and any failure for any reason exited `bd init` with code 1. The
+  new `initSharedGlobalDatabase` helper classifies the `Start` result: on
+  `ErrAutoStartDisabled` it stops trying to START the server, but still
+  falls through to `EnsureGlobalDatabase` afterward exactly as before,
+  because that call only opens a connection and never spawns anything —
+  this preserves the "adopt an externally-managed, already-reachable
+  server" case the old unconditional `Start` used to cover by accident,
+  while still respecting the policy for the spawn itself. Any other `Start`
+  failure still exits `bd init`, matching prior behavior. The same helper is
+  also used when `doltserver.SharedServerDir()` itself fails (no `sharedDir`
+  to build a `Start` call from at all) — base still ran
+  `EnsureGlobalDatabase` unconditionally in that case too, since it never
+  took `sharedDir` as a parameter, and a first pass at this refactor
+  regressed that by nesting `EnsureGlobalDatabase` inside the same `if
+  sharedDir, err := ...; err == nil` block as `Start`; fixed before merge,
+  with a warning printed for the swallowed `SharedServerDir` error instead
+  of silence.
 
-  Worth being explicit about rather than leaving implicit: on the skip path,
-  `EnsureGlobalDatabase` still runs `CREATE DATABASE IF NOT EXISTS
-  beads_global` against whatever is listening at the target host:port,
-  including a genuinely external, bd-unaware server. This is UNCHANGED from
-  base behavior — `EnsureGlobalDatabase` always ran unconditionally after the
-  old unconditional `Start` call — not a new write introduced by this PR; it
-  is called out here because the skip path is new, and it would be easy to
-  assume "skipped starting" also means "skipped touching the server," which
-  it does not.
+  Precisely what changed and what didn't, since "ran unconditionally" reads
+  differently depending which call it's about: `EnsureGlobalDatabase` runs
+  unconditionally in every non-fatal case, on both base and here — that part
+  is unchanged. `Start` was never unconditional on either base or here — it
+  only ever ran when the server did not already appear to be running (the
+  preceding `IsRunning` check). What's new is only the classification of
+  `Start`'s OWN failures, not whether it gets called at all. On the
+  `ErrAutoStartDisabled` skip path specifically, `EnsureGlobalDatabase`
+  still runs `CREATE DATABASE IF NOT EXISTS beads_global` against whatever
+  is listening at the target host:port, including a genuinely external,
+  bd-unaware server — worth being explicit about, since "skipped starting"
+  could easily be misread as "skipped touching the server," which it does
+  not.
 
   Known gaps, deliberately NOT closed here, each filed as its own bead
   (discovered-from ga-dpbbw) rather than folded in silently:

@@ -100,12 +100,18 @@ func TestOnlyDoltStartCallsStartExplicit(t *testing.T) {
 		}
 		rel = filepath.ToSlash(rel)
 
-		// internal/doltserver can never IMPORT itself, so it can never match
-		// the alias resolution below -- it would only ever reference
-		// StartExplicit as a bare same-package identifier, which the sibling
-		// tests named in this function's doc police instead. Skipping the
-		// directory here is purely an optimization, not a safety exclusion.
-		if strings.HasPrefix(rel, "internal/doltserver/") {
+		// internal/doltserver ITSELF can never import itself, so its own
+		// files can never match the alias resolution below -- they would
+		// only ever reference StartExplicit as a bare same-package
+		// identifier, which the sibling tests named in this function's doc
+		// police instead. Scoped to files DIRECTLY in that directory, not
+		// the whole "internal/doltserver/" prefix: a SUBPACKAGE (e.g. a
+		// hypothetical internal/doltserver/foo) is a DIFFERENT package that
+		// could legitimately import and reference doltserver.StartExplicit
+		// from the outside, exactly like any other caller in the module --
+		// excluding the whole prefix would have silently exempted it too,
+		// which would have been a real safety gap, not an optimization.
+		if filepath.Dir(rel) == "internal/doltserver" {
 			return nil
 		}
 
@@ -278,15 +284,34 @@ func findDoltserverStartExplicitRefs(file *ast.File, localNames []string, dotImp
 	return refs
 }
 
+// funcDeclLabel identifies fd for the "am I inside the allowed declaration"
+// comparisons below. A RECEIVER-LESS function named "StartExplicit" labels
+// as exactly "StartExplicit". Anything else -- including a METHOD also
+// named StartExplicit, e.g. `func (Recovery) StartExplicit(dir string)
+// (*State, error)` -- gets a label that can never equal "StartExplicit",
+// because a same-named method is a completely different declaration and
+// must never be mistaken for the one funnel exception. Comparing only
+// fd.Name.Name (ignoring fd.Recv) was exactly this gap: it let a method
+// literally named StartExplicit satisfy an `enclosingFuncDecl ==
+// "StartExplicit"` check meant for the package-level function of that name
+// (ga-dpbbw L1).
+func funcDeclLabel(fd *ast.FuncDecl) string {
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return fd.Name.Name
+	}
+	return "(method, not the funnel exception) " + fd.Name.Name
+}
+
 // funcDeclScopedVisitor walks an *ast.File (or subtree) tracking which
 // top-level FuncDecl, if any, lexically encloses the current node -- NOT
 // which function LITERAL encloses it. A func literal nested inside a
 // FuncDecl's body is still considered "inside" that FuncDecl for this
 // purpose; only crossing into a NEW top-level FuncDecl changes the tracked
-// name, and code that is not inside any FuncDecl at all (a package-level var
-// initializer, including one whose value is itself a func literal) is
-// tracked as enclosingFuncDecl == "" and is NEVER treated as being "inside"
-// any named function.
+// label (see funcDeclLabel for how a method is distinguished from a
+// receiver-less function of the same name), and code that is not inside any
+// FuncDecl at all (a package-level var initializer, including one whose
+// value is itself a func literal) is tracked as enclosingFuncDecl == "" and
+// is NEVER treated as being "inside" any named function.
 type funcDeclScopedVisitor struct {
 	enclosingFuncDecl string
 	visit             func(n ast.Node, enclosingFuncDecl string)
@@ -301,22 +326,72 @@ func (v *funcDeclScopedVisitor) Visit(n ast.Node) ast.Visitor {
 		if fd.Body == nil {
 			return nil
 		}
-		child := &funcDeclScopedVisitor{enclosingFuncDecl: fd.Name.Name, visit: v.visit}
+		child := &funcDeclScopedVisitor{enclosingFuncDecl: funcDeclLabel(fd), visit: v.visit}
 		ast.Walk(child, fd.Body)
 		return nil // already walked the body manually above; don't double-walk it
 	}
 	return v
 }
 
+// parseInternalDoltserver parses internal/doltserver's production (non-test)
+// source, shared by the two same-package guard tests below.
+func parseInternalDoltserver(t *testing.T, fset *token.FileSet) map[string]*ast.Package {
+	t.Helper()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	dir := filepath.Join(repoRoot, "internal", "doltserver")
+	pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", dir, err)
+	}
+	return pkgs
+}
+
+// receiverlessStartExplicitDecls returns the *ast.Ident.Pos() of every
+// RECEIVER-LESS `func StartExplicit(...)` declaration across pkgs. Excluding
+// methods here (fd.Recv != nil) is exactly the fix for ga-dpbbw L1: a method
+// also named StartExplicit, e.g. `func (Recovery) StartExplicit(dir string)
+// (*State, error)`, is a distinct declaration and must never be treated as
+// THE funnel exception just because its name string matches.
+//
+// Callers should assert this returns exactly one position: internal/doltserver
+// is expected to declare precisely one receiver-less StartExplicit, and a
+// count of zero or more than one means the assumption these guard tests are
+// built on (a single, unambiguous, well-known declaration to exempt) no
+// longer holds -- which the tests must fail loudly on rather than silently
+// picking one arbitrarily.
+func receiverlessStartExplicitDecls(pkgs map[string]*ast.Package) []token.Pos {
+	var positions []token.Pos
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				fd, ok := decl.(*ast.FuncDecl)
+				if !ok || fd.Name.Name != "StartExplicit" {
+					continue
+				}
+				if fd.Recv != nil && len(fd.Recv.List) > 0 {
+					continue // a method, not the funnel exception -- see funcDeclLabel
+				}
+				positions = append(positions, fd.Name.Pos())
+			}
+		}
+	}
+	return positions
+}
+
 // TestNoInternalDoltserverBypassOfStartInternal is a sibling check to
 // TestOnlyDoltStartCallsStartExplicit, scoped to the doltserver package
 // itself: the only function anywhere in internal/doltserver's production
 // (non-test) source allowed to call startInternal(dir, true) -- the literal
-// forced=true bypass -- is StartExplicit itself. A new unexported wrapper
-// added inside the package (e.g. `func startForRecovery(dir string) (*State,
-// error) { return startInternal(dir, true) }`) would never write the string
-// "StartExplicit" and so would be invisible to the whole-module scan above;
-// this catches that shape instead.
+// forced=true bypass -- is the RECEIVER-LESS StartExplicit itself. A new
+// unexported wrapper added inside the package (e.g. `func startForRecovery(
+// dir string) (*State, error) { return startInternal(dir, true) }`) would
+// never write the string "StartExplicit" and so would be invisible to the
+// whole-module scan above; this catches that shape instead.
 //
 // This walks the WHOLE file via funcDeclScopedVisitor, not just each
 // top-level FuncDecl's own Body in isolation -- a call reached only through
@@ -324,28 +399,29 @@ func (v *funcDeclScopedVisitor) Visit(n ast.Node) ast.Visitor {
 // error) { return startInternal(dir, true) }`) is not inside any FuncDecl at
 // all and must still be caught; walking only `range file.Decls` filtered to
 // *ast.FuncDecl would miss it entirely, since that GenDecl/ValueSpec/FuncLit
-// shape is never a FuncDecl.
+// shape is never a FuncDecl. funcDeclLabel additionally makes sure a METHOD
+// named StartExplicit (`func (Recovery) StartExplicit(dir string) (*State,
+// error) { return startInternal(dir, true) }`, called elsewhere as
+// `r.StartExplicit(dir)`) is never mistaken for the real, receiver-less
+// exception just because the name string matches (ga-dpbbw L1) -- proven
+// caught by reproducing exactly that shape and confirming this test fails,
+// before reverting the probe.
 //
-// Like the sibling test, this matches the literal boolean `true` as the
-// second argument. A caller that launders it through a variable (`forced :=
-// true; startInternal(dir, forced)`) is not caught -- proving that requires
-// type-aware dataflow analysis, not an AST walk. That is a known, accepted
-// limitation of this class of test (compare gascity's ga-vsew4, a
-// run-time-assembled string invisible to its own AST funnel test), not an
-// oversight.
+// Known limits, not fixed by construction, documented rather than chased
+// further: a function-VALUE alias (`var f = startInternal; f(dir, true)`),
+// a parenthesized call written as `(startInternal)(dir, true)`, and a
+// launder through a variable (`forced := true; startInternal(dir, forced)`)
+// are all invisible to this literal-shape AST match. Each needs type-aware
+// dataflow analysis to catch, not a syntactic walk -- the same class of gap
+// as gascity's ga-vsew4 (a run-time-assembled string invisible to its own
+// AST funnel test), not an oversight specific to this test.
 func TestNoInternalDoltserverBypassOfStartInternal(t *testing.T) {
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
-	}
-	dir := filepath.Join(repoRoot, "internal", "doltserver")
-
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", dir, err)
+	pkgs := parseInternalDoltserver(t, fset)
+
+	if decls := receiverlessStartExplicitDecls(pkgs); len(decls) != 1 {
+		t.Fatalf("found %d receiver-less `func StartExplicit(...)` declarations in internal/doltserver, want exactly 1 -- "+
+			"this test's exemption logic assumes there is exactly one to exempt", len(decls))
 	}
 
 	var offenders []string
@@ -380,7 +456,7 @@ func TestNoInternalDoltserverBypassOfStartInternal(t *testing.T) {
 	}
 
 	if len(offenders) > 0 {
-		t.Errorf("startInternal(dir, true) called outside StartExplicit: %v\n"+
+		t.Errorf("startInternal(dir, true) called outside the receiver-less StartExplicit: %v\n"+
 			"the forced=true bypass must stay reachable only through the one exported function whose"+
 			" name says so", offenders)
 	}
@@ -399,52 +475,41 @@ func TestNoInternalDoltserverBypassOfStartInternal(t *testing.T) {
 // spelling) AND TestNoInternalDoltserverBypassOfStartInternal (it calls
 // StartExplicit, not startInternal(dir, true), directly). This test closes
 // that gap: any bare *ast.Ident named "StartExplicit" anywhere in
-// internal/doltserver's production source, OTHER than the
+// internal/doltserver's production source, OTHER than the RECEIVER-LESS
 // `func StartExplicit(...)` declaration itself, is an offender -- whether or
 // not it is actually called (a same-package method value, `var f =
 // StartExplicit`, is caught too, matching the cross-package scan's own
 // standard).
+//
+// Uses receiverlessStartExplicitDecls, and asserts it finds exactly one, for
+// the same ga-dpbbw L1 reason as its sibling test: a METHOD also named
+// StartExplicit (`func (Recovery) StartExplicit(dir string) (*State,
+// error)`) is a different declaration and must never be excluded here as if
+// it were the one real exception -- if it were, a reference to THAT method
+// from elsewhere in the package would be silently allowed.
 func TestNoInternalDoltserverReferencesStartExplicitOutsideOwnDeclaration(t *testing.T) {
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
-	}
-	dir := filepath.Join(repoRoot, "internal", "doltserver")
-
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", dir, err)
+	pkgs := parseInternalDoltserver(t, fset)
+
+	decls := receiverlessStartExplicitDecls(pkgs)
+	if len(decls) != 1 {
+		t.Fatalf("found %d receiver-less `func StartExplicit(...)` declarations in internal/doltserver, want exactly 1 -- "+
+			"this test's exemption logic assumes there is exactly one to exempt", len(decls))
 	}
+	declPos := decls[0]
 
 	var offenders []string
-	sawDeclaration := false
 
 	for _, pkg := range pkgs {
 		for filename, file := range pkg.Files {
 			base := filepath.Base(filename)
-
-			// The declaration's own *ast.Ident (fd.Name) is excluded by
-			// position, not by "skip the first match": collect it first so
-			// the generic scan below can recognize and skip exactly that
-			// one identifier, however the file is organized.
-			var declPos token.Pos
-			for _, decl := range file.Decls {
-				if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "StartExplicit" {
-					declPos = fd.Name.Pos()
-					sawDeclaration = true
-				}
-			}
-
 			ast.Inspect(file, func(n ast.Node) bool {
 				ident, ok := n.(*ast.Ident)
 				if !ok || ident.Name != "StartExplicit" {
 					return true
 				}
 				if ident.Pos() == declPos {
-					return true // the declaration itself
+					return true // the one receiver-less declaration itself
 				}
 				pos := fset.Position(ident.Pos())
 				offenders = append(offenders, fmt.Sprintf("%s:%d", base, pos.Line))
@@ -453,12 +518,9 @@ func TestNoInternalDoltserverReferencesStartExplicitOutsideOwnDeclaration(t *tes
 		}
 	}
 
-	if !sawDeclaration {
-		t.Fatal("could not find `func StartExplicit(...)` in internal/doltserver -- has it been renamed or moved?")
-	}
 	if len(offenders) > 0 {
-		t.Errorf("StartExplicit referenced from within internal/doltserver itself, outside its own declaration: %v\n"+
-			"a same-package wrapper around StartExplicit is exactly as much a funnel bypass as one calling"+
+		t.Errorf("StartExplicit referenced from within internal/doltserver itself, outside its own receiver-less declaration: %v\n"+
+			"a same-package wrapper (function OR method) around StartExplicit is exactly as much a funnel bypass as one calling"+
 			" startInternal(dir, true) directly", offenders)
 	}
 }

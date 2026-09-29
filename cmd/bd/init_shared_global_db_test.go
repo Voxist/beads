@@ -171,4 +171,27 @@ func TestInitSharedGlobalDatabase(t *testing.T) {
 			t.Error("result.globalCalled = false, want true")
 		}
 	})
+
+	// alreadyRunning=true with a NIL start func is the exact call shape bd
+	// init's caller uses when doltserver.SharedServerDir() itself fails
+	// (ga-dpbbw L2): there is no sharedDir to build a Start closure from, so
+	// alreadyRunning is forced to true specifically so start is never
+	// dereferenced. On base, EnsureGlobalDatabase ran unconditionally even
+	// when SharedServerDir() failed -- it never took sharedDir as a
+	// parameter -- so this proves the fix doesn't reintroduce that silent
+	// skip via a different route (a nil-start panic would be just as much a
+	// regression as an early return).
+	t.Run("alreadyRunning with nil start: does not panic, ensureGlobal still called", func(t *testing.T) {
+		var globalCalls int
+		result := initSharedGlobalDatabase(true, nil, func() error { globalCalls++; return nil })
+		if globalCalls != 1 {
+			t.Errorf("ensureGlobal called %d times, want 1", globalCalls)
+		}
+		if !result.globalCalled {
+			t.Error("result.globalCalled = false, want true")
+		}
+		if result.fatalErr != nil {
+			t.Errorf("result.fatalErr = %v, want nil", result.fatalErr)
+		}
+	})
 }
