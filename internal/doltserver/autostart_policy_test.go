@@ -1,6 +1,7 @@
 package doltserver
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,6 +162,113 @@ func TestImplicitPathsRefuseToSpawnWhenWorkspaceDisablesAutoStart(t *testing.T) 
 	// pass with the gate deleted, i.e. prove nothing. Making it real needs a PID
 	// file naming a live dolt process, which a unit test must not arrange on a
 	// host running the fleet's server.
+}
+
+// TestStartRefusesWhenItsOwnDirectoryDisablesAutoStart pins the ga-dpbbw
+// funnel: Start(beadsDir) is the ONLY function that spawns a bd-MANAGED,
+// non-proxied dolt sql-server (the proxied backend spawns its own through a
+// separate path -- ga-kcebr), and it must refuse on its own -- before doing
+// anything else -- when beadsDir's own auto-start policy says no. Before
+// this fix Start had four call sites and the check was hand-applied at only
+// TWO of them (EnsureRunningDetailed, applyServer); bd init's shared-global-
+// database block had no check at all (a real gap, not a design choice), and
+// bd dolt start deliberately had none by design (it is the explicit
+// override). A caller that forgot the check, or a new fifth call site,
+// reached a fully ungated Start. Routing the check through Start itself
+// means there is no route to a spawned server that does not pass through
+// it.
+//
+// The refusal must arrive as ErrAutoStartDisabled (errors.Is) and must arrive
+// before the dolt binary is even looked up, so this test needs no dolt on
+// PATH. The cleanup is still registered unconditionally, matching the
+// sibling tests in this file: it costs nothing when the gate holds (its own
+// point), and it is the difference between a clean failure and a leaked dolt
+// process the next time this test regresses.
+//
+// See TestStartExplicit_BypassesAutoStartGate
+// (internal/doltserver/lifecycle_integration_test.go, `integration &&
+// !windows`) for the other half of this pin: the explicit bypass must still
+// spawn a real server. That half needs a real dolt sql-server on every green
+// run, unlike this one, so it lives in the integration tier rather than here.
+func TestStartRefusesWhenItsOwnDirectoryDisablesAutoStart(t *testing.T) {
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	config.ResetForTesting()
+	beadsDir := writeWorkspace(t, "false")
+	serverDir := resolveServerDir(beadsDir)
+
+	t.Cleanup(func() {
+		if state, err := IsRunning(serverDir); err == nil && state != nil && state.Running {
+			t.Errorf("a server was started at %s (pid %d, port %d) despite auto-start being disabled; killing it", serverDir, state.PID, state.Port)
+			if stopErr := StopWithForce(serverDir, true); stopErr != nil {
+				t.Errorf("FAILED TO KILL the leaked server (pid %d): %v -- kill it by hand", state.PID, stopErr)
+			}
+		}
+	})
+
+	state, err := Start(beadsDir)
+	if err == nil {
+		t.Fatalf("Start succeeded (state=%+v) despite beadsDir's own config disabling auto-start", state)
+	}
+	if !errors.Is(err, ErrAutoStartDisabled) {
+		t.Errorf("Start error does not wrap ErrAutoStartDisabled: %v", err)
+	}
+	if _, statErr := os.Stat(pidPath(serverDir)); !os.IsNotExist(statErr) {
+		t.Errorf("Start wrote server state despite refusing to start (pid file stat err: %v)", statErr)
+	}
+}
+
+// TestStartRefusesForSharedServerDirWithItsOwnConfig proves the shared-server
+// half of the same gate is not just theoretical. SharedServerDir() resolves
+// to ~/.beads/shared-server, and nothing in bd today WRITES a config.yaml
+// there (see ErrAutoStartDisabled's doc and the CHANGELOG entry for
+// ga-dpbbw) -- an operator has to place one by hand for this path to ever
+// matter in practice. This test proves the mechanism works once one exists,
+// with BEADS_SHARED_SERVER_DIR pointed at a throwaway directory rather than
+// leaving the claim undemonstrated.
+func TestStartRefusesForSharedServerDirWithItsOwnConfig(t *testing.T) {
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	config.ResetForTesting()
+	sharedDir := t.TempDir()
+	t.Setenv("BEADS_SHARED_SERVER_DIR", sharedDir)
+	if err := os.WriteFile(filepath.Join(sharedDir, "config.yaml"), []byte("dolt.auto-start: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		if state, err := IsRunning(sharedDir); err == nil && state != nil && state.Running {
+			t.Errorf("a server was started at %s (pid %d, port %d) despite the shared-server config disabling auto-start; killing it", sharedDir, state.PID, state.Port)
+			if stopErr := StopWithForce(sharedDir, true); stopErr != nil {
+				t.Errorf("FAILED TO KILL the leaked server (pid %d): %v -- kill it by hand", state.PID, stopErr)
+			}
+		}
+	})
+
+	state, err := Start(sharedDir)
+	if err == nil {
+		t.Fatalf("Start succeeded (state=%+v) despite the shared-server directory's own config disabling auto-start", state)
+	}
+	if !errors.Is(err, ErrAutoStartDisabled) {
+		t.Errorf("Start error does not wrap ErrAutoStartDisabled: %v", err)
+	}
+
+	// Control, so this test cannot pass vacuously: prove the refusal above
+	// came from sharedDir's config.yaml specifically, not from some ambient
+	// env var or leaked global viper state that would have disabled
+	// auto-start regardless of that file's content. Rewriting the SAME file
+	// under the SAME env to a value that does NOT disable auto-start must
+	// flip the policy read back to "enabled" -- if it didn't, the refusal
+	// above would have been caused by something else, and this test would
+	// have "passed" without ever exercising the shared-server config.yaml
+	// path at all. Checked via IsAutoStartDisabledFor directly rather than
+	// a second Start call, so the control never spawns a process itself.
+	if err := os.WriteFile(filepath.Join(sharedDir, "config.yaml"), []byte("dolt.auto-start: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if IsAutoStartDisabledFor(sharedDir) {
+		t.Fatal("control failed: IsAutoStartDisabledFor(sharedDir) is still true after rewriting config.yaml to " +
+			"dolt.auto-start: true -- the earlier refusal was not actually caused by this file's content " +
+			"(ambient env or global config may be disabling auto-start on its own), so this test proves nothing")
+	}
 }
 
 // A value that is neither truthy nor falsy (`dolt.auto-start: disabled`) used
