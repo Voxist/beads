@@ -49,6 +49,7 @@ go_library(
 go_test(
     name = "doltserver_test",
     srcs = [
+        "autostart_policy_test.go",
         "configport_test.go",
         "dirty_state_test.go",
         "doltserver_test.go",
