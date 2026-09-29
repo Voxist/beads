@@ -859,7 +859,11 @@ is running and 'bd dolt stop' to shut it down.`,
 		}
 		serverDir := doltserver.ResolveServerDir(beadsDir)
 
-		state, err := doltserver.Start(serverDir)
+		// StartExplicit, not Start: this command IS the explicit exception
+		// to the auto-start policy -- a human or script asked for a server
+		// by name, so it must start even where dolt.auto-start: false says
+		// bd must not do so implicitly (ga-dpbbw).
+		state, err := doltserver.StartExplicit(serverDir)
 		if err != nil {
 			if strings.Contains(err.Error(), "already running") {
 				fmt.Println(err)

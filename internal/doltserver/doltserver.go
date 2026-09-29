@@ -49,6 +49,49 @@ import (
 // failures (GH#2670).
 var ErrServerNotRunning = errors.New("dolt server is not running")
 
+// ErrAutoStartDisabled is returned by Start when the auto-start policy for
+// the directory being started -- BEADS_DOLT_AUTO_START, the active config,
+// or that directory's own config.yaml, per IsAutoStartDisabledFor -- says
+// bd must not spawn a server there. The directory is treated as externally
+// managed.
+//
+// Start is the only function that spawns a bd-MANAGED, non-proxied dolt
+// sql-server, and before this existed the refusal was hand-applied at each
+// call site that applied it at all instead -- which was only two of Start's
+// four call sites (applyServer, EnsureRunningDetailed); bd init's shared-
+// global-database block had no check whatsoever, and the explicit `bd dolt
+// start` deliberately had none by design. A caller that forgot the check
+// (or a new call site) reached a fully ungated Start. This makes the check
+// part of Start itself, so every implicit caller of Start inherits it by
+// construction. It does NOT cover the proxied backend
+// (internal/storage/dbproxy/server.DoltServer,
+// spawned by `bd db-proxy-child` via internal/storage/dbproxy/proxy),
+// which spawns its own `dolt sql-server` through a completely separate
+// path with no auto-start policy check at all -- see ga-kcebr for that gap.
+//
+// Callers on an implicit path should use errors.Is against this sentinel
+// and treat it as "skip starting this directory" -- the directory is not
+// broken, it is just not bd's to start. What each caller does next differs:
+// bd init's shared-global-database block still attempts a plain connection
+// afterward (EnsureGlobalDatabase, which only connects and never spawns),
+// since the target may still be reachable as an externally-managed server;
+// config_apply's applyServer does not attempt anything further -- it simply
+// reports the skip as its ApplyResult and stops, matching what its own
+// pre-check (the common case) already does.
+//
+// EnsureRunningDetailed does NOT surface this sentinel: it has its own
+// equivalent auto-start check ahead of calling Start (consulting the same
+// IsAutoStartDisabledFor(beadsDir)) and returns its own descriptive,
+// situation-specific error before ever reaching Start, so it never receives
+// ErrAutoStartDisabled via errors.Is in that case. Its refusal already
+// matches Start's decision; Start's own gate exists as the funnel of last
+// resort for callers -- present and future -- that call Start directly
+// without going through EnsureRunningDetailed first.
+//
+// The one caller that must NOT see this error is the explicit `bd dolt
+// start` command, which calls StartExplicit instead of Start.
+var ErrAutoStartDisabled = errors.New("dolt auto-start is disabled for this directory")
+
 // IgnoreNotRunning strips ErrServerNotRunning from err and returns any
 // remaining errors (typically cleanup failures). If the only error was the
 // sentinel, it returns nil. Handles both errors.Join (multi-unwrap) and
@@ -1419,9 +1462,36 @@ func buildDoltServerArgsWithConfig(configPath string, debug bool, profDir string
 	return args
 }
 
-// Start explicitly starts a dolt sql-server for the project.
-// Returns the State of the started server, or an error.
+// Start starts a dolt sql-server for beadsDir, or returns the already-running
+// server's State if one is already up.
+//
+// Start refuses with ErrAutoStartDisabled when beadsDir's own auto-start
+// policy (see IsAutoStartDisabledFor) says no -- it is the single gate every
+// implicit caller inherits; see ErrAutoStartDisabled's doc for why that
+// matters. The one caller that must bypass this policy is the explicit
+// `bd dolt start` command, which calls StartExplicit instead.
 func Start(beadsDir string) (*State, error) {
+	return startInternal(beadsDir, false)
+}
+
+// StartExplicit starts a dolt sql-server for beadsDir even when its
+// auto-start policy says disabled. It exists for exactly one caller: the
+// `bd dolt start` command, where the server was asked for by name. Every
+// implicit path -- one that reaches a server without a human or script
+// asking for it by name -- must call Start instead and treat
+// ErrAutoStartDisabled as "skip this directory." See TestOnlyDoltStartCallsStartExplicit.
+func StartExplicit(beadsDir string) (*State, error) {
+	return startInternal(beadsDir, true)
+}
+
+// startInternal is the shared implementation behind Start and StartExplicit.
+// forced=true is the StartExplicit bypass; forced=false is Start's gated
+// path.
+func startInternal(beadsDir string, forced bool) (*State, error) {
+	if !forced && IsAutoStartDisabledFor(beadsDir) {
+		return nil, fmt.Errorf("%w: %s", ErrAutoStartDisabled, beadsDir)
+	}
+
 	cfg := DefaultConfig(beadsDir)
 	doltDir := ResolveDoltDir(beadsDir)
 
