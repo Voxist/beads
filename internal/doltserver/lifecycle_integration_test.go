@@ -4,6 +4,7 @@ package doltserver_test
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -174,6 +175,53 @@ func TestLifecycle_StartStopCycle(t *testing.T) {
 	if integration.FileExists(portFile) {
 		t.Error("port file still exists after Stop")
 	}
+}
+
+// TestStartExplicit_BypassesAutoStartGate pins the other half of the
+// ga-dpbbw funnel: `bd dolt start` is the one command declared explicit-and-
+// therefore-allowed, and it must call StartExplicit, which bypasses Start's
+// own auto-start gate rather than re-checking the policy and refusing
+// anyway. See doltserver's own autostart_policy_test.go,
+// TestStartRefusesWhenItsOwnDirectoryDisablesAutoStart, for the cheap,
+// no-spawn half of this pin (Start itself DOES refuse).
+//
+// This lives in the integration tier, not the plain unit tier, because
+// unlike that sibling test (which spawns a real server only if the code has
+// regressed), this test spawns one on every green run -- that is the
+// property under test, and it belongs alongside the other real-spawn tests
+// in this file rather than in the fast unit tier.
+func TestStartExplicit_BypassesAutoStartGate(t *testing.T) {
+	beadsDir := setupLifecycleTestDir(t)
+	reg := integration.NewProcessRegistry(t)
+	diag := integration.NewDiagnostics(t, beadsDir)
+	diag.CaptureOnFailure()
+
+	// setupLifecycleTestDir sets BEADS_DOLT_AUTO_START=1; override it to
+	// unset so the workspace's own config.yaml, written below, is what
+	// disables auto-start -- the case this test exists to bypass.
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("dolt.auto-start: false\n"), 0o600); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	state, err := doltserver.StartExplicit(beadsDir)
+	if err != nil {
+		if errors.Is(err, doltserver.ErrAutoStartDisabled) {
+			t.Fatalf("StartExplicit returned ErrAutoStartDisabled; the explicit path must never be gated: %v", err)
+		}
+		t.Fatalf("StartExplicit failed: %v", err)
+	}
+	if state == nil || !state.Running {
+		t.Fatalf("StartExplicit did not report a running server: %+v", state)
+	}
+	if p, err := os.FindProcess(state.PID); err == nil {
+		reg.Register(p)
+	}
+
+	if err := doltserver.Stop(beadsDir); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+	reg.Deregister(state.PID)
 }
 
 // TestLifecycle_CrashRecovery verifies that after a forced kill (SIGKILL),

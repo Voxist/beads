@@ -9,16 +9,20 @@ import (
 )
 
 // TestClassifySharedServerStartErrorSkipsOnAutoStartDisabled pins the
-// ga-dpbbw fix to bd init's shared-global-database block: before this fix,
-// the block skipped only the doltserver.Start call when auto-start was
-// disabled, then went on to call EnsureGlobalDatabase against the server it
-// had just declined to start -- producing a misleading
-// "failed to create global database" warning instead of a clean skip.
+// ga-dpbbw fix to bd init's shared-global-database block. On the base
+// commit, that block had NO auto-start check at all: doltserver.Start(
+// sharedDir) would spawn or silently adopt an existing listener regardless
+// of policy, and ANY failure (for any reason) ended bd init with exit 1.
 //
-// classifySharedServerStartError is the decision point that closes that gap:
-// ErrAutoStartDisabled (however wrapped) must classify as "skip the whole
-// block," any other error must stay fatal (matching prior behavior), and nil
-// must proceed as before.
+// classifySharedServerStartError is the decision point that makes the block
+// respect the policy instead of ignoring it: ErrAutoStartDisabled (however
+// wrapped) must classify as sharedGlobalDBSkip -- STOP TRYING TO START the
+// server, but still fall through to EnsureGlobalDatabase afterward (that
+// call only connects, never spawns, so it is safe even when Start was
+// skipped; see sharedGlobalDBSkip's own doc for why this matters for an
+// externally-managed server bd's PID file doesn't know about). Any other
+// error must stay fatal, matching the prior "any failure exits" behavior.
+// nil must proceed as before.
 func TestClassifySharedServerStartErrorSkipsOnAutoStartDisabled(t *testing.T) {
 	tests := []struct {
 		name string

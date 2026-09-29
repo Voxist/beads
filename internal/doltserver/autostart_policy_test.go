@@ -176,12 +176,30 @@ func TestImplicitPathsRefuseToSpawnWhenWorkspaceDisablesAutoStart(t *testing.T) 
 //
 // The refusal must arrive as ErrAutoStartDisabled (errors.Is) and must arrive
 // before the dolt binary is even looked up, so this test needs no dolt on
-// PATH and can never leak a process -- unlike
-// TestStartExplicitBypassesAutoStartGate below.
+// PATH. The cleanup is still registered unconditionally, matching the
+// sibling tests in this file: it costs nothing when the gate holds (its own
+// point), and it is the difference between a clean failure and a leaked dolt
+// process the next time this test regresses.
+//
+// See TestStartExplicit_BypassesAutoStartGate
+// (internal/doltserver/lifecycle_integration_test.go, `integration &&
+// !windows`) for the other half of this pin: the explicit bypass must still
+// spawn a real server. That half needs a real dolt sql-server on every green
+// run, unlike this one, so it lives in the integration tier rather than here.
 func TestStartRefusesWhenItsOwnDirectoryDisablesAutoStart(t *testing.T) {
 	t.Setenv("BEADS_DOLT_AUTO_START", "")
 	config.ResetForTesting()
 	beadsDir := writeWorkspace(t, "false")
+	serverDir := resolveServerDir(beadsDir)
+
+	t.Cleanup(func() {
+		if state, err := IsRunning(serverDir); err == nil && state != nil && state.Running {
+			t.Errorf("a server was started at %s (pid %d, port %d) despite auto-start being disabled; killing it", serverDir, state.PID, state.Port)
+			if stopErr := StopWithForce(serverDir, true); stopErr != nil {
+				t.Errorf("FAILED TO KILL the leaked server (pid %d): %v -- kill it by hand", state.PID, stopErr)
+			}
+		}
+	})
 
 	state, err := Start(beadsDir)
 	if err == nil {
@@ -190,41 +208,43 @@ func TestStartRefusesWhenItsOwnDirectoryDisablesAutoStart(t *testing.T) {
 	if !errors.Is(err, ErrAutoStartDisabled) {
 		t.Errorf("Start error does not wrap ErrAutoStartDisabled: %v", err)
 	}
-	if _, statErr := os.Stat(pidPath(resolveServerDir(beadsDir))); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(pidPath(serverDir)); !os.IsNotExist(statErr) {
 		t.Errorf("Start wrote server state despite refusing to start (pid file stat err: %v)", statErr)
 	}
 }
 
-// TestStartExplicitBypassesAutoStartGate pins the other half of the same
-// funnel: `bd dolt start` is the one command declared explicit-and-therefore-
-// allowed, and it must call StartExplicit, which bypasses Start's own gate
-// rather than re-checking the policy and refusing anyway. This CAN spawn a
-// real dolt sql-server -- that is the point, and the point of the earlier
-// implicit-path test's failure mode too -- so the cleanup below is
-// unconditional and registered before the call.
-func TestStartExplicitBypassesAutoStartGate(t *testing.T) {
+// TestStartRefusesForSharedServerDirWithItsOwnConfig proves the shared-server
+// half of the same gate is not just theoretical. SharedServerDir() resolves
+// to ~/.beads/shared-server, and nothing in bd today WRITES a config.yaml
+// there (see ErrAutoStartDisabled's doc and the CHANGELOG entry for
+// ga-dpbbw) -- an operator has to place one by hand for this path to ever
+// matter in practice. This test proves the mechanism works once one exists,
+// with BEADS_SHARED_SERVER_DIR pointed at a throwaway directory rather than
+// leaving the claim undemonstrated.
+func TestStartRefusesForSharedServerDirWithItsOwnConfig(t *testing.T) {
 	t.Setenv("BEADS_DOLT_AUTO_START", "")
 	config.ResetForTesting()
-	beadsDir := writeWorkspace(t, "false")
-	serverDir := resolveServerDir(beadsDir)
+	sharedDir := t.TempDir()
+	t.Setenv("BEADS_SHARED_SERVER_DIR", sharedDir)
+	if err := os.WriteFile(filepath.Join(sharedDir, "config.yaml"), []byte("dolt.auto-start: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Cleanup(func() {
-		if state, err := IsRunning(serverDir); err == nil && state != nil && state.Running {
-			if stopErr := StopWithForce(serverDir, true); stopErr != nil {
-				t.Errorf("failed to stop the server this test started (pid %d): %v", state.PID, stopErr)
+		if state, err := IsRunning(sharedDir); err == nil && state != nil && state.Running {
+			t.Errorf("a server was started at %s (pid %d, port %d) despite the shared-server config disabling auto-start; killing it", sharedDir, state.PID, state.Port)
+			if stopErr := StopWithForce(sharedDir, true); stopErr != nil {
+				t.Errorf("FAILED TO KILL the leaked server (pid %d): %v -- kill it by hand", state.PID, stopErr)
 			}
 		}
 	})
 
-	state, err := StartExplicit(beadsDir)
-	if err != nil {
-		if errors.Is(err, ErrAutoStartDisabled) {
-			t.Fatalf("StartExplicit returned ErrAutoStartDisabled; the explicit path must never be gated: %v", err)
-		}
-		t.Fatalf("StartExplicit failed: %v", err)
+	state, err := Start(sharedDir)
+	if err == nil {
+		t.Fatalf("Start succeeded (state=%+v) despite the shared-server directory's own config disabling auto-start", state)
 	}
-	if state == nil || !state.Running {
-		t.Fatalf("StartExplicit did not report a running server: %+v", state)
+	if !errors.Is(err, ErrAutoStartDisabled) {
+		t.Errorf("Start error does not wrap ErrAutoStartDisabled: %v", err)
 	}
 }
 

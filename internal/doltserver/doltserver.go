@@ -55,15 +55,32 @@ var ErrServerNotRunning = errors.New("dolt server is not running")
 // bd must not spawn a server there. The directory is treated as externally
 // managed.
 //
-// Start is the only function that spawns `dolt sql-server`, and before this
-// existed the refusal was hand-applied at each call site instead: a caller
-// that forgot the check (or a new call site) reached a fully ungated Start.
-// This makes the check part of Start itself, so every implicit caller
-// inherits it by construction. Callers on an implicit path (bd init's
-// shared-global-database block, config_apply's applyServer,
-// EnsureRunningDetailed) should use errors.Is against this sentinel and
-// treat it as "skip this directory," not as a hard failure -- the directory
-// is not broken, it is just not bd's to start.
+// Start is the only function that spawns a bd-MANAGED, non-proxied dolt
+// sql-server, and before this existed the refusal was hand-applied at each
+// call site instead: a caller that forgot the check (or a new call site)
+// reached a fully ungated Start. This makes the check part of Start itself,
+// so every implicit caller of Start inherits it by construction. It does
+// NOT cover the proxied backend (internal/storage/dbproxy/server.DoltServer,
+// spawned by `bd db-proxy-child` via internal/storage/dbproxy/proxy),
+// which spawns its own `dolt sql-server` through a completely separate
+// path with no auto-start policy check at all -- see ga-dpbbw's follow-up
+// bead for that gap.
+//
+// Callers on an implicit path (bd init's shared-global-database block,
+// config_apply's applyServer) should use errors.Is against this sentinel
+// and treat it as "skip starting this directory" -- the directory is not
+// broken, it is just not bd's to start; the target may still be reachable
+// as an externally-managed server, which is why those callers still
+// attempt a plain connection afterward rather than giving up outright.
+//
+// EnsureRunningDetailed does NOT surface this sentinel: it has its own
+// equivalent auto-start check ahead of calling Start (consulting the same
+// IsAutoStartDisabledFor(beadsDir)) and returns its own descriptive,
+// situation-specific error before ever reaching Start, so it never receives
+// ErrAutoStartDisabled via errors.Is in that case. Its refusal already
+// matches Start's decision; Start's own gate exists as the funnel of last
+// resort for callers -- present and future -- that call Start directly
+// without going through EnsureRunningDetailed first.
 //
 // The one caller that must NOT see this error is the explicit `bd dolt
 // start` command, which calls StartExplicit instead of Start.

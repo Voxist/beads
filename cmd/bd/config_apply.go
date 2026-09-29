@@ -437,6 +437,19 @@ func applyServer(drifted bool, dryRun bool) ApplyResult {
 
 	serverDir := doltserver.ResolveServerDir(beadsDir)
 
+	// Check serverDir's own policy too, not just beadsDir's: they can differ
+	// (e.g. shared-server mode resolves serverDir to ~/.beads/shared-server,
+	// which may carry its own config.yaml). Without this, a dry run could
+	// print "Would start" for a directory Start would actually refuse.
+	if doltserver.IsAutoStartDisabledFor(serverDir) {
+		return ApplyResult{
+			Check:   "server",
+			Action:  "start",
+			Status:  applyStatusSkipped,
+			Message: "Dolt shared server not started because auto-start is disabled; the server is externally managed",
+		}
+	}
+
 	if dryRun {
 		return ApplyResult{
 			Check:   "server",
@@ -449,12 +462,9 @@ func applyServer(drifted bool, dryRun bool) ApplyResult {
 	state, err := doltserver.Start(serverDir)
 	if err != nil {
 		if errors.Is(err, doltserver.ErrAutoStartDisabled) {
-			// Defense in depth: the IsAutoStartDisabledFor(beadsDir) check
-			// above already covers this in the common case, but Start's own
-			// gate is resolved from serverDir, which can differ from
-			// beadsDir (e.g. shared-server mode). Report it the same way as
-			// the pre-check above rather than as an error -- this is a
-			// policy skip, not a failure.
+			// Defense in depth: both pre-checks above already cover this in
+			// practice. Report it the same way rather than as an error --
+			// this is a policy skip, not a failure.
 			return ApplyResult{
 				Check:   "server",
 				Action:  "start",

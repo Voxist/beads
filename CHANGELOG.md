@@ -103,14 +103,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory it was asked to start disables auto-start, instead of relying on
   every call site to check first** (ga-dpbbw). This closes the first "known
   gap" left open by the ga-rpgvw entry above: `Start` was the only function
-  that ever spawns `dolt sql-server`, and the policy was hand-applied at four
-  call sites (`bd dolt start`, `bd init`'s shared-global-database block,
+  that spawns a bd-MANAGED, non-proxied `dolt sql-server` (the proxied
+  backend spawns its own server through a separate path with no policy check
+  at all — see the known gaps below), and the policy was hand-applied at
+  four call sites (`bd dolt start`, `bd init`'s shared-global-database block,
   `bd config apply`'s `applyServer`, `EnsureRunningDetailed`) plus the
   `KillStaleServers` reap inside `Start`'s own lock — a fifth call site, or a
-  caller that simply forgot the check, reached a fully ungated `Start`, which
-  is exactly what happened during the 2026-09-29 incident where an explicit
-  `bd dolt start` run in the wrong workspace briefly bound a live city's
-  shared Dolt port with an empty server.
+  caller that simply forgot the check, would have reached a fully ungated
+  `Start`. Motivated in part by a 2026-09-29 near-miss (ga-xuapz): a session
+  in a different workspace ran the EXPLICIT `bd dolt start`, which this
+  change deliberately leaves ungated by design (see `StartExplicit` below),
+  and briefly bound a live city's shared Dolt port with an empty server. This
+  change does not itself prevent that incident — see the known gaps below and
+  ga-y1s8x — but it is what that incident's report escalated ahead of.
 
   The refusal is now inside `Start(beadsDir)` itself, resolved from
   `beadsDir` — the directory actually being started, which for a caller
@@ -121,24 +126,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and before spawning anything. The one caller that must bypass this policy —
   `bd dolt start`, which asks for a server by name — now calls the new
   `StartExplicit`, making the exception visible in the function it calls
-  rather than implied by a comment at the call site. An AST-based test
-  (`TestOnlyDoltStartCallsStartExplicit`) pins that no other production call
-  site anywhere in the module calls `StartExplicit`.
+  rather than implied by a comment at the call site. An AST-based pair of
+  tests (`TestOnlyDoltStartCallsStartExplicit`,
+  `TestNoInternalDoltserverBypassOfStartInternal`) pins that no production
+  call site anywhere in the module — including an aliased import, a bare
+  method value, another command in the same file, or a same-package wrapper
+  around the unexported `startInternal(dir, true)` — can reach the bypass
+  except through that one function.
 
-  `bd init`'s shared-global-database block previously only skipped the
-  `Start` call on failure and then called `EnsureGlobalDatabase` against the
-  server it had just declined to start, producing a misleading "server not
-  reachable" warning instead of a clean skip. It now classifies the `Start`
-  error (`ErrAutoStartDisabled` vs. anything else) and skips the whole block,
-  not just the `Start` call, on the former.
+  Note on `~/.beads/shared-server/config.yaml`: `Start`'s gate is honoured
+  there exactly as it is for any other directory, but **nothing in bd today
+  writes that file** — an operator has to place it there by hand for this
+  half of the gate to matter in shared-server mode. Proven, not just
+  claimed: `TestStartRefusesForSharedServerDirWithItsOwnConfig` points
+  `BEADS_SHARED_SERVER_DIR` at a throwaway directory with a hand-written
+  `config.yaml` and confirms `Start` refuses.
 
-  Known gaps, deliberately NOT closed here (see ga-dpbbw for the follow-up):
-  the reap inside `Start`'s lock (`KillStaleServers`) still asks the same
-  directory's policy that `StartExplicit` just bypassed, so an explicit
-  `bd dolt start` into a disabled directory still won't clean orphan
-  processes there; and neither `Start` nor `StartExplicit` checks whether the
-  port they are about to bind already belongs to a different workspace's
-  configured server — the second half of the 2026-09-29 incident above.
+  `bd init`'s shared-global-database block had NO auto-start check at all on
+  the base commit — `doltserver.Start(sharedDir)` would spawn a new server or
+  silently ADOPT an already-listening one (via `reclaimPort`) regardless of
+  policy, and any failure for any reason exited `bd init` with code 1. It now
+  classifies the `Start` result: on `ErrAutoStartDisabled` it stops trying to
+  START the server, but still falls through to `EnsureGlobalDatabase`
+  afterward exactly as before, because that call only opens a connection and
+  never spawns anything — this preserves the "adopt an externally-managed,
+  already-reachable server" case the old unconditional `Start` used to cover
+  by accident, while still respecting the policy for the spawn itself. Any
+  other `Start` failure still exits `bd init`, matching prior behavior.
+
+  Known gaps, deliberately NOT closed here, each filed as its own bead
+  (discovered-from ga-dpbbw) rather than folded in silently:
+  - The reap inside `Start`'s lock (`KillStaleServers`) still asks the same
+    directory's policy that `StartExplicit` just bypassed, so an explicit
+    `bd dolt start` into a disabled directory still won't clean orphan
+    processes there (ga-mh56v, P2).
+  - Neither `Start` nor `StartExplicit` checks whether the port they are
+    about to bind already belongs to a *different* workspace's configured
+    server — the mechanism behind the ga-xuapz near-miss above, where an
+    unrelated workspace's explicit `bd dolt start` briefly bound the live
+    city's shared port (ga-y1s8x, **P1**).
+  - The proxied backend (`internal/storage/dbproxy/server.DoltServer`,
+    spawned by `bd db-proxy-child`) spawns its own `dolt sql-server` with no
+    auto-start policy check at all, entirely outside this funnel (ga-kcebr,
+    P2).
 
 ## [1.3.0] - 2026-09-15
 
