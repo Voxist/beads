@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/servercfg"
@@ -168,11 +169,60 @@ func rotateDebugProfile(beadsDir string) {
 //
 // This is used by KillStaleServers and Start to avoid killing or
 // interfering with externally-managed dolt processes (GH#2641).
+// Deprecated: use IsAutoStartDisabledFor(beadsDir). Without a directory this
+// cannot see a workspace's own config.yaml -- which is the whole of ga-rpgvw --
+// so it answers only from the env var and globally-bound viper. It is kept for
+// callers that genuinely have no workspace in hand; every production call site
+// now passes one.
 func IsAutoStartDisabled() bool {
+	return IsAutoStartDisabledFor("")
+}
+
+// IsAutoStartDisabledFor is IsAutoStartDisabled for a caller that knows which
+// workspace it is about to act on.
+//
+// The dir matters because config.GetString reads global viper, which is empty
+// unless config.Initialize has run: every library consumer, and any bd path
+// that resolves a server before config init, therefore saw "unset" and spawned
+// a server against a workspace whose config.yaml plainly said not to. On the
+// Gas City shared store that spawned an UNMANAGED server holding the shared
+// port, which then blocked the managed server's restart (ga-rpgvw). Only the
+// env var was reliably honored, which is why BEADS_DOLT_AUTO_START=0 was the
+// standing workaround.
+//
+// This is a DISJUNCTION, not a precedence chain: ANY of the three sources may
+// disable auto-start, and none of them can re-enable it over another that
+// says false. BEADS_DOLT_AUTO_START=1 therefore does NOT override a workspace
+// whose config.yaml says false -- it only ever adds a reason to refuse. That
+// matches the pre-existing env/global behavior and fails closed, which is what
+// a shared store wants; to allow auto-start, no source may forbid it.
+func IsAutoStartDisabledFor(beadsDir string) bool {
 	if isFalsyBool(os.Getenv("BEADS_DOLT_AUTO_START")) {
 		return true
 	}
-	return isFalsyBool(config.GetString("dolt.auto-start"))
+	if global := config.GetString("dolt.auto-start"); global != "" {
+		if isFalsyBool(global) {
+			return true
+		}
+		if unparseableAutoStart(global) {
+			warnUnparseableAutoStart("the active config", global)
+		}
+	}
+	if beadsDir == "" {
+		return false
+	}
+	workspace := config.GetStringFromDir(beadsDir, "dolt.auto-start")
+	if isFalsyBool(workspace) {
+		return true
+	}
+	if unparseableAutoStart(workspace) {
+		// Named as the workspace, not a specific file: GetStringFromDir reads
+		// config.local.yaml FIRST, so claiming "config.yaml" sends an operator
+		// to a file that may not hold the key -- or worse, one holding a
+		// correct value the untracked sidecar is overriding.
+		warnUnparseableAutoStart(beadsDir+" (config.yaml or config.local.yaml)", workspace)
+	}
+	return false
 }
 
 // externalNonLocalhostHost reports the configured Dolt server host when
@@ -208,11 +258,63 @@ func externalNonLocalhostHost(beadsDir string) (string, bool) {
 	return host, true
 }
 
+// unparseableAutoStart reports a non-empty value that is neither truthy nor
+// falsy, e.g. `dolt.auto-start: disabled`. Such a value used to fail OPEN --
+// isFalsyBool said "not false", so bd spawned a server against a workspace
+// whose author plainly meant to forbid it, silently. It still fails open
+// (refusing on a typo would be its own outage), but it says so once.
+func unparseableAutoStart(s string) bool {
+	if strings.TrimSpace(s) == "" {
+		return false
+	}
+	// Defined as the negation of the two recognisers rather than by repeating
+	// their token lists, so widening either one cannot leave this warning
+	// firing on a value bd now understands.
+	return !isFalsyBool(s) && !isTruthyBool(s)
+}
+
+// isTruthyBool is isFalsyBool's partner: anything strconv.ParseBool accepts as
+// true, or "on" (case-insensitive), which pairs with the "off" that
+// isFalsyBool accepts.
+func isTruthyBool(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "on") {
+		return true
+	}
+	b, err := strconv.ParseBool(s)
+	return err == nil && b
+}
+
+// warnUnparseableAutoStart de-duplicates per (source, value) rather than once
+// per process. The policy is consulted several times per invocation (pre-run,
+// store open, status), so an operator must not be told the same thing four
+// times -- but a single process-wide sync.Once was wrong for the library
+// consumers this change exists to serve: in `bd serve`, the db-proxy child or
+// any process spanning workspaces, the first bad value silenced every later
+// workspace, which is the precise silence this warning was added to remove.
+var autoStartWarned sync.Map
+
+func warnUnparseableAutoStart(source, value string) {
+	if _, seen := autoStartWarned.LoadOrStore(source+"\x00"+value, true); !seen {
+		fmt.Fprintf(os.Stderr,
+			"Warning: %s sets dolt.auto-start to %q, which bd reads as neither true nor false, so it is NOT treated as a request to disable auto-start. Use false to disable it.\n",
+			source, value)
+	}
+}
+
 // isFalsyBool returns true when s is a recognized "false" value:
 // anything strconv.ParseBool accepts as false, or "off" (case-insensitive).
 // Leading/trailing whitespace is trimmed before parsing.
 func isFalsyBool(s string) bool {
 	s = strings.TrimSpace(s)
+	// Deliberately NOT widened to yes/no/y/n. TestIsAutoStartDisabled documents
+	// "no" among "unrecognized values -> enabled (fail-open, not disabled)",
+	// beside "disabled" and "nope", so honoring it would silently change what
+	// BEADS_DOLT_AUTO_START=no does for anyone relying on that. The mismatch
+	// with cmd/bd/doctor/config_values.go isValidBoolString -- which calls
+	// yes/no/y/n valid booleans -- is real and reported separately; the write-time
+	// check added for dolt.auto-start keeps such a value out of config.yaml in
+	// the first place, and an existing one still warns.
 	if strings.EqualFold(s, "off") {
 		return true
 	}
@@ -540,6 +642,100 @@ func EnsurePortFile(beadsDir string, port int) error {
 // to detect whether this project has its own running server (GH#2336).
 func ReadPortFile(beadsDir string) int {
 	return readPortFile(beadsDir)
+}
+
+// ManagesLiveServerOnPort reports whether beadsDir has a dolt sql-server that
+// bd brought under management FOR IT and that is still alive on port. It is
+// the affirmative proof of ownership available from local state: bd writes
+// both state files in Start(), so a workspace that can show a live PID beside
+// a port file naming the port a caller is actually connected on is a workspace
+// whose server bd started — or adopted — for itself. Two file reads and a
+// signal 0 cannot separate those two, which is why the invariant is stated
+// that way; see the residual gaps below.
+//
+// The absence of that proof is what matters at the call sites. An operator who
+// points bd at an endpoint — through BEADS_DOLT_SERVER_PORT, a config.yaml
+// pin, `bd init --server-port`, or a hand-built library Config — produces no
+// state files at all, because bd never started anything. Nothing else about
+// the connection distinguishes the two: both end as "a local TCP dolt
+// sql-server on port N".
+//
+// Read-only, deliberately. IsRunning answers a similar question but repairs as
+// it goes: it deletes stale PID and port files, and will stop an orphaned
+// server whose port it cannot determine. Callers that are merely classifying a
+// connection must not mutate a workspace's server state as a side effect, so
+// this duplicates the two cheap checks rather than reusing IsRunning.
+//
+// Two residual gaps remain, both of which answer "owned" for a server bd did
+// not launch. Both are narrower than what trusting the port file alone — or
+// ResolveServerMode alone — left open, and #6123 owns closing them as part of
+// reconciling the four resolvers that answer "is this dolt server ours?".
+//
+// Adopted server (the wider of the two). Start() writes these same two state
+// files for a server it adopts rather than launches: reclaimPort returns the
+// PID of a dolt process whose CWD is this workspace's dolt dir, and Start
+// records that foreign PID and the port before reporting Running. So an
+// operator running `dolt sql-server` over .beads/dolt under systemd or a
+// container — exactly the operator portConflictDiagnostics addresses — mints
+// this proof by typing `bd dolt start`.
+//
+// Typing it is not required, though, and the effect does not wear off. The
+// storage layer dials with a 500 ms timeout, so any open that times out —
+// under load, or inside a systemd/container restart window — reaches the same
+// adopt branch through its auto-start path with no operator action at all.
+// Nothing suppresses that by default for the topology this predicate exists to
+// gate: when the endpoint comes only from BEADS_DOLT_SERVER_PORT,
+// ResolveServerMode still answers Owned (that is the bug being closed here), so
+// EnsureRunningDetailed's ServerModeExternal branch never fires and Start()
+// proceeds. Once the adopt branch has written the two files they stay:
+// IsRunning clears them only for a PID that is corrupt, dead, or not dolt, and
+// an adopted server is a live dolt process on all three counts. The workspace
+// then answers "owned" from that point on, so a single timed-out dial disarms
+// the gate permanently.
+//
+// One setting does suppress it: `dolt.auto-start: false` (or
+// BEADS_DOLT_AUTO_START=0) fails serverOpenCanAutoStart and IsAutoStartDisabled,
+// so a timed-out open errors instead of adopting. That closes the incidental
+// route only — `bd dolt start` never consults either check, so the deliberate
+// route above stays open. It is the one mitigation an operator has while #6123
+// is open.
+//
+// Closing it means recording adoption distinctly from launch (skip the write on
+// the adopt branch, or mark it so this helper declines it), which is a behavior
+// change on the auto-start path and belongs with #6123 rather than in a
+// gate-hardening patch — though incidental and permanent is a sharper argument
+// for #6123 than a resolver tidy-up would be. It is unix-only in practice:
+// isProcessInDir returns false on Windows, so reclaimPort never takes the
+// CWD-match adopt branch there.
+//
+// Recycled PID (narrower). This stops short of IsRunning's isDoltProcess()
+// command-name check, which shells out to `ps` (PowerShell on Windows) —
+// measured at hundreds of milliseconds on a busy machine, and this runs on
+// every writable open. So: the recorded server died, an unrelated live process
+// inherited its PID number, AND the port file still names the port some other
+// server now answers on. It fails toward "owned" only when all three coincide.
+// Note that isDoltProcess here would close only this gap, not the adopted-server
+// one — reclaimPort already requires isDoltProcess before it will adopt.
+//
+// Callers needing certainty over latency should use IsRunning.
+func ManagesLiveServerOnPort(beadsDir string, port int) bool {
+	if beadsDir == "" || port <= 0 {
+		return false
+	}
+	// The port file first: it is the cheaper read, and a workspace pointed at
+	// somebody else's endpoint usually has no port file at all.
+	if readPortFile(beadsDir) != port {
+		return false
+	}
+	data, err := os.ReadFile(pidPath(beadsDir))
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	return isProcessAlive(pid)
 }
 
 // PortFileSnapshot captures the exact prior contents of a project's port
@@ -989,7 +1185,7 @@ func EnsureRunningDetailed(beadsDir string) (port int, startedByUs bool, err err
 	// Defense-in-depth: if dolt.auto-start is explicitly disabled in
 	// config.yaml or env, never spawn a server even if the caller
 	// somehow reached this point (e.g. stale AutoStart=true in config).
-	if IsAutoStartDisabled() {
+	if IsAutoStartDisabledFor(beadsDir) {
 		cfg := DefaultConfig(beadsDir)
 		if host, ok := externalNonLocalhostHost(beadsDir); ok {
 			return 0, false, fmt.Errorf("Configured Dolt server at %s:%d is unreachable, and auto-start "+
@@ -1758,10 +1954,11 @@ func killStaleServersForDir(beadsDir string, allPIDs []int, inDir func(int, stri
 
 	// If auto-start is disabled the server is externally managed (e.g., by
 	// systemd or a manual bd dolt start), so we must not kill any processes.
-	// IsAutoStartDisabled covers the BEADS_DOLT_AUTO_START env var and
-	// dolt.auto-start config; ResolveServerMode covers explicit port/shared
+	// IsAutoStartDisabledFor covers the BEADS_DOLT_AUTO_START env var, the
+	// globally-bound config and the workspace's own dolt.auto-start;
+	// ResolveServerMode covers explicit port/shared
 	// server/embedded configurations. Both indicate "not our server" (GH#2641).
-	if IsAutoStartDisabled() || ResolveServerMode(beadsDir) == ServerModeExternal {
+	if IsAutoStartDisabledFor(beadsDir) || ResolveServerMode(beadsDir) == ServerModeExternal {
 		return nil, nil
 	}
 
@@ -1814,7 +2011,7 @@ func killStaleServersForDir(beadsDir string, allPIDs []int, inDir func(int, stri
 // false), this function is a no-op — the dolt server is externally managed
 // and must not be killed by bd (GH#2641).
 func KillStaleServers(beadsDir string) ([]int, error) {
-	if IsAutoStartDisabled() {
+	if IsAutoStartDisabledFor(beadsDir) {
 		return nil, nil
 	}
 	allPIDs := listDoltProcessPIDs()

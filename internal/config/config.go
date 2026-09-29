@@ -701,39 +701,15 @@ func GetStringFromDir(beadsDir, key string) string {
 	if v, ok := readYamlValueAtPath(filepath.Join(beadsDir, LocalConfigFileName), key); ok {
 		return v
 	}
-	configPath := filepath.Join(beadsDir, "config.yaml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return ""
+	// config.yaml is read with the SAME reader as the sidecar above.
+	// It used to carry its own nested-only walk, which could not see the flat
+	// dotted form (`dolt.auto-start: false`) that bd itself writes and that
+	// every Gas City workspace uses -- so a workspace that plainly disabled
+	// auto-start read back as "unset" here (ga-rpgvw).
+	if v, ok := readYamlValueAtPath(filepath.Join(beadsDir, "config.yaml"), key); ok {
+		return v
 	}
-	var root map[string]interface{}
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return ""
-	}
-	parts := strings.SplitN(key, ".", 2)
-	node := root
-	for len(parts) == 2 {
-		val, ok := node[parts[0]]
-		if !ok {
-			return ""
-		}
-		m, ok := val.(map[string]interface{})
-		if !ok {
-			return ""
-		}
-		node = m
-		parts = strings.SplitN(parts[1], ".", 2)
-	}
-	val, ok := node[parts[0]]
-	if !ok {
-		return ""
-	}
-	switch s := val.(type) {
-	case string:
-		return s
-	default:
-		return fmt.Sprintf("%v", s)
-	}
+	return ""
 }
 
 // GetBool retrieves a boolean configuration value

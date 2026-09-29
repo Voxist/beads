@@ -44,7 +44,7 @@ func OpenBestAvailable(ctx context.Context, beadsDir string) (Storage, error) {
 		cfg = configfile.DefaultConfig()
 	}
 	if !configfile.IsSupportedBackend(cfg.Backend) {
-		return nil, configuredBackendUnavailable(cfg.Backend)
+		return nil, configuredBackendUnavailable(cfg.Backend, beadsDir, cfg)
 	}
 
 	if backend, ok := backends.Lookup(cfg.GetBackend()); ok {

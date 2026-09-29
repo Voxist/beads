@@ -374,6 +374,69 @@ func WorkspaceYamlValue(beadsDir, key string) (string, bool) {
 	return readYamlValueAtPath(filepath.Join(beadsDir, "config.yaml"), key)
 }
 
+// WorkspaceYamlValueStrict reads one dotted key from a workspace config.yaml
+// without conflating a malformed or unreadable file with an absent key. A
+// missing file or key returns present=false and no error; all other I/O and
+// YAML shape errors are returned to the caller.
+func WorkspaceYamlValueStrict(beadsDir, key string) (value string, present bool, err error) {
+	if beadsDir == "" {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml")) //nolint:gosec // beadsDir is caller-resolved workspace state
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading workspace config.yaml: %w", err)
+	}
+	var root map[string]interface{}
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return "", false, fmt.Errorf("parsing workspace config.yaml: %w", err)
+	}
+	if root == nil {
+		return "", false, nil
+	}
+	if raw, ok := root[key]; ok {
+		value, err := strictYamlScalarString(raw)
+		if err != nil {
+			return "", true, err
+		}
+		return value, true, nil
+	}
+	var node interface{} = root
+	parts := strings.Split(key, ".")
+	for i, part := range parts {
+		m, ok := node.(map[string]interface{})
+		if !ok {
+			return "", true, fmt.Errorf("workspace config key %q has a non-map parent", key)
+		}
+		node, ok = m[part]
+		if !ok {
+			return "", false, nil
+		}
+		if i == len(parts)-1 {
+			value, err := strictYamlScalarString(node)
+			if err != nil {
+				return "", true, err
+			}
+			return value, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func strictYamlScalarString(v interface{}) (string, error) {
+	if v == nil {
+		return "", fmt.Errorf("workspace config value is null")
+	}
+	switch v.(type) {
+	case map[string]interface{}, []interface{}:
+		return "", fmt.Errorf("workspace config value must be a scalar")
+	default:
+		return fmt.Sprintf("%v", v), nil
+	}
+}
+
 func readYamlValueAtPath(path, key string) (string, bool) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is a resolved config.yaml path, not user input
 	if err != nil {
@@ -392,7 +455,15 @@ func yamlValueFromBytes(data []byte, key string) (string, bool) {
 		return "", false
 	}
 	if raw, ok := root[key]; ok { // flat dotted form
-		return yamlScalarString(raw)
+		// Only a USABLE scalar ends the search here. A flat key present with a
+		// null, or with a map/list value, must fall through to the nested form
+		// below: returning on it would let `dolt.auto-start:` (no value) hide a
+		// nested `dolt.auto-start: false`, which is this reader failing open in
+		// the very direction it exists to close, and would diverge from viper,
+		// whose prefix walk moves on to the next candidate in the same case.
+		if v, ok := flatScalarValue(raw); ok {
+			return v, true
+		}
 	}
 	var node interface{} = root // nested form
 	for _, part := range strings.Split(key, ".") {
@@ -406,6 +477,18 @@ func yamlValueFromBytes(data []byte, key string) (string, bool) {
 		}
 	}
 	return yamlScalarString(node)
+}
+
+// flatScalarValue converts a flat dotted key's value when it is a scalar bd can
+// use. nil (a key written with no value) and container values report false so
+// the caller keeps looking, rather than answering "" or a Go map literal like
+// "map[x:1]" for a key an operator never spelled that way.
+func flatScalarValue(raw interface{}) (string, bool) {
+	switch raw.(type) {
+	case nil, map[string]interface{}, []interface{}:
+		return "", false
+	}
+	return yamlScalarString(raw)
 }
 
 func yamlScalarString(v interface{}) (string, bool) {
@@ -924,6 +1007,20 @@ func isDuration(s string) bool {
 	return isNumeric(s[:len(s)-1])
 }
 
+// isBoolLikeConfigValue reports whether value is one doltserver's auto-start
+// reader will understand: anything strconv.ParseBool accepts, plus on/off.
+// Deliberately a copy rather than an import -- internal/doltserver imports this
+// package, so the dependency cannot run the other way -- which is why the
+// parity test exists.
+func isBoolLikeConfigValue(value string) bool {
+	v := strings.TrimSpace(value)
+	if strings.EqualFold(v, "on") || strings.EqualFold(v, "off") {
+		return true
+	}
+	_, err := strconv.ParseBool(v)
+	return err == nil
+}
+
 // validateYamlConfigValue validates a configuration value before setting.
 // Returns an error if the value is invalid for the given key.
 func validateYamlConfigValue(key, value string) error {
@@ -941,6 +1038,26 @@ func validateYamlConfigValue(key, value string) error {
 		lower := strings.ToLower(value)
 		if lower != "true" && lower != "false" {
 			return fmt.Errorf("dolt.shared-server must be \"true\" or \"false\", got %q", value)
+		}
+	case "dolt.auto-start":
+		// Caught at WRITE time, which is the only moment a typo can be pre-empted:
+		// the read-side warning fires from the auto-start policy, and that policy
+		// is only consulted once a server is already missing -- i.e. during the
+		// outage it was meant to prevent.
+		//
+		// Validated against the READER's vocabulary, not a stricter one. The
+		// nearby dolt.shared-server / dolt.debug cases demand exactly
+		// "true"/"false" because their readers do an exact EqualFold("true");
+		// doltserver's isFalsyBool/isTruthyBool honor strconv.ParseBool's set
+		// plus on/off, so refusing `bd config set dolt.auto-start off` -- or `0`,
+		// the spelling of the BEADS_DOLT_AUTO_START=0 stand-down an operator is
+		// most likely to be translating into the file mid-incident -- would
+		// refuse a value bd then honors. Keep this in step with those two
+		// functions; internal/doltserver's
+		// TestWriteTimeValidationAcceptsEveryValueTheReadersHonour pins it
+		// against those functions themselves rather than against a copy.
+		if !isBoolLikeConfigValue(value) {
+			return fmt.Errorf("dolt.auto-start must be a boolean (true/false, 1/0, t/f, on/off), got %q", value)
 		}
 	case "dolt.debug":
 		lower := strings.ToLower(value)

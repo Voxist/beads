@@ -43,7 +43,14 @@ func TestEmbeddedMigrationFreezeStopsAReadFromMigrating(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
 	}
-	t.Parallel()
+	// Not parallel: TestMain pins migration.EnvFreezeFile to a path that
+	// cannot exist, so an ambient MIGRATION-FREEZE on the machine cannot
+	// freeze the whole suite -- and that authoritative override also hides
+	// the marker this test writes. Clearing it re-enables the ancestor walk
+	// (upstream's freezeWalkEnv does the same per-run), and t.Setenv is only
+	// safe outside t.Parallel: a parallel test changing the process env would
+	// expose its neighbours to the ambient-marker hazard the pin exists for.
+	t.Setenv(migration.EnvFreezeFile, "")
 
 	bd := buildEmbeddedBD(t)
 	dir, beadsDir, _ := bdInit(t, bd, "--prefix", "frz")
@@ -84,7 +91,7 @@ func TestEmbeddedMigrationFreezeStopsAReadFromMigrating(t *testing.T) {
 			t.Fatalf("the sentinel must survive a forced migrate: %v", err)
 		}
 		out, code := bdRunFailCode(t, bd, dir, "create", "still frozen", "--type", "task")
-		if code != 1 || !strings.Contains(out, "frozen for migration") {
+		if code != ExitMigrationFrozen || !strings.Contains(out, "frozen for migration") {
 			t.Errorf("a write after a forced migrate must still be refused while the sentinel exists; exit=%d\n%s", code, out)
 		}
 	})
