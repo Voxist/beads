@@ -99,6 +99,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read the root map directly, so `issue-prefix`, `issue_prefix` and `no-git-ops`
   always resolved. Scope regression tests to the dotted keys.
 
+- **`doltserver.Start` itself now refuses to spawn a server when the
+  directory it was asked to start disables auto-start, instead of relying on
+  every call site to check first** (ga-dpbbw). This closes the first "known
+  gap" left open by the ga-rpgvw entry above: `Start` was the only function
+  that ever spawns `dolt sql-server`, and the policy was hand-applied at four
+  call sites (`bd dolt start`, `bd init`'s shared-global-database block,
+  `bd config apply`'s `applyServer`, `EnsureRunningDetailed`) plus the
+  `KillStaleServers` reap inside `Start`'s own lock — a fifth call site, or a
+  caller that simply forgot the check, reached a fully ungated `Start`, which
+  is exactly what happened during the 2026-09-29 incident where an explicit
+  `bd dolt start` run in the wrong workspace briefly bound a live city's
+  shared Dolt port with an empty server.
+
+  The refusal is now inside `Start(beadsDir)` itself, resolved from
+  `beadsDir` — the directory actually being started, which for a caller
+  passing a resolved server directory (shared-server mode included) is the
+  right directory to ask, not the workspace that happened to call it. `Start`
+  returns the new sentinel `ErrAutoStartDisabled` (`errors.Is`-checkable) and
+  refuses before touching the lock file, before looking up the `dolt` binary,
+  and before spawning anything. The one caller that must bypass this policy —
+  `bd dolt start`, which asks for a server by name — now calls the new
+  `StartExplicit`, making the exception visible in the function it calls
+  rather than implied by a comment at the call site. An AST-based test
+  (`TestOnlyDoltStartCallsStartExplicit`) pins that no other production call
+  site anywhere in the module calls `StartExplicit`.
+
+  `bd init`'s shared-global-database block previously only skipped the
+  `Start` call on failure and then called `EnsureGlobalDatabase` against the
+  server it had just declined to start, producing a misleading "server not
+  reachable" warning instead of a clean skip. It now classifies the `Start`
+  error (`ErrAutoStartDisabled` vs. anything else) and skips the whole block,
+  not just the `Start` call, on the former.
+
+  Known gaps, deliberately NOT closed here (see ga-dpbbw for the follow-up):
+  the reap inside `Start`'s lock (`KillStaleServers`) still asks the same
+  directory's policy that `StartExplicit` just bypassed, so an explicit
+  `bd dolt start` into a disabled directory still won't clean orphan
+  processes there; and neither `Start` nor `StartExplicit` checks whether the
+  port they are about to bind already belongs to a different workspace's
+  configured server — the second half of the 2026-09-29 incident above.
+
 ## [1.3.0] - 2026-09-15
 
 The first tested release off `main` since the 1.1 line. [1.2.2] was a recovery

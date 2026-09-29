@@ -1,6 +1,7 @@
 package doltserver
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,6 +162,70 @@ func TestImplicitPathsRefuseToSpawnWhenWorkspaceDisablesAutoStart(t *testing.T) 
 	// pass with the gate deleted, i.e. prove nothing. Making it real needs a PID
 	// file naming a live dolt process, which a unit test must not arrange on a
 	// host running the fleet's server.
+}
+
+// TestStartRefusesWhenItsOwnDirectoryDisablesAutoStart pins the ga-dpbbw
+// funnel: Start(beadsDir) is the ONLY function that spawns a dolt sql-server,
+// and it must refuse on its own -- before doing anything else -- when
+// beadsDir's own auto-start policy says no. Before this fix the refusal was
+// hand-applied at each call site (EnsureRunningDetailed, applyServer, bd
+// init's shared-global-database block); a caller that forgot the check, or a
+// new fifth call site, reached a fully ungated Start. Routing the check
+// through Start itself means there is no route to a spawned server that does
+// not pass through it.
+//
+// The refusal must arrive as ErrAutoStartDisabled (errors.Is) and must arrive
+// before the dolt binary is even looked up, so this test needs no dolt on
+// PATH and can never leak a process -- unlike
+// TestStartExplicitBypassesAutoStartGate below.
+func TestStartRefusesWhenItsOwnDirectoryDisablesAutoStart(t *testing.T) {
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	config.ResetForTesting()
+	beadsDir := writeWorkspace(t, "false")
+
+	state, err := Start(beadsDir)
+	if err == nil {
+		t.Fatalf("Start succeeded (state=%+v) despite beadsDir's own config disabling auto-start", state)
+	}
+	if !errors.Is(err, ErrAutoStartDisabled) {
+		t.Errorf("Start error does not wrap ErrAutoStartDisabled: %v", err)
+	}
+	if _, statErr := os.Stat(pidPath(resolveServerDir(beadsDir))); !os.IsNotExist(statErr) {
+		t.Errorf("Start wrote server state despite refusing to start (pid file stat err: %v)", statErr)
+	}
+}
+
+// TestStartExplicitBypassesAutoStartGate pins the other half of the same
+// funnel: `bd dolt start` is the one command declared explicit-and-therefore-
+// allowed, and it must call StartExplicit, which bypasses Start's own gate
+// rather than re-checking the policy and refusing anyway. This CAN spawn a
+// real dolt sql-server -- that is the point, and the point of the earlier
+// implicit-path test's failure mode too -- so the cleanup below is
+// unconditional and registered before the call.
+func TestStartExplicitBypassesAutoStartGate(t *testing.T) {
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	config.ResetForTesting()
+	beadsDir := writeWorkspace(t, "false")
+	serverDir := resolveServerDir(beadsDir)
+
+	t.Cleanup(func() {
+		if state, err := IsRunning(serverDir); err == nil && state != nil && state.Running {
+			if stopErr := StopWithForce(serverDir, true); stopErr != nil {
+				t.Errorf("failed to stop the server this test started (pid %d): %v", state.PID, stopErr)
+			}
+		}
+	})
+
+	state, err := StartExplicit(beadsDir)
+	if err != nil {
+		if errors.Is(err, ErrAutoStartDisabled) {
+			t.Fatalf("StartExplicit returned ErrAutoStartDisabled; the explicit path must never be gated: %v", err)
+		}
+		t.Fatalf("StartExplicit failed: %v", err)
+	}
+	if state == nil || !state.Running {
+		t.Fatalf("StartExplicit did not report a running server: %+v", state)
+	}
 }
 
 // A value that is neither truthy nor falsy (`dolt.auto-start: disabled`) used
