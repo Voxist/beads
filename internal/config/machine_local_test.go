@@ -550,3 +550,57 @@ func TestUnsetLeavesBothFilesAloneWhenTheTrackedShapeIsRefused(t *testing.T) {
 		t.Errorf("the machine-local override was cleared even though the unset failed:\n--- before ---\n%s\n--- after ---\n%s", localBefore, got)
 	}
 }
+
+// TestSaveConfigValueRefusesMachineLocalKeys is the tracked-file half of the
+// registry contract. Its mirror, TestSidecarWritersRefuseSharedKeys, already
+// existed; this one did not, and the refusal it pins was missing too. Two
+// comments claimed MachineLocalKeys was the single decision point "in BOTH
+// directions" while only one direction was enforced -- and with no test on
+// this side, nothing could ever report the gap. Found in review of #60.
+func TestSaveConfigValueRefusesMachineLocalKeys(t *testing.T) {
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	t.Cleanup(ResetForTesting)
+
+	checked := 0
+	for _, key := range sortedRegistryKeys() {
+		t.Run(key, func(t *testing.T) {
+			beadsDir, configPath, _ := newWorkspace(t, trackedConfigFixture)
+			before := readFile(t, configPath)
+
+			err := SaveConfigValue(key, sampleValueFor(key), beadsDir)
+			if err == nil {
+				t.Fatalf("SaveConfigValue(%s) succeeded; it must refuse a machine-local key", key)
+			}
+			if !strings.Contains(err.Error(), LocalConfigFileName) {
+				t.Errorf("error does not point the caller at the sidecar: %v", err)
+			}
+			if after := readFile(t, configPath); after != before {
+				t.Errorf("config.yaml was modified despite the refusal:\n%s", after)
+			}
+		})
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("MachineLocalKeys is empty, so no refusal was exercised; the test proved nothing")
+	}
+}
+
+// TestSaveConfigValueStillWritesSharedKeys is the control for the refusal
+// above: it fails if the guard is applied too broadly and breaks the one real
+// caller, cmd/bd/init.go writing no-git-ops.
+func TestSaveConfigValueStillWritesSharedKeys(t *testing.T) {
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	t.Cleanup(ResetForTesting)
+
+	beadsDir, configPath, _ := newWorkspace(t, trackedConfigFixture)
+	if err := SaveConfigValue("no-git-ops", true, beadsDir); err != nil {
+		t.Fatalf("SaveConfigValue(no-git-ops): %v", err)
+	}
+	if !strings.Contains(readFile(t, configPath), "no-git-ops") {
+		t.Errorf("no-git-ops was not written to config.yaml:\n%s", readFile(t, configPath))
+	}
+}

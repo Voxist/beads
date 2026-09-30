@@ -27,12 +27,11 @@ import (
 // tracked file through the adapter dirties it exactly as a direct call does,
 // and a guard that only knew the direct spelling would not see it.
 var literalConfigWriters = map[string]bool{
-	"SetYamlConfig":        true,
-	"SetYamlConfigInDir":   true,
-	"UnsetYamlConfig":      true,
-	"UnsetYamlConfigInDir": true,
-	"SetYAMLConfig":        true,
-	"SaveConfigValue":      true,
+	"SetYamlConfig":      true,
+	"SetYamlConfigInDir": true,
+	"UnsetYamlConfig":    true,
+	"SetYAMLConfig":      true,
+	"SaveConfigValue":    true,
 }
 
 // TestNoLiteralWriterWritesAMachineLocalKey is the standing form of the audit
@@ -158,8 +157,6 @@ func TestMachineLocalRegistryIsCoveredByTheRoutingScan(t *testing.T) {
 	}
 }
 
-// repoRootForRoutingScan walks up from the test's working directory to the
-// module root, so the scan covers every package rather than just cmd/bd.
 // repoRootForRoutingScan walks up to the module root so the scan covers every
 // package rather than just cmd/bd.
 //

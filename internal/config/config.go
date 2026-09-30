@@ -662,6 +662,24 @@ func LogOverride(override ConfigOverride) {
 // If no config file is currently loaded, it creates config.yaml in the given beadsDir.
 // Only the specified key is modified; other file contents are preserved.
 func SaveConfigValue(key string, value interface{}, beadsDir string) error {
+	// This writer is NOT routed to the machine-local sidecar, and refuses a
+	// machine-local key rather than silently writing it to the tracked
+	// config.yaml. Routing it would be wrong here for two reasons: it takes an
+	// interface{} value where the sidecar writers take the validated string
+	// form, and it re-marshals the whole document through viper, which is
+	// exactly the whole-file rewrite the sidecar path exists to avoid. Its one
+	// caller (cmd/bd/init.go, writing no-git-ops) is a genuine project key.
+	//
+	// This is the half of the registry contract that the sidecar writers'
+	// refusal mirrors. It was missing on this branch while two comments here
+	// claimed it existed -- the other side's code and test were ported from
+	// upstream #6125, this side's were not, and no test asserted it, so the
+	// absence could not show up anywhere. TestSaveConfigValueRefusesMachine-
+	// LocalKeys now does.
+	if IsMachineLocalKey(key) {
+		return fmt.Errorf("SaveConfigValue cannot write machine-local key %q to the tracked config.yaml; use SetMachineLocalYamlConfig (or SetMachineLocalYamlConfigInDir), which writes it to %s", key, LocalConfigFileName)
+	}
+
 	if v == nil {
 		return fmt.Errorf("config not initialized")
 	}
