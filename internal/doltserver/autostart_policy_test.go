@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -373,5 +374,44 @@ func TestWriteTimeValidationAcceptsEveryValueTheReadersHonour(t *testing.T) {
 	// generated list would make both branches silently unreachable.
 	if sawHonoured == 0 || sawRejected == 0 {
 		t.Fatalf("the candidate list must exercise BOTH verdicts: honoured=%d rejected=%d", sawHonoured, sawRejected)
+	}
+}
+
+// TestKillStaleServersHonoursItsOwnDirectoryAutoStart pins the orphan-cleanup
+// guard in killStaleServersForDir to the directory-aware policy check. With a
+// workspace that disables auto-start in its own config.yaml, an unset env var
+// and an empty global viper (the library-consumer shape), the server is
+// externally managed and nothing may be reaped. upstream's IsAutoStartDisabled()
+// cannot see that config, so the guard falls through and the same-repo
+// non-canonical process below would be killed.
+func TestKillStaleServersHonoursItsOwnDirectoryAutoStart(t *testing.T) {
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	config.ResetForTesting()
+	beadsDir := writeWorkspace(t, "false")
+	serverDir := resolveServerDir(beadsDir)
+	if err := os.MkdirAll(serverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canonicalPID, sameRepoPID := 111, 222
+	if err := os.WriteFile(pidPath(serverDir), []byte(strconv.Itoa(canonicalPID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var killed []int
+	got, err := killStaleServersForDir(
+		beadsDir,
+		[]int{canonicalPID, sameRepoPID},
+		func(int, string) bool { return true },
+		func(pid int) error {
+			killed = append(killed, pid)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("killStaleServersForDir error: %v", err)
+	}
+	if len(got) != 0 || len(killed) != 0 {
+		t.Fatalf("killed %v (callback %v) in a directory whose own config disables auto-start", got, killed)
 	}
 }
