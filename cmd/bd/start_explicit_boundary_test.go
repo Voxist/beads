@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil/bazeltest"
 )
 
 // doltserverImportPath is the fully-qualified import path this scan looks
@@ -62,11 +64,15 @@ const doltserverImportPath = "github.com/steveyegge/beads/internal/doltserver"
 // for same-package references to the exported StartExplicit identifier --
 // neither is reachable from this test, since a file inside internal/doltserver
 // never imports itself and so never matches the alias resolution above.
+//
+// Under plain go test the walk covers the whole module. Under Bazel it covers
+// only the source bd_test declares as data (cmd/bd, its doctor packages,
+// internal/doltserver, internal/storage/embeddeddolt/cmd), so a new caller
+// elsewhere is caught by the go test lanes, not the Bazel one. Either way the
+// walk must reach allowedFile, or it proved nothing.
 func TestOnlyDoltStartCallsStartExplicit(t *testing.T) {
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
-	}
+	repoRoot := bazeltest.RepoRoot(t)
+	visitedAllowed := false
 
 	const allowedFile = "cmd/bd/dolt.go"
 	const allowedVarName = "doltStartCmd"
@@ -135,6 +141,7 @@ func TestOnlyDoltStartCallsStartExplicit(t *testing.T) {
 		// comparison across the two vacuously false.
 		var allowedStart, allowedEnd token.Pos
 		if rel == allowedFile {
+			visitedAllowed = true
 			allowedStart, allowedEnd = declSpan(file, allowedVarName)
 			if allowedStart == token.NoPos {
 				t.Fatalf("could not find `var %s = ...` in %s -- has it been renamed or moved?", allowedVarName, rel)
@@ -152,6 +159,9 @@ func TestOnlyDoltStartCallsStartExplicit(t *testing.T) {
 	})
 	if walkErr != nil {
 		t.Fatalf("walk repo: %v", walkErr)
+	}
+	if !visitedAllowed {
+		t.Fatalf("the walk under %s never reached %s, so it scanned none of the code it guards", repoRoot, allowedFile)
 	}
 
 	if len(offenders) > 0 {
@@ -337,11 +347,10 @@ func (v *funcDeclScopedVisitor) Visit(n ast.Node) ast.Visitor {
 // source, shared by the two same-package guard tests below.
 func parseInternalDoltserver(t *testing.T, fset *token.FileSet) map[string]*ast.Package {
 	t.Helper()
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
-	}
-	dir := filepath.Join(repoRoot, "internal", "doltserver")
+	// bazeltest.RepoRoot resolves the module root under plain go test and the
+	// runfiles root under Bazel, where internal/doltserver's source is
+	// declared as data (//internal/doltserver:go_srcs on bd_test).
+	dir := filepath.Join(bazeltest.RepoRoot(t), "internal", "doltserver")
 	pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
 		return !strings.HasSuffix(fi.Name(), "_test.go")
 	}, 0)

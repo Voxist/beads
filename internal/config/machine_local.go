@@ -7,10 +7,11 @@ import (
 	"strings"
 )
 
-// LocalConfigFileName is the untracked sidecar that sits beside a project's
-// .beads/config.yaml. Initialize() already merges it LAST, so a value here
-// wins over the tracked config.yaml for the same key.
-const LocalConfigFileName = "config.local.yaml"
+// LocalConfigFileName moved to config.go when upstream adopted the same
+// constant with the identical value ("config.local.yaml"). Declaring it here
+// too would be a redeclaration, so this file now uses upstream's. The sidecar
+// still behaves as this package documents: Initialize() merges it LAST, so a
+// value there wins over the tracked config.yaml for the same key.
 
 const localConfigHeader = `# bd machine-local configuration.
 #
@@ -84,7 +85,7 @@ var MachineLocalKeys = map[string]bool{
 // project, and so must be written to the untracked sidecar. Exact match only —
 // see MachineLocalKeys.
 func IsMachineLocalKey(key string) bool {
-	return MachineLocalKeys[normalizeYamlKey(key)]
+	return MachineLocalKeys[key]
 }
 
 // LocalConfigPathFor returns the sidecar path beside the given config.yaml.
@@ -96,6 +97,22 @@ func LocalConfigPathFor(configPath string) string {
 // configPath, first migrating any machine-local keys already sitting in the
 // tracked config.yaml.
 func setMachineLocalYamlConfig(configPath, key, value string) error {
+	// The registry is the single decision point in BOTH directions:
+	// SaveConfigValue refuses a machine-local key, and this refuses one that is
+	// not. Without the second half a caller could re-create the split simply by
+	// picking a function.
+	if !IsMachineLocalKey(key) {
+		return fmt.Errorf("%q is not a machine-local key; use SetYamlConfig (or SetYamlConfigInDir) to write it to the tracked config.yaml", key)
+	}
+	// Run the SAME validation the literal writers run. Without this, moving the
+	// routing to the callers silently REMOVED a refusal: `bd config set
+	// dolt.mode bogus` is rejected by SetYamlConfigInDir but was accepted here,
+	// and the sidecar wins on read -- so the bad value became the live one.
+	// dolt.mode and dolt.debug both have cases in validateYamlConfigValue. A
+	// validator a caller escapes by choosing a destination is not a validator.
+	if err := validateYamlConfigValue(key, value); err != nil {
+		return err
+	}
 	localPath := LocalConfigPathFor(configPath)
 	if err := ensureLocalConfigFile(localPath); err != nil {
 		return err
@@ -111,7 +128,7 @@ func setMachineLocalYamlConfig(configPath, key, value string) error {
 	// commented out; committing the result sends every other clone back to
 	// embedded storage — a different, empty database. Leaving the tracked file
 	// alone costs nothing, because precedence already does the job.
-	return setSidecarYamlKey(localPath, normalizeYamlKey(key), value)
+	return setSidecarYamlKey(localPath, key, value)
 }
 
 // setSidecarYamlKey writes a key into the sidecar in the FLAT dotted form,
@@ -152,16 +169,30 @@ func setSidecarYamlKey(localPath, key, value string) error {
 // only an explicit edit should remove.
 func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, clearedTracked, clearedLocal bool, err error) {
 	localPath := LocalConfigPathFor(configPath)
-	normalized := normalizeYamlKey(key)
+	normalized := key
 
-	// Clear this machine's override first.
+	// COMPUTE BOTH EDITS BEFORE WRITING EITHER.
+	//
+	// Since the 2026-09-27 resync, commentOutYamlKeyAnyForm can REFUSE a shape
+	// (#6574's unsupportedUnsetShape) rather than always succeeding. Writing
+	// the sidecar first and only then discovering the tracked file is, say, a
+	// flow mapping left the unset half-applied while the command exited
+	// non-zero: the operator was told it failed, and their machine-local
+	// override was gone anyway. Computing both first means a refusal on either
+	// file leaves BOTH untouched, and the caller's purpose-built "nothing was
+	// removed, edit it by hand" message stays reachable.
+	var (
+		localUpdated string
+		writeLocal   bool
+		localContent string
+	)
 	if content, readErr := os.ReadFile(localPath); readErr == nil { //nolint:gosec // localPath derives from a resolved config.yaml path
-		if updated := commentOutYamlKeyAnyForm(string(content), normalized); updated != string(content) {
-			if writeErr := os.WriteFile(localPath, []byte(updated), 0o600); writeErr != nil {
-				return "", false, false, fmt.Errorf("failed to write %s: %w", LocalConfigFileName, writeErr)
-			}
-			clearedLocal = true
+		localContent = string(content)
+		updated, unsetErr := commentOutYamlKeyAnyForm(localContent, normalized)
+		if unsetErr != nil {
+			return "", false, false, unsetErr
 		}
+		localUpdated, writeLocal = updated, updated != localContent
 	} else if !os.IsNotExist(readErr) {
 		return "", false, false, fmt.Errorf("failed to read %s: %w", LocalConfigFileName, readErr)
 	}
@@ -180,19 +211,31 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 	trackedRaw, readErr := os.ReadFile(configPath) //nolint:gosec // configPath is a resolved config.yaml path
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
-			return "", false, clearedLocal, nil
+			clearedLocal, err = flushSidecarUnset(localPath, localUpdated, writeLocal)
+			return "", false, clearedLocal, err
 		}
-		return "", false, clearedLocal, fmt.Errorf("failed to read config.yaml: %w", readErr)
+		return "", false, false, fmt.Errorf("failed to read config.yaml: %w", readErr)
 	}
 	value, found := yamlValueInContent(string(trackedRaw), normalized)
 	if !found {
-		return "", false, clearedLocal, nil
+		clearedLocal, err = flushSidecarUnset(localPath, localUpdated, writeLocal)
+		return "", false, clearedLocal, err
 	}
 	// commentOutYamlKeyAnyForm is line-based and cannot reach a key inside a
 	// FLOW mapping (`dolt: {mode: server}`). Reporting clearedTracked=false
 	// there is what lets the caller say nothing was removed, instead of
 	// printing success and a side-effect consequence that did not happen.
-	updated := commentOutYamlKeyAnyForm(string(trackedRaw), normalized)
+	updated, unsetErr := commentOutYamlKeyAnyForm(string(trackedRaw), normalized)
+	if unsetErr != nil {
+		// Nothing has been written yet, so the sidecar override survives and
+		// the operator's state is exactly what it was before the command.
+		return "", false, false, unsetErr
+	}
+
+	// Both edits are known good; now write.
+	if clearedLocal, err = flushSidecarUnset(localPath, localUpdated, writeLocal); err != nil {
+		return "", false, false, err
+	}
 	if updated == string(trackedRaw) {
 		return "", false, clearedLocal, nil
 	}
@@ -200,6 +243,18 @@ func unsetMachineLocalYamlConfig(configPath, key string) (trackedValue string, c
 		return "", false, clearedLocal, fmt.Errorf("failed to write config.yaml: %w", writeErr)
 	}
 	return value, true, clearedLocal, nil
+}
+
+// flushSidecarUnset writes the sidecar edit computed by
+// unsetMachineLocalYamlConfig, once both edits are known to be applicable.
+func flushSidecarUnset(localPath, updated string, write bool) (bool, error) {
+	if !write {
+		return false, nil
+	}
+	if err := os.WriteFile(localPath, []byte(updated), 0o600); err != nil {
+		return false, fmt.Errorf("failed to write %s: %w", LocalConfigFileName, err)
+	}
+	return true, nil
 }
 
 // TrackedYamlValueFor reports a machine-local key's value still present in the
@@ -215,7 +270,7 @@ func TrackedYamlValueFor(configPath, key string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return yamlValueInContent(string(raw), normalizeYamlKey(key))
+	return yamlValueInContent(string(raw), key)
 }
 
 // ensureSidecarIgnored adds exactly the config.local.yaml line to
@@ -282,6 +337,31 @@ func yamlValueInContent(content, key string) (string, bool) {
 	return yamlValueFromBytes([]byte(content), key)
 }
 
+// SetMachineLocalYamlConfig writes key to the machine-local sidecar beside the
+// project config.yaml the caller is standing in.
+//
+// This is the EXPLICIT half of the machine-local split (bd-zj95 / upstream
+// #6125). The library's own writers -- SetYamlConfig, SetYamlConfigInDir,
+// UnsetYamlConfig -- deliberately write exactly where they are told, so a
+// caller that names a file gets that file and upstream #6574's dotted-key
+// round-trip guarantees hold unchanged. The ROUTING decision belongs to the
+// caller that knows the user's intent: `bd config set` (single and set-many),
+// `bd dolt set --update-config` and `bd init --debug` each pick between this
+// and a literal writer via IsMachineLocalKey.
+func SetMachineLocalYamlConfig(key, value string) error {
+	configPath, err := findProjectConfigYaml()
+	if err != nil {
+		return err
+	}
+	return setMachineLocalYamlConfig(configPath, key, value)
+}
+
+// SetMachineLocalYamlConfigInDir is SetMachineLocalYamlConfig for a named
+// workspace, for callers that already hold the beads dir.
+func SetMachineLocalYamlConfigInDir(beadsDir, key, value string) error {
+	return setMachineLocalYamlConfig(filepath.Join(beadsDir, "config.yaml"), key, value)
+}
+
 // MachineLocalYamlValue reads a key from the project's config.local.yaml ONLY,
 // never the tracked config.yaml.
 //
@@ -298,5 +378,5 @@ func MachineLocalYamlValue(key string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return readYamlValueAtPath(LocalConfigPathFor(configPath), normalizeYamlKey(key))
+	return readYamlValueAtPath(LocalConfigPathFor(configPath), key)
 }

@@ -41,6 +41,15 @@ FLAG SURFACE
   bd init --force               Deprecated alias for --reinit-local.
                                 Kept working for ≥2 releases.
 
+  bd init --recreate-missing    Authorize creating a fresh, empty database
+                                when this project's configured server-mode
+                                database is missing or unreachable. Opt-in
+                                per invocation only: never implied by
+                                --force/--reinit-local, config, or env.
+                                Without it, bd init REFUSES rather than
+                                silently recreating a lost database as
+                                empty (be-5up5).
+
   bd init --from-jsonl          Import from configured import.path. If
                                 origin has Dolt data, this refuses unless
                                 --discard-remote authorizes replacing that
@@ -87,6 +96,22 @@ RECOVERY
 
   If you hit a refusal, see docs/recovery/init-safety.md for step-by-step recovery
   playbooks for each exit code.
+
+RE-CLONE GOTCHAS
+
+  Setting a damaged or superseded database directory aside by hand, or
+  relying on a fresh clone right away? Two gotchas from live recovery:
+
+  Crash-loop: a set-aside store left INSIDE data_dir makes the sql-server
+  treat it as a database and crash-loop with "root hash doesn't exist:
+  <hash>". Move it OUTSIDE data_dir instead.
+
+  Missing tables: a fresh clone lacks clone-local tables (leases, wisps,
+  events, ...) until you run "bd migrate schema" (no --force). You'll see
+  "table not found: leases" until then; "Schema already at v<N>" after
+  running it is expected, not an error.
+
+  See docs/recovery/init-safety.md#re-clone-gotchas for full detail.
 `,
 	Run: func(cmd *cobra.Command, _ []string) {
 		evt := metrics.NewCommandEvent("init-safety")

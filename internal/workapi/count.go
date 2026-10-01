@@ -71,7 +71,10 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 	if len(in.MetadataFields) > 0 {
 		filter.MetadataFields = in.MetadataFields
 	}
-	if err := ValidateMetadataFilters(in.MetadataFields, ""); err != nil {
+	if in.HasMetadataKey != "" {
+		filter.HasMetadataKey = in.HasMetadataKey
+	}
+	if err := ValidateMetadataFilters(in.MetadataFields, in.HasMetadataKey); err != nil {
 		return types.IssueFilter{}, err
 	}
 
@@ -144,12 +147,14 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 //   - the wisps table is merged in (SkipWisps=false), picking up no_history
 //     beads and ephemeral wisps, like list's merge path;
 //   - template molecules are excluded (list's default);
-//   - gate beads are excluded unless requested via --type gate;
-//   - counting an infra type (agent/role/message, or the store-configured set)
-//     routes to the ephemeral wisps tier, like list's infra-type listing.
+//   - gate beads are excluded unless requested via --type gate.
 //
-// A count without IncludeInfra never calls this and keeps its historical
-// durable-only semantics.
+// Routing a named infra type to the ephemeral tier is not this function's: it
+// happens in BuildCountFilter for every count, with or without IncludeInfra.
+//
+// A count without IncludeInfra never calls this. It keeps its historical
+// durable-only semantics unless IncludeEphemeral admits the wisps tier, or
+// IssueType names an infra type (see BuildCountFilter).
 func applyCountIncludeInfra(filter *types.IssueFilter, issueType string) {
 	filter.SkipWisps = false
 
