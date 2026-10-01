@@ -228,6 +228,18 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.93.0",
+		Date:    "2026-09-29",
+		Changes: []string{
+			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It adds the guarded dolt-server Start funnel (Voxist/beads#62) and a Voxist-only secret-scan CI workflow (#61) on top of 1.92.0.",
+			"SCHEMA: unchanged at 0067. This release contains NO migration -- nothing under internal/storage/schema/migrations differs from 1.92.0 -- so upgrading is a binary swap and a store opened by 1.93.0 stays readable by 1.92.0. Rollback is a plain binary copy with no schema consequence.",
+			"FIX: every implicit dolt server spawn now goes through ONE guarded Start(), which resolves the auto-start policy from the workspace directory rather than each call site deciding for itself. Explicit starts keep their own entry point (StartExplicit), so `bd dolt start` is still ungated by design -- that is the command whose whole purpose is to start a server.",
+			"WHY IT MATTERS: before this, a call site that forgot the policy check could spawn an unmanaged server against a workspace that had disabled auto-start. 1.92.0 fixed the policy READER; this fixes the funnel, so a future call site cannot bypass it by construction rather than by remembering.",
+			"OPERATIONAL: BEADS_DOLT_AUTO_START=0 is still honored and should still be removed PER RIG, only after `bd version` confirms 1.93.0 on that rig. A proven binary is not a converged fleet.",
+			"NOT IN THIS RELEASE: the 2026-09-27 upstream resync (Voxist/beads#60) is deliberately held back. It carries migrations 0068 and 0069, which take the schema to 0069 and make rollback a restore-from-backup rather than a binary swap; it ships separately on its own migration plan.",
+		},
+	},
+	{
 		Version: "1.92.0",
 		Date:    "2026-09-26",
 		Changes: []string{
