@@ -415,3 +415,47 @@ func TestKillStaleServersHonoursItsOwnDirectoryAutoStart(t *testing.T) {
 		t.Fatalf("killed %v (callback %v) in a directory whose own config disables auto-start", got, killed)
 	}
 }
+
+// TestEnsureRunningNeverSpawnsInSharedMode pins the invariant that keeps the
+// shared-server directory's own policy out of EnsureRunningDetailed's reach.
+// Since the upstream lifecycle-lock merge it spawns through startLocked, not
+// Start, so Start's check of serverDir no longer runs there; it checks only
+// beadsDir. That is sound only because serverDir differs from beadsDir solely
+// in shared mode, and ResolveServerMode returns External in shared mode, which
+// refuses before startLocked. The shared dir's config PERMITS auto-start here,
+// so the refusal cannot be coming from that file: if shared mode ever stops
+// resolving External, this fails and the serverDir gate has to come back.
+func TestEnsureRunningNeverSpawnsInSharedMode(t *testing.T) {
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	config.ResetForTesting()
+	beadsDir := writeWorkspace(t, "true")
+	sharedDir := t.TempDir()
+	t.Setenv("BEADS_SHARED_SERVER_DIR", sharedDir)
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+	if err := os.WriteFile(filepath.Join(sharedDir, "config.yaml"), []byte("dolt.auto-start: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveServerDir(beadsDir); got != sharedDir {
+		t.Fatalf("resolveServerDir(beadsDir) = %q, want the shared-server dir %q; the fixture is not in shared mode", got, sharedDir)
+	}
+	if IsAutoStartDisabledFor(beadsDir) || IsAutoStartDisabledFor(sharedDir) {
+		t.Fatal("fixture: both directories must permit auto-start, or the refusal below could come from policy")
+	}
+
+	t.Cleanup(func() {
+		if state, err := IsRunning(sharedDir); err == nil && state != nil && state.Running {
+			t.Errorf("a server was started at %s (pid %d, port %d) in shared mode; killing it", sharedDir, state.PID, state.Port)
+			if stopErr := StopWithForce(sharedDir, true); stopErr != nil {
+				t.Errorf("FAILED TO KILL the leaked server (pid %d): %v -- kill it by hand", state.PID, stopErr)
+			}
+		}
+	})
+
+	port, startedByUs, err := EnsureRunningDetailed(beadsDir)
+	if err == nil || startedByUs {
+		t.Fatalf("EnsureRunningDetailed in shared mode returned port=%d startedByUs=%v err=%v; it must refuse to spawn", port, startedByUs, err)
+	}
+	if _, statErr := os.Stat(pidPath(sharedDir)); !os.IsNotExist(statErr) {
+		t.Errorf("EnsureRunningDetailed wrote server state in shared mode (pid file stat err: %v)", statErr)
+	}
+}

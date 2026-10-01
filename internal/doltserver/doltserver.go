@@ -55,9 +55,21 @@ var ErrServerNotRunning = errors.New("dolt server is not running")
 // bd must not spawn a server there. The directory is treated as externally
 // managed.
 //
-// Start is the only function that spawns a bd-MANAGED, non-proxied dolt
-// sql-server, and before this existed the refusal was hand-applied at each
-// call site that applied it at all instead -- which was only two of Start's
+// startLocked is the only function that spawns a bd-MANAGED, non-proxied
+// dolt sql-server. Its entries, and the gate each one passes:
+//   - Start: this sentinel, via startInternal, for every implicit caller.
+//   - StartExplicit: none, by design (`bd dolt start`).
+//   - EnsureRunningDetailed: its own IsAutoStartDisabledFor(beadsDir) check,
+//     ahead of startLocked. It checks beadsDir only, which is sound because
+//     serverDir differs from beadsDir only in shared mode, and shared mode
+//     resolves External and refuses earlier
+//     (TestEnsureRunningNeverSpawnsInSharedMode).
+//   - Restart: none. It is an explicit stop-then-start of a managed server
+//     (upstream #6020) with no caller in bd; a library caller must apply the
+//     policy itself before calling it.
+//
+// Before this existed the refusal was hand-applied at each call site that
+// applied it at all instead -- which was only two of Start's
 // four call sites (applyServer, EnsureRunningDetailed); bd init's shared-
 // global-database block had no check whatsoever, and the explicit `bd dolt
 // start` deliberately had none by design. A caller that forgot the check
@@ -79,14 +91,11 @@ var ErrServerNotRunning = errors.New("dolt server is not running")
 // reports the skip as its ApplyResult and stops, matching what its own
 // pre-check (the common case) already does.
 //
-// EnsureRunningDetailed does NOT surface this sentinel: it has its own
-// equivalent auto-start check ahead of calling Start (consulting the same
-// IsAutoStartDisabledFor(beadsDir)) and returns its own descriptive,
-// situation-specific error before ever reaching Start, so it never receives
-// ErrAutoStartDisabled via errors.Is in that case. Its refusal already
-// matches Start's decision; Start's own gate exists as the funnel of last
-// resort for callers -- present and future -- that call Start directly
-// without going through EnsureRunningDetailed first.
+// EnsureRunningDetailed does NOT surface this sentinel: it holds the
+// lifecycle lock and spawns through startLocked rather than Start, after its
+// own equivalent check (see above), and returns its own descriptive,
+// situation-specific error instead. Start's gate is the funnel for callers --
+// present and future -- that call Start directly.
 //
 // The one caller that must NOT see this error is the explicit `bd dolt
 // start` command, which calls StartExplicit instead of Start.

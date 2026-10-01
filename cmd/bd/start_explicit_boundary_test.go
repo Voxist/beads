@@ -64,11 +64,15 @@ const doltserverImportPath = "github.com/steveyegge/beads/internal/doltserver"
 // for same-package references to the exported StartExplicit identifier --
 // neither is reachable from this test, since a file inside internal/doltserver
 // never imports itself and so never matches the alias resolution above.
+//
+// Under plain go test the walk covers the whole module. Under Bazel it covers
+// only the source bd_test declares as data (cmd/bd, its doctor packages,
+// internal/doltserver, internal/storage/embeddeddolt/cmd), so a new caller
+// elsewhere is caught by the go test lanes, not the Bazel one. Either way the
+// walk must reach allowedFile, or it proved nothing.
 func TestOnlyDoltStartCallsStartExplicit(t *testing.T) {
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
-	}
+	repoRoot := bazeltest.RepoRoot(t)
+	visitedAllowed := false
 
 	const allowedFile = "cmd/bd/dolt.go"
 	const allowedVarName = "doltStartCmd"
@@ -137,6 +141,7 @@ func TestOnlyDoltStartCallsStartExplicit(t *testing.T) {
 		// comparison across the two vacuously false.
 		var allowedStart, allowedEnd token.Pos
 		if rel == allowedFile {
+			visitedAllowed = true
 			allowedStart, allowedEnd = declSpan(file, allowedVarName)
 			if allowedStart == token.NoPos {
 				t.Fatalf("could not find `var %s = ...` in %s -- has it been renamed or moved?", allowedVarName, rel)
@@ -154,6 +159,9 @@ func TestOnlyDoltStartCallsStartExplicit(t *testing.T) {
 	})
 	if walkErr != nil {
 		t.Fatalf("walk repo: %v", walkErr)
+	}
+	if !visitedAllowed {
+		t.Fatalf("the walk under %s never reached %s, so it scanned none of the code it guards", repoRoot, allowedFile)
 	}
 
 	if len(offenders) > 0 {
