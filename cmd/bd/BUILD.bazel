@@ -1225,6 +1225,7 @@ go_test(
         "//:bd_test_files",
         "//cmd/bd/doctor:go_srcs",
         "//cmd/bd/doctor/fix:go_srcs",
+        "//internal/doltserver:go_srcs",
         "//internal/storage/embeddeddolt/cmd:go_srcs",
         "@go_sdk//:bin/gofmt",
     ],

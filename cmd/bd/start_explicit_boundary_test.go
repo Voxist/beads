@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil/bazeltest"
 )
 
 // doltserverImportPath is the fully-qualified import path this scan looks
@@ -337,11 +339,10 @@ func (v *funcDeclScopedVisitor) Visit(n ast.Node) ast.Visitor {
 // source, shared by the two same-package guard tests below.
 func parseInternalDoltserver(t *testing.T, fset *token.FileSet) map[string]*ast.Package {
 	t.Helper()
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
-	}
-	dir := filepath.Join(repoRoot, "internal", "doltserver")
+	// bazeltest.RepoRoot resolves the module root under plain go test and the
+	// runfiles root under Bazel, where internal/doltserver's source is
+	// declared as data (//internal/doltserver:go_srcs on bd_test).
+	dir := filepath.Join(bazeltest.RepoRoot(t), "internal", "doltserver")
 	pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
 		return !strings.HasSuffix(fi.Name(), "_test.go")
 	}, 0)
