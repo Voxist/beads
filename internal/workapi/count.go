@@ -43,8 +43,12 @@ func ValidateCountGroup(group issueops.CountGroup) (string, error) {
 // pinned by a golden-style test comparing this builder's output against
 // BuildListFilter's for the same request (count_test.go, GH#4387).
 //
-// cfg supplies the workspace's infra vocabulary and is only read under
-// IncludeInfra; a zero ListConfig falls back to the default infra set.
+// cfg supplies the workspace's infra vocabulary. It is read on EVERY request
+// that names a type, not only under IncludeInfra — naming an infra type decides
+// the plane and the ephemeral narrowing below, exactly as it does in
+// BuildListFilter. A zero ListConfig falls back to the DEFAULT infra set, which
+// is wrong for any workspace that configured types.infra, so both counters must
+// load it whenever IssueType is set (storecounter.filter, uow.countFilter).
 func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilter, error) {
 	filter := types.IssueFilter{
 		TitleSearch:         in.TitleSearch,
@@ -103,9 +107,32 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 		filter.IDs = ids
 	}
 
+	// The plane bit, and it must agree with BuildListFilter's. An infra type
+	// is ALWAYS written to the wisps table (dolt's useWispsTable includes
+	// IsInfraType), so naming one and then skipping that plane evaluates the
+	// type predicate only against rows that cannot carry it: the count is 0
+	// for every infra type, while `bd list --type <same>` returns rows.
+	//
+	// list.go admits the plane for a named infra type; this arm was a bare
+	// `else`, which is the whole of the divergence. The clause below is
+	// list.go's, verbatim, minus the IncludeInfra term the branch above
+	// already consumed.
+	//
+	// Naming an infra type also NARROWS to the ephemeral rows of that type,
+	// which is BuildListFilter's second half of the same decision (list.go,
+	// `if cfg.IsInfra(in.IssueType)`). Admitting the plane without it counts
+	// MORE than the listing returns: an infra bead created --no-history lands
+	// in the wisps table with Ephemeral=false, and a nil Ephemeral merges both
+	// tables. Without this, `--include-infra` — which does set it — would make
+	// the count go DOWN, which is not a thing an "include" flag may do.
+	if in.IssueType != "" && cfg.IsInfra(in.IssueType) {
+		ephemeral := true
+		filter.Ephemeral = &ephemeral
+	}
+
 	if in.IncludeInfra {
-		applyCountIncludeInfra(&filter, in.IssueType, cfg)
-	} else if !in.IncludeEphemeral {
+		applyCountIncludeInfra(&filter, in.IssueType)
+	} else if !in.IncludeEphemeral && (in.IssueType == "" || !cfg.IsInfra(in.IssueType)) {
 		filter.SkipWisps = true
 	}
 	return filter, nil
@@ -125,9 +152,9 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 //     routes to the ephemeral wisps tier, like list's infra-type listing.
 //
 // A count without IncludeInfra never calls this. It keeps its historical
-// durable-only semantics unless IncludeEphemeral admits the wisps tier: the
-// first of the changes above, with none of the rest.
-func applyCountIncludeInfra(filter *types.IssueFilter, issueType string, cfg ListConfig) {
+// durable-only semantics unless IncludeEphemeral admits the wisps tier, or
+// IssueType names an infra type (see BuildCountFilter).
+func applyCountIncludeInfra(filter *types.IssueFilter, issueType string) {
 	filter.SkipWisps = false
 
 	isTemplate := false
@@ -137,8 +164,8 @@ func applyCountIncludeInfra(filter *types.IssueFilter, issueType string, cfg Lis
 		filter.ExcludeTypes = append(filter.ExcludeTypes, "gate")
 	}
 
-	if issueType != "" && cfg.IsInfra(issueType) {
-		ephemeral := true
-		filter.Ephemeral = &ephemeral
-	}
+	// The infra-type ephemeral narrowing that used to live here is now hoisted
+	// into BuildCountFilter, because the default path needs it too. Setting it
+	// again here would be a no-op with the same value; leaving it out keeps one
+	// writer for the field.
 }

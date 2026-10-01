@@ -81,13 +81,19 @@ func TestCountIncludeEphemeralIsThePlaneBitAndNothingElse(t *testing.T) {
 	// ephemeral tier.
 	cfg := ListConfig{}
 
+	//
+	// The one Ephemeral=true below is NOT IncludeEphemeral's doing: naming an
+	// infra type narrows to its ephemeral rows on its own, exactly as
+	// BuildListFilter does (fork #37/#38). IncludeEphemeral must not add that
+	// narrowing for any other type.
 	for _, tt := range []struct {
-		name      string
-		issueType string
+		name          string
+		issueType     string
+		wantEphemeral bool
 	}{
-		{"no type", ""},
-		{"a named type", "task"},
-		{"an infra type", "agent"},
+		{"no type", "", false},
+		{"a named type", "task", false},
+		{"an infra type", "agent", true},
 	} {
 		t.Run("include-ephemeral with "+tt.name, func(t *testing.T) {
 			plane, err := BuildCountFilter(issueops.CountRequest{IssueType: tt.issueType, IncludeEphemeral: true}, cfg)
@@ -103,7 +109,11 @@ func TestCountIncludeEphemeralIsThePlaneBitAndNothingElse(t *testing.T) {
 			if len(plane.ExcludeTypes) != 0 {
 				t.Errorf("ExcludeTypes = %v, want none: the gate exclusion is IncludeInfra's, not the plane's", plane.ExcludeTypes)
 			}
-			if plane.Ephemeral != nil {
+			if tt.wantEphemeral {
+				if plane.Ephemeral == nil || !*plane.Ephemeral {
+					t.Error("Ephemeral not set for an infra type; naming one narrows to its ephemeral rows, as bd list does")
+				}
+			} else if plane.Ephemeral != nil {
 				t.Errorf("Ephemeral = %v, want nil: true would route the count to the wisps tier ALONE, and this admits it in addition", *plane.Ephemeral)
 			}
 		})
@@ -145,19 +155,13 @@ func TestCountIncludeEphemeralIsThePlaneBitAndNothingElse(t *testing.T) {
 }
 
 // TestCountAndListPlaneAgreement pins how count and list decide the PLANE for
-// the same request — including the ONE case where they disagree.
+// the same request.
 //
-// The name is not "AgreeOnThePlane" because they do not always agree, and a
-// test that claimed they did would be asserting a property the code lacks. For
-// an INFRA type they diverge: list reads the plane (applyTypeSuppressions
-// exempts infra types) while count does not, so `bd count --type agent` answers
-// 0 where `bd list --type agent` returns rows.
-//
-// That divergence predates the flag — the count arm is a bare `else {
-// SkipWisps = true }`, so it answers 0 for an infra type with or without this
-// change. It is pinned here, not fixed: the fix is a separate decision about
-// what naming an infra type should admit, and this change deliberately alters
-// nothing about the default arm.
+// Upstream pinned an INFRA type as the one divergence (list read the plane,
+// count did not, so `bd count --type agent` answered 0 where `bd list --type
+// agent` returned rows) and left the fix as a separate decision. The fork made
+// it in #37/#38: naming an infra type admits the plane in count too, so the
+// infra case now agrees.
 //
 // It asserts the ABSOLUTE expected value as well as the agreement. Agreement
 // alone is satisfied by a regression that turns the flag into a no-op on BOTH
@@ -184,9 +188,8 @@ func TestCountAndListPlaneAgreement(t *testing.T) {
 		{"named type", "task", false, true, true},
 		{"include-ephemeral", "", true, false, true},
 		{"named type + include-ephemeral", "task", true, false, true},
-		// The known divergence. list reads the plane for an infra type, count
-		// does not; --include-ephemeral recovers count.
-		{"infra type diverges", "agent", false, true, false},
+		// Upstream's known divergence, fixed by fork #37/#38.
+		{"infra type agrees", "agent", false, false, true},
 		{"infra type + include-ephemeral", "agent", true, false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

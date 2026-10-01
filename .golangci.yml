@@ -610,6 +610,12 @@ linters:
         linters:
           - unparam
         text: 'buildBlockingMaps.*childrenMap'
+      # unparam: primeGitCmd keeps its error result for future callers that
+      # can fail (see its NOTE); every current return path pairs with nil.
+      - path: 'cmd/bd/prime\.go'
+        linters:
+          - unparam
+        text: 'primeGitCmd'
       # unparam: truncateID maxLen kept for readability
       - path: 'cmd/bd/migrate\.go'
         linters:
