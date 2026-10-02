@@ -228,6 +228,18 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.94.0",
+		Date:    "2026-10-01",
+		Changes: []string{
+			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It carries the upstream resync (Voxist/beads#60): fork 1.93.0 merged with upstream main at 46e670abb.",
+			"SCHEMA: 0067 -> 0069. Migrations 0068_add_attribution_status and 0069_widen_issue_versions_datetime_precision touch only issue_versions. This is NOT a binary swap: 1.93.0 refuses a v69 store on every command, reads included, and there is no down-migration runner.",
+			"MIGRATION: shared and remote-backed stores are not migrated automatically. Run `bd migrate schema --force` once per database with the store quiesced, then verify with SQL (schema_migrations max = 69, ignored_schema_migrations max = 27). The --json result can report applied:0 even when it migrated, because the store open applies the migrations under --force consent first.",
+			"ROLLBACK: restore the filesystem snapshot (fsck'd APFS clone) taken before migrating. DOLT_BACKUP artifacts do not carry the dolt-ignored plane (wisps, events, the ignored_schema_migrations cursor) and are NOT a rollback for this release.",
+			"ORDER: upgrade every bd client before or together with the migration. A 1.94.0 client against a 67 store can read but its writes are refused by the shared-store gate.",
+			"FIX (kept through the resync): bd count --type <infra type> reads the same plane and ephemeral rows as bd list, using the workspace's own types.infra vocabulary (fork #37/#38).",
+		},
+	},
+	{
 		Version: "1.93.0",
 		Date:    "2026-09-29",
 		Changes: []string{
