@@ -228,6 +228,15 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.94.1",
+		Date:    "2026-10-06",
+		Changes: []string{
+			"FORK RELEASE: a Voxist/beads hotfix on 1.94.0. It adds one upstream-unmerged change, Eric Cestari's f02fff7bb (Voxist/beads#66, offered upstream as gastownhall/beads#7297).",
+			"SCHEMA: unchanged at 0069 (ignored plane 0027). This is a binary swap; rollback is a plain binary copy back to 1.94.0.",
+			"PERF: every write-capable store open checks the ignored-plane sentinel column leases.granted_node. That check used INFORMATION_SCHEMA.COLUMNS, which Dolt evaluates across every database on the server. On a shared server with 10 databases it took up to 4.3 s under load, and concurrent opens stacked up into client i/o timeouts. It now uses SHOW COLUMNS: about 1 ms against about 100 ms in the same measurement.",
+		},
+	},
+	{
 		Version: "1.94.0",
 		Date:    "2026-10-01",
 		Changes: []string{
