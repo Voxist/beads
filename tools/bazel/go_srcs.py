@@ -41,6 +41,7 @@ PACKAGES = (
     "cmd/bd/doctor",  # //cmd/bd:bd_test (events-journal construction scan)
     "cmd/bd/doctor/fix",  # //cmd/bd:bd_test (events-journal construction scan)
     "internal/doltserver",  # //cmd/bd:bd_test (Start funnel boundary scan)
+    "internal/httpclient",  # //internal/httpclient/wire:wire_test (handshake/skew AST sweep)
     "internal/types",  # role facade alias targets
     "issueops",  # //backend/conformance (role facade census)
     "journalops",  # //backend/conformance (role facade census)

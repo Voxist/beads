@@ -83,11 +83,22 @@ useDefault = true
 # Each entry needs a `paths` regex and a one-line reason. Keep entries
 # narrow (a fixture directory or a specific doc file), not broad globs.
 #
-# Currently empty: nothing upstream has tripped a finding yet.
+# Entries:
+#   - scripts/ci_workflow_test.go (Voxist/beads#67, resync to upstream
+#     b1bee123b): upstream 516e0b4bf and 88d9b645a tripped generic-api-key on
+#     a pinned GitHub Action commit SHA (appTokenActionSHA) and on
+#     `${{ secrets.NAME }}` workflow template expressions. Neither is a
+#     credential.
 #
 # Example (uncomment and adapt when actually needed):
 # [[allowlists]]
 # description = "upstream test fixtures with fake credentials — <link to resync PR / upstream commit>"
 # paths = [
-#   r"""(?:^|/)testdata/(?:.*)$""",
+#   '''(?:^|/)testdata/(?:.*)$''',  # TOML literal string; r"""…""" is not TOML
 # ]
+
+[[allowlists]]
+description = "upstream CI workflow tests: pinned action SHAs and ${{ secrets.* }} template strings, not credentials (Voxist/beads#67)"
+paths = [
+  '''^scripts/ci_workflow_test\.go$''',
+]

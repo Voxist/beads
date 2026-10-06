@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -831,9 +832,10 @@ func runConfigUnsetYamlOnly(key string) error {
 	var trackedValue string
 	var clearedTracked, clearedLocal bool
 	if config.IsUserGlobalKey(key) {
-		unsetErr = config.UnsetUserYamlConfig(key)
+		// The user-global file is the only one, so "changed" is the whole
+		// answer; it is reported as clearedLocal to share the branches below.
+		clearedLocal, unsetErr = config.UnsetUserYamlConfig(key)
 		location = config.UserConfigYamlDisplayPath()
-		clearedLocal = true // user-global has one file; nothing to disambiguate
 	} else {
 		// A machine-local key can live in BOTH the sidecar and the tracked
 		// config.yaml, so the fork uses the reporting variant to learn which
@@ -851,7 +853,9 @@ func runConfigUnsetYamlOnly(key string) error {
 	// happen: a key inside a YAML flow mapping is out of the line-based
 	// remover's reach, and a key that was never set has nothing to remove.
 	// Both used to print success plus a config_side_effects consequence.
+	notSetIn := location
 	if config.IsMachineLocalKey(key) {
+		notSetIn = config.LocalConfigFileName + " or config.yaml"
 		switch {
 		case clearedLocal && clearedTracked:
 			location = config.LocalConfigFileName + " and config.yaml"
@@ -863,15 +867,24 @@ func runConfigUnsetYamlOnly(key string) error {
 	}
 
 	if !clearedLocal && !clearedTracked {
+		// The secret-row cleanup ran regardless of the YAML outcome, so its
+		// result is reported on this branch too.
 		if jsonOutput {
-			return outputJSON(map[string]interface{}{
-				"key":     key,
-				"removed": false,
-				"reason":  "not set in config.local.yaml or config.yaml, or defined inside a YAML flow mapping that must be edited by hand",
-			})
+			payload := map[string]interface{}{
+				"key":      key,
+				"location": "",
+				"removed":  false,
+				"changed":  false,
+				"reason":   "not set in " + notSetIn + ", or defined inside a YAML flow mapping that must be edited by hand",
+			}
+			if config.IsSecretKey(key) {
+				cleanup.jsonFields(payload)
+			}
+			return outputJSON(payload)
 		}
-		fmt.Printf("%s was not removed: it is not set in %s or config.yaml.\n", key, config.LocalConfigFileName)
+		fmt.Printf("%s was not removed: it is not set in %s.\n", key, notSetIn)
 		fmt.Printf("  (a key written inside a flow mapping, e.g. `dolt: {mode: server}`, must be edited by hand)\n")
+		cleanup.describe(key, notSetIn)
 		return nil
 	}
 
@@ -880,6 +893,7 @@ func runConfigUnsetYamlOnly(key string) error {
 			"key":      key,
 			"location": location,
 			"removed":  true,
+			"changed":  true,
 		}
 		// A machine-local unset can touch BOTH files. Reporting only the
 		// sidecar told a scripted caller -- this repo's own tooling among them
@@ -901,6 +915,11 @@ func runConfigUnsetYamlOnly(key string) error {
 		}
 		cleanup.describe(key, location)
 	}
+	// Reached only after a real write: the no-op branch returned above. Every
+	// hint in checkConfigUnsetSideEffects is phrased in the completed past
+	// tense ("Backup config removed...") and most hand the operator a
+	// follow-up command, so printing them on a no-op contradicted the line
+	// just printed. The hint goes to stderr, so --json does not suppress it.
 	printConfigSideEffects(checkConfigUnsetSideEffects(key))
 	return nil
 }
@@ -959,14 +978,44 @@ var configUnsetCmd = &cobra.Command{
 		}
 		noteDirectConfigWrite()
 
+		// Clear the config.yaml layer unconditionally and report what the
+		// write actually did. Pre-checking with GetYamlConfig would read
+		// viper's *merged* value - SetDefault values and AutomaticEnv
+		// included - so a key with a non-empty default (no-hooks, json,
+		// events-journal-retain-days, ...) looked present in config.yaml even
+		// in a workspace with no config.yaml at all. That produced a more
+		// specific false claim than the message this fix removed, and, with no
+		// project config.yaml, failed the command after the database row was
+		// already gone.
+		//
+		// A config.yaml the unset refuses to edit (a flow-style mapping, a
+		// block value) is reported as exactly that: any database row is
+		// already gone, but the key is still effective from the file, so this
+		// still fails. "Any": UnsetSettingResult cannot say whether a row
+		// existed, since the storage seam discards the affected-row count.
+		location := "database"
+		yamlCleared, err := config.UnsetYamlConfig(result.Key)
+		// A workspace with no project config.yaml has no YAML layer to clear, so
+		// the database write above is the whole unset and this succeeds - that is
+		// the case that used to fail the command after the row was already gone.
+		// A config.yaml that exists and refused the edit is the opposite: the key
+		// is still effective from the file, so that still fails.
+		if err != nil && !errors.Is(err, config.ErrNoProjectConfigYaml) {
+			return HandleError("%s is still set in config.yaml (any database row was removed): %v", result.Key, err)
+		}
+		if yamlCleared {
+			location = "database, config.yaml"
+		}
+
 		if jsonOutput {
 			if err := outputJSON(map[string]string{
-				"key": result.Key,
+				"key":      result.Key,
+				"location": location,
 			}); err != nil {
 				return err
 			}
 		} else {
-			fmt.Printf("Unset %s\n", result.Key)
+			fmt.Printf("Unset %s (in %s)\n", result.Key, location)
 		}
 		printConfigSideEffects(checkConfigUnsetSideEffects(result.Key))
 		return nil
