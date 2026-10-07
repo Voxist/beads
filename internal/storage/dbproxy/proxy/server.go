@@ -265,7 +265,17 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 		return fmt.Errorf("%w for %s: stop epoch advanced before startup", errStartInterrupted, p.rootDir)
 	}
 
-	lj := newProxyLogWriter(filepath.Join(p.rootDir, LogFileName))
+	logPath := filepath.Join(p.rootDir, LogFileName)
+	// lumberjack opens its file on the first write, but proxy.log has always
+	// existed from startup (upstream opens it O_CREATE here). Create it now so
+	// the directory's contents do not depend on whether anything has logged
+	// yet: TestProxy_BackendDialFailureHasStableDiagnosticAndNoFallbackFiles
+	// snapshots the directory after startup and flaked ~8% of runs without
+	// this.
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil { // #nosec G304 -- logPath is derived from operator-supplied config, not untrusted request input
+		_ = f.Close()
+	}
+	lj := newProxyLogWriter(logPath)
 	p.logger = log.New(lj, "[proxy] ", log.LstdFlags|log.Lmicroseconds)
 	defer func() { _ = lj.Close() }()
 
