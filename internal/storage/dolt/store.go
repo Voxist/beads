@@ -2429,9 +2429,20 @@ func (s *DoltStore) verifyProjectIdentity(ctx context.Context, beadsDir string, 
 		return nil // old-style metadata.json without project_id — skip
 	}
 
-	// Read project ID from database metadata table
+	// Read project ID from database metadata table. GetMetadata (via
+	// withReadTx) already retries transient connection errors for up to
+	// serverRetryMaxElapsed before giving up, so an error reaching here means
+	// that budget is spent — the identity genuinely could not be read, not
+	// merely a database too old to have one. Treating the two the same was
+	// the bug: a dolt server restart's warming window produces exactly this
+	// kind of transient read failure at the same moment reclaimPort frees the
+	// port for reuse, and failing open here silently granted the connection
+	// instead of refusing it like a real mismatch would.
 	dbID, err := s.GetMetadata(ctx, "_project_id")
-	if err != nil || dbID == "" {
+	if err != nil {
+		return fmt.Errorf("verify project identity: read database project id: %w", err)
+	}
+	if dbID == "" {
 		return nil // old database without project_id — skip
 	}
 
@@ -2502,8 +2513,14 @@ func (s *DoltStore) verifyGlobalProjectIdentity(ctx context.Context, beadsDir st
 		return nil
 	}
 
+	// Same split as verifyProjectIdentity above: a read error is a failed
+	// read, not evidence of a legacy database, and GetMetadata has already
+	// exhausted its own bounded retry by the time it reaches us.
 	dbID, err := s.GetMetadata(ctx, "_project_id")
-	if err != nil || dbID == "" {
+	if err != nil {
+		return fmt.Errorf("verify global project identity: read database project id: %w", err)
+	}
+	if dbID == "" {
 		return nil
 	}
 
