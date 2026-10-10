@@ -304,6 +304,13 @@ func RestartSharedDoltContainer() (int, error) {
 		doltServerErr = err
 		return 0, err
 	}
+	// Provisioning declares (vp-hlfzn) — same rule as ensureSharedContainer:
+	// this call replaced the shared test server, so the port it exports is a
+	// declared test server, not an ambient one.
+	if err := os.Setenv("BEADS_TEST_SERVER", "1"); err != nil {
+		doltServerErr = fmt.Errorf("set BEADS_TEST_SERVER: %w", err)
+		return 0, doltServerErr
+	}
 	if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
 		doltServerErr = fmt.Errorf("set BEADS_DOLT_PORT: %w", err)
 		return 0, doltServerErr
@@ -458,9 +465,15 @@ func startIsolatedDoltContainer(t *testing.T) *IsolatedDoltContainer {
 // StartIsolatedDoltContainer starts a per-test Dolt container and returns the
 // mapped host port, additionally pointing BEADS_DOLT_PORT and
 // BEADS_DOLT_SERVER_PORT at it for the duration of the test.
+//
+// It also declares BEADS_TEST_SERVER=1 (vp-hlfzn): this call provisioned a
+// real test server, so the port it just wrote into the environment is a
+// declared test server, not an ambient one. Without the declaration,
+// RequireDeclaredTestServer would refuse the very tests this helper powers.
 func StartIsolatedDoltContainer(t *testing.T) string {
 	t.Helper()
 	c := StartIsolatedDoltContainerHandle(t)
+	t.Setenv("BEADS_TEST_SERVER", "1")
 	t.Setenv("BEADS_DOLT_PORT", c.Port)
 	t.Setenv("BEADS_DOLT_SERVER_PORT", c.Port)
 	return c.Port
@@ -468,13 +481,22 @@ func StartIsolatedDoltContainer(t *testing.T) string {
 
 // ensureSharedContainer starts the singleton container and sets
 // BEADS_DOLT_PORT and BEADS_DOLT_SERVER_PORT.
+//
+// Declaration is tied to SUCCESSFUL provisioning (vp-hlfzn): only when the
+// container actually started is BEADS_TEST_SERVER set to 1. A failed
+// provisioning must leave the process undeclared, so RequireDeclaredTestServer
+// refuses store-creating tests that would otherwise fall through to an
+// env-inherited port — the live city server under a gc-managed agent shell
+// (the vp-kmgu incident shape).
 func ensureSharedContainer() {
 	doltServerOnce.Do(func() {
 		doltServerMu.Lock()
 		defer doltServerMu.Unlock()
 		doltServerErr = startDoltContainer()
 		if doltServerErr == nil && doltTestPort != "" {
-			if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
+			if err := os.Setenv("BEADS_TEST_SERVER", "1"); err != nil {
+				doltServerErr = fmt.Errorf("set BEADS_TEST_SERVER: %w", err)
+			} else if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
 				doltServerErr = fmt.Errorf("set BEADS_DOLT_PORT: %w", err)
 			} else if err := os.Setenv("BEADS_DOLT_SERVER_PORT", doltTestPort); err != nil {
 				doltServerErr = fmt.Errorf("set BEADS_DOLT_SERVER_PORT: %w", err)
