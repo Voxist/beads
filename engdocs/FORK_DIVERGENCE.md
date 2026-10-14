@@ -459,6 +459,26 @@ Recurring conflicts, roughly in descending pain:
    #6096 landed the fork's own BSD-sed fix upstream, so the file is
    byte-identical again and only the hash line in `default.nix` conflicts.
 4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
+5. **Migration gates** — `internal/storage/schema/schema.go` (`MigrateUp`),
+   `internal/storage/embeddeddolt/store.go`, and the override block in
+   `cmd/bd/main.go`. Since 2026-10-14 upstream has its own migration-consent
+   gate in the same spot as the fork's MIGRATION-FREEZE gate. Keep the order
+   freeze, then consent, then body: a frozen workspace must report the freeze,
+   not a "run bd migrate" hint. Upstream's `migrateUpConsented` (the
+   fresh-bootstrap heal path) skips consent but must still check the freeze.
+   In `main.go` the fork's copy of the `--force`/consent block sits *before*
+   the freeze lookup, so drop upstream's later copy and carry over any new
+   `schema.Set*` line it adds.
+6. **CI shard manifests** — `.github/scripts/{embedded-cmd,embedded-storage,
+   proxied-cmd}-test-shards.txt`. Upstream re-shards them wholesale, so never
+   hand-merge them. Take upstream's file, then re-place the fork-only tests
+   with `scripts/ci/gen_*_shard_manifest.py <N> --weights=duration --write`
+   (N is in the file header). There were 7 fork-only tests at the 2026-10-14
+   resync.
+
+Verify a resync's embedded zones with `BEADS_TEST_EMBEDDED_DOLT=1` and `-v`.
+Without that variable every `TestEmbedded*` test SKIPs, and `go test` still
+prints `ok`.
 
 ## Parked, deliberately not carried
 
