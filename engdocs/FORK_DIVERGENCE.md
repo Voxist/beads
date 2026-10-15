@@ -157,6 +157,7 @@ carry — each fixes an upstream bug the fork happened to hit.
 | [#6125](https://github.com/gastownhall/beads/pull/6125) | #35 | machine-local config keys routed to the `config.local.yaml` sidecar (#6124 was its closed first attempt). 121 green, awaiting review. |
 | [#6240](https://github.com/gastownhall/beads/pull/6240) | #32 | `--include-ephemeral` on `bd count` — the other half of the pair #6098 landed. One red is the 20m `Differential Regression` budget, noted for maintainers. |
 | [#6251](https://github.com/gastownhall/beads/pull/6251) | #39 | `MIGRATION-FREEZE` findable in `.beads/` outside Gas Town. |
+| [#7565](https://github.com/gastownhall/beads/pull/7565) | branch `fix/verify-project-identity-read-error-fc` (no fork-side PR; filed 2026-10-15) | `verifyProjectIdentity` fails closed on a metadata READ error — the `err != nil || dbID == ""` conflation silently granted the connection in the restart window where the port frees and reads fail together. Empty `_project_id` still skips; the refusal fires on what survives `withReadTx`'s bounded retry. Shaped to #2446 (refusal, not recovery) and #6118 (prove ownership). |
 
 **Queued, in order, each behind the one it needs** (GitHub cannot stack a PR on
 a branch in a different fork — learned on #6240 — so these wait for a merge
