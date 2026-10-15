@@ -128,7 +128,12 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 	// in the wisps table with Ephemeral=false, and a nil Ephemeral merges both
 	// tables. Without this, `--include-infra` — which does set it — would make
 	// the count go DOWN, which is not a thing an "include" flag may do.
-	if in.IssueType != "" && cfg.IsInfra(in.IssueType) {
+	//
+	// IncludeEphemeral lifts the narrowing, as it does in BuildListFilter: it
+	// promises the durable answer PLUS the plane, never the plane instead, so
+	// the durable rows of an infra type (a promoted wisp, a retyped issue) are
+	// counted along with its wisps.
+	if in.IssueType != "" && cfg.IsInfra(in.IssueType) && !in.IncludeEphemeral {
 		ephemeral := true
 		filter.Ephemeral = &ephemeral
 	}
@@ -206,7 +211,8 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 //   - gate beads are excluded unless requested via --type gate.
 //
 // Routing a named infra type to the ephemeral tier is not this function's: it
-// happens in BuildCountFilter for every count, with or without IncludeInfra.
+// happens in BuildCountFilter for every count, with or without IncludeInfra,
+// and IncludeEphemeral lifts it there on both paths.
 //
 // A count without IncludeInfra never calls this. It keeps its historical
 // durable-only semantics unless IncludeEphemeral admits the wisps tier, or

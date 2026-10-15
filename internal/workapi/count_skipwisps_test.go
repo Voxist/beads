@@ -82,10 +82,11 @@ func TestCountIncludeEphemeralIsThePlaneBitAndNothingElse(t *testing.T) {
 	cfg := ListConfig{}
 
 	//
-	// The one Ephemeral=true below is NOT IncludeEphemeral's doing: naming an
-	// infra type narrows to its ephemeral rows on its own, exactly as
-	// BuildListFilter does (fork #37/#38). IncludeEphemeral must not add that
-	// narrowing for any other type.
+	// Naming an infra type narrows to its ephemeral rows on its own (fork
+	// #37/#38), but IncludeEphemeral lifts that narrowing, exactly as
+	// BuildListFilter does: it promises the durable answer PLUS the plane, so
+	// Ephemeral stays nil for every type here. The narrowing without the flag
+	// is pinned by TestCountAndListPlaneAgreement.
 	for _, tt := range []struct {
 		name          string
 		issueType     string
@@ -93,7 +94,7 @@ func TestCountIncludeEphemeralIsThePlaneBitAndNothingElse(t *testing.T) {
 	}{
 		{"no type", "", false},
 		{"a named type", "task", false},
-		{"an infra type", "agent", true},
+		{"an infra type", "agent", false},
 	} {
 		t.Run("include-ephemeral with "+tt.name, func(t *testing.T) {
 			plane, err := BuildCountFilter(issueops.CountRequest{IssueType: tt.issueType, IncludeEphemeral: true}, cfg)
