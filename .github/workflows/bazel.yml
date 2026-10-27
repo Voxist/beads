@@ -2086,6 +2086,15 @@ jobs:
             exit 1
           fi
 
+      # FORK (Voxist/beads): tools/bazel/go_test_offline.sh runs tests in an
+      # unprivileged user+network namespace (unshare --user --net), which the
+      # rbe workers allow and Ubuntu 24.04's AppArmor blocks by default. The
+      # wrapper still proves the namespace has no outbound network.
+      - name: Allow unprivileged user namespaces (fork, mode local)
+        if: needs.rbe.outputs.mode == 'local'
+        timeout-minutes: 1
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       # FORK (Voxist/beads): the rbe workers carry socat; a GitHub-hosted
       # runner in mode local does not, and cmd/bd's proxied target requires it
       # (BEADS_TEST_REQUIRE_SOCAT=1) rather than skipping.
@@ -2128,6 +2137,11 @@ jobs:
       # assuming a hang.
       - name: bazel test //... --config=doltserver-proxied
         id: test
+        env:
+          # FORK (Voxist/beads): mode local runs every shard on this one
+          # 4-vCPU runner, race-instrumented with -test.parallel=4; four at once
+          # starved bd serve's claim retries into 503 busy. Two at a time.
+          BAZEL_LOCAL_TEST_JOBS: ${{ needs.rbe.outputs.mode == 'local' && '--local_test_jobs=2' || '' }}
         timeout-minutes: 110
         run: |
           set -o pipefail
@@ -2138,6 +2152,7 @@ jobs:
             --execution_log_compact_file="$RUNNER_TEMP/bazel-exec.log.zst" \
             --profile="$RUNNER_TEMP/bazel-profile.json" \
             --experimental_build_event_upload_strategy=local \
+            ${BAZEL_LOCAL_TEST_JOBS:+"$BAZEL_LOCAL_TEST_JOBS"} \
             2>&1 | tee "$RUNNER_TEMP/bazel-test.log" || rc=$?
           echo "bazel test --config=doltserver-proxied: exit $rc, $(( $(date +%s) - start ))s wall" | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$rc"

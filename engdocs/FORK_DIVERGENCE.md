@@ -359,6 +359,21 @@ expects the correct answer: upstream pins it WRONG_ANSWER because
 `collectDatabaseEntries` swallows the proxied error, but the fork's
 `newProxiedServerRoutedStore` makes it read the database.
 
+The proxied lane also needs two runner adjustments in mode local. First,
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`: Ubuntu
+24.04's AppArmor blocks the unprivileged `unshare --user --net` that
+`tools/bazel/go_test_offline.sh` uses, which failed every
+`bd_managed_local_test` shard in 0.2 s. The wrapper still proves the
+namespace has no outbound network. Second, `--local_test_jobs=2`
+(`BAZEL_LOCAL_TEST_JOBS`, empty in mode remote). Four race-instrumented
+shards at `-test.parallel=4` on one 4-vCPU runner starved `bd serve`'s
+claim retries into `503 busy`.
+`TestProxiedServerServeClaimNext/concurrent_claimants_never_win_the_same_row`
+lost 2 of 6 rows to 503s. No row was ever won twice. The test passes 3/3
+locally in about 1.7 s with the proxy pool off, as it is by default.
+`TestBazelRetiredLanesArePinned` and `TestBazelDoltServerTiers` carry the
+fork's extra line and steps.
+
 ## The wisps plane rule — resolved into an additive flag
 
 `va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of

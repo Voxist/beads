@@ -1177,8 +1177,15 @@ func TestBazelRetiredLanesArePinned(t *testing.T) {
 	workflow := readCIWorkflow(t, bazelWorkflowName)
 	for lane, config := range bazelRetiredLaneConfigs {
 		test := workflow.job(t, lane).step(t, "bazel test //... --config="+config)
-		if strings.TrimSpace(test.Run) != bazelTierTestRun(config) {
-			t.Errorf("%s test step run changed; want exactly:\n%s\ngot:\n%s", lane, bazelTierTestRun(config), test.Run)
+		want := bazelTierTestRun(config)
+		if lane == bazelProxiedJobName {
+			// FORK (Voxist/beads): mode local caps concurrent test shards at
+			// two (BAZEL_LOCAL_TEST_JOBS); empty, and so absent, in mode remote.
+			want = strings.Replace(want, "  --experimental_build_event_upload_strategy=local \\\n",
+				"  --experimental_build_event_upload_strategy=local \\\n  ${BAZEL_LOCAL_TEST_JOBS:+\"$BAZEL_LOCAL_TEST_JOBS\"} \\\n", 1)
+		}
+		if strings.TrimSpace(test.Run) != want {
+			t.Errorf("%s test step run changed; want exactly:\n%s\ngot:\n%s", lane, want, test.Run)
 		}
 	}
 	rc := readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc")

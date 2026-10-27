@@ -4377,8 +4377,9 @@ func TestBazelDoltServerTiers(t *testing.T) {
 		// (S3; see bazel-test's "CI analytics summary" comment), added to
 		// every lane job ahead of the result recorder. +1: the remote repo
 		// contents cache reader (TestBazelRRCReadSteps).
-		// FORK (Voxist/beads): +1, the socat install for mode local.
-		{bazelProxiedJobName, "doltserver-proxied", "bazel-proxied-testlogs", 12},
+		// FORK (Voxist/beads): +2, the user-namespace sysctl and the socat
+		// install for mode local.
+		{bazelProxiedJobName, "doltserver-proxied", "bazel-proxied-testlogs", 13},
 		// One more than bazel-proxied: a "Shard balance" step (rbe-ci-cost-
 		// latency-study.md recommendation 4), since this is the tier whose
 		// last shard has trailed the rest by 4.3-4.5 min in 2 of 8 runs.
