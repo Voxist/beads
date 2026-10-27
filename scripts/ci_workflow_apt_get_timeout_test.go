@@ -59,7 +59,30 @@ func aptStepBudgets() []aptStepBudget {
 			installPkgs:    "gcc-mingw-w64-x86-64 gcc-aarch64-linux-gnu osslsigncode",
 			capMinutes:     13,
 		},
+		// FORK (Voxist/beads): the proxied tier's socat install in mode local.
+		{
+			workflow:       "bazel.yml",
+			job:            "bazel-proxied",
+			step:           "Install socat (fork, mode local)",
+			updateAttempts: 3,
+			updateTimeout:  120,
+			backoff:        10,
+			installTimeout: 300,
+			installPkgs:    "socat",
+			capMinutes:     13,
+		},
 	}
+}
+
+// aptStepBudgeted reports whether workflow's step named step is a registered,
+// bounded apt-get step (FORK, Voxist/beads).
+func aptStepBudgeted(workflow, step string) bool {
+	for _, b := range aptStepBudgets() {
+		if b.workflow == workflow && b.step == step {
+			return true
+		}
+	}
+	return false
 }
 
 // TestAptGetStepsAreBoundedAndRetried pins the bounded/retried invocations, so

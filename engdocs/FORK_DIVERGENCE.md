@@ -345,6 +345,20 @@ CI is slower. Pinning tests updated: `TestBazelRBEJobDecidesOnce`,
 `TestBazelGateDoltTiersCrossCheck`. Do not "fix" this by routing fork CI back
 to rbe-cache.
 
+Running the tiers locally needed three more fork changes. First, the tier
+timeouts are sized for a GitHub-hosted runner: embedded and cmd-dolt
+150/140 min, proxied and server-storage 120/110 (job/step). Upstream's
+25-minute steps assume rbe's parallelism, and the first local run of
+server-storage hit that wall without a single test failure.
+`TestBazelDoltServerTiers` now allows up to 120. Second, the proxied lane
+installs `socat`, which the rbe workers carry and the proxied target
+requires (`BEADS_TEST_REQUIRE_SOCAT=1`). The install uses release.yml's
+bounded, retried apt shape and is registered in `aptStepBudgets`.
+Third, the proxied `config show` row of the topology capability matrix
+expects the correct answer: upstream pins it WRONG_ANSWER because
+`collectDatabaseEntries` swallows the proxied error, but the fork's
+`newProxiedServerRoutedStore` makes it read the database.
+
 ## The wisps plane rule — resolved into an additive flag
 
 `va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of

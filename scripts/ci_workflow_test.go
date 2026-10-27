@@ -3730,7 +3730,10 @@ func TestBazelWorkflowActionsArePinned(t *testing.T) {
 			}
 		}
 		for _, step := range list {
-			if strings.Contains(step.Run, "apt-get") {
+			// FORK (Voxist/beads): a step registered in aptStepBudgets is bounded
+			// and retried, and TestAptGetStepsAreBoundedAndRetried pins its shape
+			// (the proxied tier's socat install in mode local).
+			if strings.Contains(step.Run, "apt-get") && !aptStepBudgeted(bazelWorkflowName, step.Name) {
 				t.Errorf("%s step %q runs apt-get; bound it (see ci_workflow_apt_get_timeout_test.go) or drop it", file, step.Name)
 			}
 		}
@@ -4374,15 +4377,18 @@ func TestBazelDoltServerTiers(t *testing.T) {
 		// (S3; see bazel-test's "CI analytics summary" comment), added to
 		// every lane job ahead of the result recorder. +1: the remote repo
 		// contents cache reader (TestBazelRRCReadSteps).
-		{bazelProxiedJobName, "doltserver-proxied", "bazel-proxied-testlogs", 11},
+		// FORK (Voxist/beads): +1, the socat install for mode local.
+		{bazelProxiedJobName, "doltserver-proxied", "bazel-proxied-testlogs", 12},
 		// One more than bazel-proxied: a "Shard balance" step (rbe-ci-cost-
 		// latency-study.md recommendation 4), since this is the tier whose
 		// last shard has trailed the rest by 4.3-4.5 min in 2 of 8 runs.
 		{bazelServerJobName, "doltserver-integration", "bazel-server-storage-testlogs", 12},
 	} {
 		job := workflow.job(t, c.job)
-		if job.TimeoutMinutes == 0 || job.TimeoutMinutes > 30 {
-			t.Errorf("%s timeout-minutes = %d; it runs remotely only (longest shard ~2-8 min), keep it at most 30", c.job, job.TimeoutMinutes)
+		// FORK (Voxist/beads): the fork's CI runs these tiers in mode local on a
+		// GitHub-hosted runner, without rbe's parallelism, so the cap is 120.
+		if job.TimeoutMinutes == 0 || job.TimeoutMinutes > 120 {
+			t.Errorf("%s timeout-minutes = %d; the fork runs it locally, keep it at most 120", c.job, job.TimeoutMinutes)
 		}
 		assertBazelTierStep(t, job, c.job, c.config)
 		if n := len(job.Steps); n != c.wantSteps {

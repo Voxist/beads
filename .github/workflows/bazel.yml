@@ -1509,7 +1509,8 @@ jobs:
     needs: rbe
     runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && inputs.dolt-tiers != 'off' }}
-    timeout-minutes: 60
+    # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
+    timeout-minutes: 150
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
@@ -1561,7 +1562,7 @@ jobs:
       # --build_event_json_file is a command option, so it goes after `test`.
       - name: bazel test //... --config=embedded
         id: test
-        timeout-minutes: 50
+        timeout-minutes: 140
         run: |
           set -o pipefail
           start=$(date +%s)
@@ -2035,7 +2036,8 @@ jobs:
     needs: rbe
     runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && needs.rbe.outputs.mode != 'remote' && inputs.dolt-tiers != 'off' }}
-    timeout-minutes: 30
+    # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
+    timeout-minutes: 120
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
@@ -2084,6 +2086,35 @@ jobs:
             exit 1
           fi
 
+      # FORK (Voxist/beads): the rbe workers carry socat; a GitHub-hosted
+      # runner in mode local does not, and cmd/bd's proxied target requires it
+      # (BEADS_TEST_REQUIRE_SOCAT=1) rather than skipping.
+      - name: Install socat (fork, mode local)
+        if: needs.rbe.outputs.mode == 'local'
+        # Bounded like release.yml's apt step: 3 update attempts x 120s + 2
+        # backoffs x 10s + 300s install = 680s worst case; 13m backstops it.
+        timeout-minutes: 13
+        run: |
+          updated=""
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get \
+                 -o Acquire::Retries=3 \
+                 -o Acquire::http::Timeout=30 \
+                 -o Acquire::https::Timeout=30 \
+                 update; then
+              updated=yes
+              break
+            fi
+            echo "::warning::apt-get update attempt $attempt failed or timed out"
+            if [ "$attempt" -lt 3 ]; then
+              sleep 10
+            fi
+          done
+          if [ -z "$updated" ]; then
+            echo "::warning::apt-get update failed after 3 attempts; proceeding with cached index"
+          fi
+          sudo timeout 300 apt-get install -y socat
+
       # Remote: each shard's Go timeout is its job's 15m, 1200s Bazel cap,
       # plus a compile. The 34-shard block is LPT-packed by
       # scripts/ci/proxied_test_durations.json, a rbe-west capture of each
@@ -2097,7 +2128,7 @@ jobs:
       # assuming a hang.
       - name: bazel test //... --config=doltserver-proxied
         id: test
-        timeout-minutes: 25
+        timeout-minutes: 110
         run: |
           set -o pipefail
           start=$(date +%s)
@@ -2383,7 +2414,8 @@ jobs:
     needs: rbe
     runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && needs.rbe.outputs.mode != 'remote' && inputs.integration != 'off' && inputs.dolt-tiers != 'off' }}
-    timeout-minutes: 30
+    # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
+    timeout-minutes: 120
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
@@ -2436,7 +2468,7 @@ jobs:
       # timeout is 15m per shard, 1200s Bazel cap), plus a compile.
       - name: bazel test //... --config=doltserver-integration
         id: test
-        timeout-minutes: 25
+        timeout-minutes: 110
         run: |
           set -o pipefail
           start=$(date +%s)
@@ -2558,7 +2590,8 @@ jobs:
     needs: rbe
     runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     if: ${{ (needs.rbe.outputs.enabled == 'true' || needs.rbe.outputs.mode == 'cache') && inputs.integration != 'off' && needs.rbe.outputs.mode != 'remote' && inputs.dolt-tiers != 'off' }}
-    timeout-minutes: 85
+    # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
+    timeout-minutes: 150
     continue-on-error: true
     outputs:
       result: ${{ steps.result.outputs.result }}
@@ -2607,7 +2640,7 @@ jobs:
       # closed, add the cold race build (~30).
       - name: bazel test //... --config=doltserver-cmd
         id: test
-        timeout-minutes: 75
+        timeout-minutes: 140
         run: |
           set -o pipefail
           start=$(date +%s)
