@@ -311,6 +311,21 @@ against the actual diff before working it.
 Ops-only, never upstreamable: `DEPLOY_BD` install guard, nix `vendorHash`
 recomputation, `prepared-dml-grandfather.txt`.
 
+**Windows and macOS CI run on GitHub-hosted runners, not Blacksmith (since
+2026-10-27).** Upstream #7355 (84390b03a) moved every Windows and macOS job to
+`blacksmith-*-windows-2025` / `blacksmith-6vcpu-macos-26` for every event,
+because Blacksmith serves fork PRs in the gastownhall org. The Voxist org has
+Blacksmith Linux runners only: on Voxist/beads#71 eight such jobs got no runner,
+sat queued until GitHub cancelled them at 24 h, and turned `CI Gate / Required`
+red. The fork patch swaps the labels for `windows-latest` and `macos-latest`
+(the runners these jobs used through Voxist/beads#69) in the eleven `runs-on`
+and matrix `runner` sites of `.github/workflows/main.yml` and `pr.yml`, and the
+matching constants in `scripts/ci_blacksmith_runner_test.go`. Comments and
+const names stay upstream's to keep the resync surface small. On each resync,
+`git grep -nE "^ *(runs-on|runner):.*blacksmith-[0-9]+vcpu-(windows|macos)" -- .github`
+must print nothing; a new upstream Windows or macOS job needs the same swap.
+Enabling Blacksmith Windows/macOS on the Voxist org would retire this patch.
+
 ## The wisps plane rule — resolved into an additive flag
 
 `va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of

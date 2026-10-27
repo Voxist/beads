@@ -53,8 +53,14 @@ const sameRepoBlacksmith8vcpu = "${{ (github.event_name == 'merge_group' || (git
 // for who may run code there (a fork's own workflow file controls runs-on
 // anyway). TestBlacksmithJobsReadNoSecrets keeps every such job free of
 // secret reads.
-const blacksmithWindows2vcpuRunsOn = "${{ 'blacksmith-2vcpu-windows-2025' }}"
-const blacksmithWindows4vcpuRunsOn = "${{ 'blacksmith-4vcpu-windows-2025' }}"
+//
+// FORK (Voxist/beads): the Voxist org has Blacksmith Linux runners only, so a
+// Windows or macOS job on a blacksmith-* label queues until GitHub cancels it
+// at 24 h. The fork runs these jobs on GitHub-hosted windows-latest and
+// macos-latest instead; the const names keep upstream's so the tests that
+// read them merge cleanly. See engdocs/FORK_DIVERGENCE.md.
+const blacksmithWindows2vcpuRunsOn = "${{ 'windows-latest' }}"
+const blacksmithWindows4vcpuRunsOn = "${{ 'windows-latest' }}"
 
 // bazel.yml's lanes pick their runner from the rbe job's decision alone
 // (TestBazelRBEJobDecidesOnce): Blacksmith in modes remote and cache,
@@ -123,8 +129,8 @@ const bazelMCPPytestWorkers = "${{ (needs.rbe.outputs.mode == 'remote' || needs.
 // GitHub's macos-latest resolves to) so the PR legs and main.yml's
 // blacksmith-macos-go-build-cache saver share one image regardless of when
 // Blacksmith moves its own -latest alias.
-const blacksmithMacOSLabel = "blacksmith-6vcpu-macos-26"
-const blacksmithWindowsLabel = "blacksmith-4vcpu-windows-2025"
+const blacksmithMacOSLabel = "macos-latest"
+const blacksmithWindowsLabel = "windows-latest"
 
 // platformsMatrixRunsOn: the mixed-OS matrix jobs (pr-preflight-platforms,
 // check-doc-freshness-platforms) name each leg's Blacksmith label in its
@@ -565,7 +571,7 @@ func TestBlacksmithWindowsMacOSRunsOnEveryEvent(t *testing.T) {
 		{"schedule", "schedule", "", ""},
 	}
 	for _, c := range []struct{ expr, want string }{
-		{blacksmithWindows2vcpuRunsOn, "blacksmith-2vcpu-windows-2025"},
+		{blacksmithWindows2vcpuRunsOn, "windows-latest"},
 		{blacksmithWindows4vcpuRunsOn, blacksmithWindowsLabel},
 		{"${{ '" + blacksmithMacOSLabel + "' }}", blacksmithMacOSLabel},
 	} {

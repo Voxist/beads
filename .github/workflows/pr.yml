@@ -189,7 +189,7 @@ jobs:
     name: Test (Windows) cmd/bd liveness regression
     needs: scope
     if: ${{ needs.scope.outputs.platforms == 'true' }}
-    runs-on: ${{ 'blacksmith-4vcpu-windows-2025' }}
+    runs-on: ${{ 'windows-latest' }}
     # F7b review fix (S6): raised from 15 to 20, matching open PR #7143's own
     # measurement on this exact job (retained runs take about 8m; one run's
     # own step timing showed 451s total with a 403s compile step) and
@@ -308,7 +308,7 @@ jobs:
     name: Test (Windows) small packages (doltversion, dbproxy server)
     needs: scope
     if: ${{ needs.scope.outputs.platforms == 'true' }}
-    runs-on: ${{ 'blacksmith-2vcpu-windows-2025' }}
+    runs-on: ${{ 'windows-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -366,7 +366,7 @@ jobs:
     name: Worktree remove boundary (Windows)
     needs: scope
     if: ${{ needs.scope.outputs.platforms == 'true' }}
-    runs-on: ${{ 'blacksmith-4vcpu-windows-2025' }}
+    runs-on: ${{ 'windows-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -499,10 +499,10 @@ jobs:
         include:
           - os: macos-latest
             expected_goos: darwin
-            runner: blacksmith-6vcpu-macos-26
+            runner: macos-latest
           - os: windows-latest
             expected_goos: windows
-            runner: blacksmith-4vcpu-windows-2025
+            runner: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
@@ -583,10 +583,10 @@ jobs:
         include:
           - os: macos-latest
             expected_goos: darwin
-            runner: blacksmith-6vcpu-macos-26
+            runner: macos-latest
           - os: windows-latest
             expected_goos: windows
-            runner: blacksmith-4vcpu-windows-2025
+            runner: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
@@ -904,7 +904,7 @@ jobs:
     name: Windows Make shell (native, msys2, cygwin)
     needs: scope
     if: ${{ needs.scope.outputs.platforms == 'true' }}
-    runs-on: ${{ 'blacksmith-4vcpu-windows-2025' }}
+    runs-on: ${{ 'windows-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
