@@ -40,6 +40,10 @@ func newProxiedServerRoutedStore(ctx context.Context, beadsDir string) (s storag
 	// reported success — the one outcome that breaks a consumer's cursor.
 	// ActivateStore passes a non-nil err straight through, so registering the
 	// defer before the argument checks below is safe.
+	// Versioned history (upstream #6661) binds this constructor the same way:
+	// registered before the journal defer, as upstream's factories do, so the
+	// journal activates first.
+	defer func() { s, err = activateVersionedHistoryStore(ctx, s, err) }()
 	defer func() { s, err = activateEventsJournalStore(beadsDir, s, err) }()
 
 	if beadsDir == "" {

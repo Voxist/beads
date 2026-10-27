@@ -228,60 +228,6 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
-		Version: "1.94.1",
-		Date:    "2026-10-06",
-		Changes: []string{
-			"FORK RELEASE: a Voxist/beads hotfix on 1.94.0. It adds one upstream-unmerged change, Eric Cestari's f02fff7bb (Voxist/beads#66, offered upstream as gastownhall/beads#7297).",
-			"SCHEMA: unchanged at 0069 (ignored plane 0027). This is a binary swap; rollback is a plain binary copy back to 1.94.0.",
-			"PERF: every write-capable store open checks the ignored-plane sentinel column leases.granted_node. That check used INFORMATION_SCHEMA.COLUMNS, which Dolt evaluates across every database on the server. On a shared server with 10 databases it took up to 4.3 s under load, and concurrent opens stacked up into client i/o timeouts. It now uses SHOW COLUMNS: about 1 ms against about 100 ms in the same measurement.",
-		},
-	},
-	{
-		Version: "1.94.0",
-		Date:    "2026-10-01",
-		Changes: []string{
-			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It carries the upstream resync (Voxist/beads#60): fork 1.93.0 merged with upstream main at 46e670abb.",
-			"SCHEMA: 0067 -> 0069. Migrations 0068_add_attribution_status and 0069_widen_issue_versions_datetime_precision touch only issue_versions. This is NOT a binary swap: 1.93.0 refuses a v69 store on every command, reads included, and there is no down-migration runner.",
-			"MIGRATION: shared and remote-backed stores are not migrated automatically. Run `bd migrate schema --force` once per database with the store quiesced, then verify with SQL (schema_migrations max = 69, ignored_schema_migrations max = 27). The --json result can report applied:0 even when it migrated, because the store open applies the migrations under --force consent first.",
-			"ROLLBACK: restore the filesystem snapshot (fsck'd APFS clone) taken before migrating. DOLT_BACKUP artifacts do not carry the dolt-ignored plane (wisps, events, the ignored_schema_migrations cursor) and are NOT a rollback for this release.",
-			"ORDER: upgrade every bd client before or together with the migration. A 1.94.0 client against a 67 store can read but its writes are refused by the shared-store gate.",
-			"FIX (kept through the resync): bd count --type <infra type> reads the same plane and ephemeral rows as bd list, using the workspace's own types.infra vocabulary (fork #37/#38).",
-		},
-	},
-	{
-		Version: "1.93.0",
-		Date:    "2026-09-29",
-		Changes: []string{
-			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It adds the guarded dolt-server Start funnel (Voxist/beads#62) and a Voxist-only secret-scan CI workflow (#61) on top of 1.92.0.",
-			"SCHEMA: unchanged at 0067. This release contains NO migration -- nothing under internal/storage/schema/migrations differs from 1.92.0 -- so upgrading is a binary swap and a store opened by 1.93.0 stays readable by 1.92.0. Rollback is a plain binary copy with no schema consequence.",
-			"FIX: every implicit dolt server spawn now goes through ONE guarded Start(), which resolves the auto-start policy from the workspace directory rather than each call site deciding for itself. Explicit starts keep their own entry point (StartExplicit), so `bd dolt start` is still ungated by design -- that is the command whose whole purpose is to start a server.",
-			"WHY IT MATTERS: before this, a call site that forgot the policy check could spawn an unmanaged server against a workspace that had disabled auto-start. 1.92.0 fixed the policy READER; this fixes the funnel, so a future call site cannot bypass it by construction rather than by remembering.",
-			"OPERATIONAL: BEADS_DOLT_AUTO_START=0 is still honored and should still be removed PER RIG, only after `bd version` confirms 1.93.0 on that rig. A proven binary is not a converged fleet.",
-			"NOT IN THIS RELEASE: the 2026-09-27 upstream resync (Voxist/beads#60) is deliberately held back. It carries migrations 0068 and 0069, which take the schema to 0069 and make rollback a restore-from-backup rather than a binary swap; it ships separately on its own migration plan.",
-		},
-	},
-	{
-		Version: "1.92.0",
-		Date:    "2026-09-26",
-		Changes: []string{
-			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It carries the dolt.auto-start fixes in Voxist/beads#56 and #57 on top of 1.91.0.",
-			"SCHEMA: unchanged at 0067. This release contains NO migration — nothing under internal/*/migrations differs from 1.91.0 — so upgrading is a binary swap and a store opened by 1.92.0 stays readable by 1.91.0. Order still matters for anything else: binary first, migrations after.",
-			"FIX: 'dolt.auto-start: false' in a WORKSPACE's own .beads/config.yaml is now honored. Before this, only BEADS_DOLT_AUTO_START and the global config were consulted, so a per-workspace false was silently ignored and bd started an unmanaged dolt sql-server anyway. If you set that key and watched bd start a server regardless, that was this bug, not your config.",
-			"BEHAVIOR: the sources are a DISJUNCTION, not a precedence chain — the env var, the global config and the workspace config can each disable auto-start, and none of them can re-enable it once another has disabled it. Do not expect a workspace 'true' to override an ambient BEADS_DOLT_AUTO_START=0.",
-			"FIX: an unparseable dolt.auto-start value now warns and names the file it came from, instead of being silently treated as unset. The accepted falsy spellings are unchanged (false, 0, off, no and their case variants); 'bd config set dolt.auto-start' validates against the same reader that honors it, so the validator can no longer refuse a spelling the reader accepts.",
-			"OPERATIONAL: if you have been holding servers down with BEADS_DOLT_AUTO_START=0 because the config key did not work, that variable is no longer load-bearing once every client of a shared server is on 1.92.0 — the config key now does the job. The variable is still honored; remove it deliberately, per rig, after confirming the binary is deployed there, not before.",
-		},
-	},
-	{
-		Version: "1.91.0",
-		Date:    "2026-09-18",
-		Changes: []string{
-			"FORK RELEASE: this is a Voxist/beads release cut from the fork's own main line. It merges upstream v1.3.0 (Voxist/beads#54) onto the fork's v1.90.0 line and is NOT an upstream release.",
-			"SCHEMA: this binary is at schema 0067, one past upstream v1.3.0 (0066). Upstream's 0067 migration is carried unchanged, so a store already migrated to 0067 by 1.90.0 needs no migration. The [1.3.0] entry below describes the upstream changes this release includes; its v53->v66 migration notes apply only to stores still below 0067.",
-			"VERSION: 1.91.0 exists because the v1.90.0 tag predates the v1.3.0 merge. Cutting a new release keeps one version string per binary; the fork's deliberately high minor is unchanged in intent (see 1.90.0).",
-		},
-	},
-	{
 		Version: "1.3.2",
 		Date:    "2026-10-23",
 		Changes: []string{
@@ -308,6 +254,15 @@ var versionChanges = []VersionChange{
 		},
 	},
 	{
+		Version: "1.94.1",
+		Date:    "2026-10-06",
+		Changes: []string{
+			"FORK RELEASE: a Voxist/beads hotfix on 1.94.0. It adds one upstream-unmerged change, Eric Cestari's f02fff7bb (Voxist/beads#66, offered upstream as gastownhall/beads#7297).",
+			"SCHEMA: unchanged at 0069 (ignored plane 0027). This is a binary swap; rollback is a plain binary copy back to 1.94.0.",
+			"PERF: every write-capable store open checks the ignored-plane sentinel column leases.granted_node. That check used INFORMATION_SCHEMA.COLUMNS, which Dolt evaluates across every database on the server. On a shared server with 10 databases it took up to 4.3 s under load, and concurrent opens stacked up into client i/o timeouts. It now uses SHOW COLUMNS: about 1 ms against about 100 ms in the same measurement.",
+		},
+	},
+	{
 		Version: "1.3.2-rc.1",
 		Date:    "2026-10-05",
 		Changes: []string{
@@ -318,10 +273,34 @@ var versionChanges = []VersionChange{
 		},
 	},
 	{
+		Version: "1.94.0",
+		Date:    "2026-10-01",
+		Changes: []string{
+			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It carries the upstream resync (Voxist/beads#60): fork 1.93.0 merged with upstream main at 46e670abb.",
+			"SCHEMA: 0067 -> 0069. Migrations 0068_add_attribution_status and 0069_widen_issue_versions_datetime_precision touch only issue_versions. This is NOT a binary swap: 1.93.0 refuses a v69 store on every command, reads included, and there is no down-migration runner.",
+			"MIGRATION: shared and remote-backed stores are not migrated automatically. Run `bd migrate schema --force` once per database with the store quiesced, then verify with SQL (schema_migrations max = 69, ignored_schema_migrations max = 27). The --json result can report applied:0 even when it migrated, because the store open applies the migrations under --force consent first.",
+			"ROLLBACK: restore the filesystem snapshot (fsck'd APFS clone) taken before migrating. DOLT_BACKUP artifacts do not carry the dolt-ignored plane (wisps, events, the ignored_schema_migrations cursor) and are NOT a rollback for this release.",
+			"ORDER: upgrade every bd client before or together with the migration. A 1.94.0 client against a 67 store can read but its writes are refused by the shared-store gate.",
+			"FIX (kept through the resync): bd count --type <infra type> reads the same plane and ephemeral rows as bd list, using the workspace's own types.infra vocabulary (fork #37/#38).",
+		},
+	},
+	{
 		Version: "1.3.1",
 		Date:    "2026-09-30",
 		Changes: []string{
 			"STABLE: first stable 1.3.1 release. Same code as 1.3.1-rc.2; only the version stamp changed. No schema migration, so upgrading from 1.3.0 or any 1.3.1 RC is a binary swap. Coming from 1.3.0, the 1.3.1-rc.2 and 1.3.1-rc.1 entries below both apply; read the [1.3.1-rc.2] upgrade notes in CHANGELOG.md.",
+		},
+	},
+	{
+		Version: "1.93.0",
+		Date:    "2026-09-29",
+		Changes: []string{
+			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It adds the guarded dolt-server Start funnel (Voxist/beads#62) and a Voxist-only secret-scan CI workflow (#61) on top of 1.92.0.",
+			"SCHEMA: unchanged at 0067. This release contains NO migration -- nothing under internal/storage/schema/migrations differs from 1.92.0 -- so upgrading is a binary swap and a store opened by 1.93.0 stays readable by 1.92.0. Rollback is a plain binary copy with no schema consequence.",
+			"FIX: every implicit dolt server spawn now goes through ONE guarded Start(), which resolves the auto-start policy from the workspace directory rather than each call site deciding for itself. Explicit starts keep their own entry point (StartExplicit), so `bd dolt start` is still ungated by design -- that is the command whose whole purpose is to start a server.",
+			"WHY IT MATTERS: before this, a call site that forgot the policy check could spawn an unmanaged server against a workspace that had disabled auto-start. 1.92.0 fixed the policy READER; this fixes the funnel, so a future call site cannot bypass it by construction rather than by remembering.",
+			"OPERATIONAL: BEADS_DOLT_AUTO_START=0 is still honored and should still be removed PER RIG, only after `bd version` confirms 1.93.0 on that rig. A proven binary is not a converged fleet.",
+			"NOT IN THIS RELEASE: the 2026-09-27 upstream resync (Voxist/beads#60) is deliberately held back. It carries migrations 0068 and 0069, which take the schema to 0069 and make rollback a restore-from-backup rather than a binary swap; it ships separately on its own migration plan.",
 		},
 	},
 	{
@@ -347,6 +326,27 @@ var versionChanges = []VersionChange{
 			"FIX: a server workspace with an empty .beads/dolt is no longer refused as a legacy workspace; 'bd init' writes the version marker.",
 			"FIX: the smart migrate gate no longer auto-migrates a clone whose data is behind its remote. It stops with 'run bd dolt pull, then retry', and 'bd dolt pull' works from that state.",
 			"FIX: deleting or purging a wisp no longer orphans wisp_dependencies, wisp_labels, wisp_events, wisp_comments or wisp_child_counters rows on stores without the wisp foreign keys (existing orphans are not cleaned). A clone missing its dolt-ignored events tables recreates them on open.",
+		},
+	},
+	{
+		Version: "1.92.0",
+		Date:    "2026-09-26",
+		Changes: []string{
+			"FORK RELEASE: a Voxist/beads release cut from the fork's own main line, NOT an upstream release. It carries the dolt.auto-start fixes in Voxist/beads#56 and #57 on top of 1.91.0.",
+			"SCHEMA: unchanged at 0067. This release contains NO migration — nothing under internal/*/migrations differs from 1.91.0 — so upgrading is a binary swap and a store opened by 1.92.0 stays readable by 1.91.0. Order still matters for anything else: binary first, migrations after.",
+			"FIX: 'dolt.auto-start: false' in a WORKSPACE's own .beads/config.yaml is now honored. Before this, only BEADS_DOLT_AUTO_START and the global config were consulted, so a per-workspace false was silently ignored and bd started an unmanaged dolt sql-server anyway. If you set that key and watched bd start a server regardless, that was this bug, not your config.",
+			"BEHAVIOR: the sources are a DISJUNCTION, not a precedence chain — the env var, the global config and the workspace config can each disable auto-start, and none of them can re-enable it once another has disabled it. Do not expect a workspace 'true' to override an ambient BEADS_DOLT_AUTO_START=0.",
+			"FIX: an unparseable dolt.auto-start value now warns and names the file it came from, instead of being silently treated as unset. The accepted falsy spellings are unchanged (false, 0, off, no and their case variants); 'bd config set dolt.auto-start' validates against the same reader that honors it, so the validator can no longer refuse a spelling the reader accepts.",
+			"OPERATIONAL: if you have been holding servers down with BEADS_DOLT_AUTO_START=0 because the config key did not work, that variable is no longer load-bearing once every client of a shared server is on 1.92.0 — the config key now does the job. The variable is still honored; remove it deliberately, per rig, after confirming the binary is deployed there, not before.",
+		},
+	},
+	{
+		Version: "1.91.0",
+		Date:    "2026-09-18",
+		Changes: []string{
+			"FORK RELEASE: this is a Voxist/beads release cut from the fork's own main line. It merges upstream v1.3.0 (Voxist/beads#54) onto the fork's v1.90.0 line and is NOT an upstream release.",
+			"SCHEMA: this binary is at schema 0067, one past upstream v1.3.0 (0066). Upstream's 0067 migration is carried unchanged, so a store already migrated to 0067 by 1.90.0 needs no migration. The [1.3.0] entry below describes the upstream changes this release includes; its v53->v66 migration notes apply only to stores still below 0067.",
+			"VERSION: 1.91.0 exists because the v1.90.0 tag predates the v1.3.0 merge. Cutting a new release keeps one version string per binary; the fork's deliberately high minor is unchanged in intent (see 1.90.0).",
 		},
 	},
 	{

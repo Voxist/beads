@@ -142,7 +142,7 @@ Additional Commands:
   version           Print version information
 
 Flags:
-      --actor string              Actor name for audit trail (default: $BEADS_ACTOR, git user.name, $USER)
+      --actor string              Actor name for audit trail (default: $BEADS_ACTOR, $GC_AGENT, git user.name, $USER)
       --cpu-profile               Generate CPU profile for performance analysis
       --database string           Run against a different server database for this invocation, without changing the project's configured database (proxied-server mode only)
       --db string                 Database path (default: auto-discover .beads/*.db). In proxied-server mode, a value that isn't an existing path is treated as a database name override (see --database)

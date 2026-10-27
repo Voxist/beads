@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/remedy"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
@@ -90,8 +91,8 @@ func storeForRawDoltSync(ctx context.Context, c Capability) storage.DoltStorage 
 	}
 	st, err := dolt.New(ctx, cfg)
 	if err != nil {
-		FatalErrorRespectJSON("%s: opening direct dolt endpoint %s:%d: %v", c, cfg.ServerHost, cfg.ServerPort, err)
+		FatalErrorRespectJSON("%s: opening direct dolt endpoint %s:%d: %v", c, remedy.PrintedValue(cfg.ServerHost), cfg.ServerPort, err)
 	}
-	fmt.Fprintf(os.Stderr, "proxied scope: using direct dolt endpoint %s:%d for %s\n", cfg.ServerHost, cfg.ServerPort, c)
+	fmt.Fprintf(os.Stderr, "proxied scope: using direct dolt endpoint %s:%d for %s\n", remedy.PrintedValue(cfg.ServerHost), cfg.ServerPort, c)
 	return st
 }

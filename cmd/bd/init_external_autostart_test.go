@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/testutil"
 )
@@ -379,9 +380,12 @@ func TestNamedPortServerUnreachableAdvice(t *testing.T) {
 			if res := f.run("", "dolt", "set", "port", strconv.Itoa(port), "--update-config"); res.failed {
 				t.Fatalf("bd dolt set port failed:\n%s", res.output)
 			}
-			yaml, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml"))
+			// FORK (Voxist/beads #35): dolt.port is a machine-local key, so
+			// --update-config writes it to the config.local.yaml sidecar, not to
+			// the tracked config.yaml upstream checks.
+			yaml, err := os.ReadFile(filepath.Join(beadsDir, config.LocalConfigFileName))
 			if err != nil || !strings.Contains(string(yaml), strconv.Itoa(port)) {
-				t.Fatalf("bd dolt set port --update-config left config.yaml without the port (%v):\n%s", err, yaml)
+				t.Fatalf("bd dolt set port --update-config left %s without the port (%v):\n%s", config.LocalConfigFileName, err, yaml)
 			}
 		}, "metadata.json declares the Dolt server at"},
 		{"config.yaml dolt.port other than dolt_server_port", func(t *testing.T, f *externalInitFixture, port int) {
