@@ -585,6 +585,15 @@ jobs:
           fi
           enabled=false
           case "$mode" in remote|fork-ro|fork-rw) enabled=true ;; esac
+          # FORK (Voxist/beads): upstream #7821 keeps a fork repository's own CI
+          # off rbe (mode local), which leaves the Dolt tiers off and fails CI
+          # Gate's BAZEL_REMOTE. The fork runs those tiers locally on its own
+          # GitHub-hosted runners instead: mode stays local (no rbe, no
+          # rbe-cache, no mint), enabled turns them on, and bazel-gate.sh then
+          # requires them. See engdocs/FORK_DIVERGENCE.md.
+          if [ "$FORK_REPO" = true ] && [ "$mode" = local ]; then
+            enabled=true
+          fi
           {
             echo "mode=$mode"
             echo "enabled=$enabled"

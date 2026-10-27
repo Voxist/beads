@@ -331,6 +331,11 @@ func TestBazelCacheModeReachesTheRC(t *testing.T) {
 			if len(lanes) == 0 {
 				wantSkips = append(wantSkips, bazelAggregateGateID)
 			}
+			// FORK (Voxist/beads): local/true is the fork repository's own CI,
+			// which runs the Dolt tiers, so the gate excuses none of them.
+			if mode == "local" && enabled == "true" {
+				wantSkips = nil
+			}
 			cmd := exec.Command(bash, bazelGateScript, "skips")
 			cmd.Dir = root
 			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "BAZEL_RBE_MODE=" + mode, "BAZEL_RBE_ENABLED=" + enabled}

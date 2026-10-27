@@ -3487,7 +3487,9 @@ func TestBazelGateSimulation(t *testing.T) {
 	// started, or the outputs disagree) allows no skip and fails the gate.
 	lanes := bazelPRCallLanesFor(t, "pull_request")
 	for _, bad := range []struct{ mode, enabled string }{
-		{"", ""}, {"remote", "false"}, {"local", "true"}, {"cache", "true"}, {"skip", "true"}, {"remote", ""}, {"bogus", "false"}, {"REMOTE", "true"}, {"CACHE", "false"},
+		// FORK (Voxist/beads): local/true is valid here, the fork repository's
+		// own CI running the Dolt tiers locally (bazel-gate.sh).
+		{"", ""}, {"remote", "false"}, {"cache", "true"}, {"skip", "true"}, {"remote", ""}, {"bogus", "false"}, {"REMOTE", "true"}, {"CACHE", "false"},
 		{"fork-ro", "false"}, {"fork-rw", "false"}, {"fork-ro", ""}, {"FORK-RO", "true"}, {"fork", "true"}, {"fork-", "true"}, {"fork-rx", "true"},
 	} {
 		for _, dolt := range []string{"", "off"} {
@@ -5214,7 +5216,9 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if want := map[string]string{"mode": "local", "enabled": "false", "tier": ""}; !reflect.DeepEqual(out, want) {
+			// FORK (Voxist/beads): mode local, but enabled, so the fork's own CI
+			// runs the Dolt tiers on its GitHub-hosted runners (bazel.yml decide).
+			if want := map[string]string{"mode": "local", "enabled": "true", "tier": ""}; !reflect.DeepEqual(out, want) {
 				t.Errorf("outputs = %v, want %v", out, want)
 			}
 			if log != "" {

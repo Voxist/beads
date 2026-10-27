@@ -766,6 +766,11 @@ func TestBazelGateDoltTiersCrossCheck(t *testing.T) {
 			}
 		}
 	}
+	// FORK (Voxist/beads): in the fork repository's local/true mode no Dolt tier
+	// is excused; each must run and pass.
+	if got := run("skips", map[string]string{"BAZEL_RBE_MODE": "local", "BAZEL_RBE_ENABLED": "true"}); got != "" {
+		t.Errorf("fork local/true: skips %q, want none", got)
+	}
 	if got := run("skips", map[string]string{"BAZEL_RBE_MODE": "bogus", "BAZEL_RBE_ENABLED": "true", "SCOPE_DOLT_TIERS": "off", "BAZEL_DOLT_TIERS": "off"}); got != "" {
 		t.Errorf("invalid mode with the Dolt tiers off: skips %q, want none", got)
 	}
@@ -780,6 +785,9 @@ func TestBazelGateDoltTiersCrossCheck(t *testing.T) {
 		{"fork-ro", "success", "fork-ro", "true", "success", "success"},
 		{"cache", "success", "cache", "false", "success", "not-run-remotely"},
 		{"skip", "success", "skip", "false", "success", "not-run-remotely"},
+		{"local (upstream: no secrets)", "success", "local", "false", "success", "not-run-remotely"},
+		// FORK (Voxist/beads): the fork repository's own CI runs the Dolt tiers locally.
+		{"local, fork repository", "success", "local", "true", "success", "success"},
 		{"inconsistent", "success", "remote", "false", "invalid-rbe-mode:remote/false", "not-run-remotely"},
 		{"skipped with a mode", "skipped", "remote", "true", "skipped", "success"},
 	} {

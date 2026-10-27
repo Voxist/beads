@@ -48,7 +48,9 @@ mode="${BAZEL_RBE_MODE:-}"
 enabled="${BAZEL_RBE_ENABLED:-}"
 valid=false
 case "$mode/$enabled" in
-    remote/true | fork-ro/true | fork-rw/true | local/false | cache/false | skip/false) valid=true ;;
+    # FORK (Voxist/beads): local/true is the fork repository's own CI running
+    # the Dolt tiers on its GitHub-hosted runners (bazel.yml's decide step).
+    remote/true | fork-ro/true | fork-rw/true | local/false | local/true | cache/false | skip/false) valid=true ;;
 esac
 not_started=false
 if [[ "${BAZEL_CALL:-}" == skipped && -z "$mode" && -z "$enabled" ]]; then
@@ -67,7 +69,7 @@ case "${1:-}" in
         if [[ "$valid" == true ]]; then
             case "$mode" in
                 skip) add BAZEL BAZEL_TEST BAZEL_PURE BAZEL_RELEASE_CROSS BAZEL_EMBEDDED BAZEL_INTEGRATION BAZEL_DOLTSERVER BAZEL_PROXIED BAZEL_SERVER_STORAGE BAZEL_CMD_DOLT ;;
-                local) add BAZEL_EMBEDDED BAZEL_INTEGRATION BAZEL_PROXIED BAZEL_SERVER_STORAGE BAZEL_CMD_DOLT ;;
+                local) [[ "$enabled" == true ]] || add BAZEL_EMBEDDED BAZEL_INTEGRATION BAZEL_PROXIED BAZEL_SERVER_STORAGE BAZEL_CMD_DOLT ;;
                 cache) add BAZEL_EMBEDDED BAZEL_PROXIED BAZEL_SERVER_STORAGE ;;
             esac
             if [[ "${SCOPE_DOLT_TIERS:-}" == off && "${BAZEL_DOLT_TIERS:-}" == off ]]; then

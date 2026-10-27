@@ -326,6 +326,25 @@ const names stay upstream's to keep the resync surface small. On each resync,
 must print nothing; a new upstream Windows or macOS job needs the same swap.
 Enabling Blacksmith Windows/macOS on the Voxist org would retire this patch.
 
+**The fork's own CI runs the Linux Dolt tiers locally (since 2026-10-27).**
+Upstream #7821 (068cdd628) puts a fork repository's own CI in Bazel mode local,
+never rbe-cache: rbe-cache's daily request budget closed it on 2026-10-19,
+largely on fork CI runs. Upstream's mode local also sets `enabled=false`,
+which skips the embedded, integration, proxied, server-storage and cmd-dolt
+tiers, and CI Gate then fails every PR here with `BAZEL_REMOTE has unexpected
+result: not-run-remotely`. Voxist/beads#71 failed that way too, as well as on
+the cancelled Windows/macOS jobs. The fork patch keeps mode local, so nothing
+touches rbe, rbe-cache or the mint, but sets `enabled=true` when
+`FORK_REPO` is true (`bazel.yml`'s decide step). `bazel-gate.sh` accepts
+`local/true` and excuses no Dolt tier in it, so every tier must run and pass;
+each lane's `check_testcases.py` step fails a lane whose shards ran no tests.
+dolt-int, dolt-race and the rbe prewarm stay remote-only and do not run.
+The integration lane is a cold tagged race build without the cache, so fork
+CI is slower. Pinning tests updated: `TestBazelRBEJobDecidesOnce`,
+`TestBazelGateSimulation`, `TestBazelCacheModeReachesTheRC`, and new rows in
+`TestBazelGateDoltTiersCrossCheck`. Do not "fix" this by routing fork CI back
+to rbe-cache.
+
 ## The wisps plane rule — resolved into an additive flag
 
 `va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of
