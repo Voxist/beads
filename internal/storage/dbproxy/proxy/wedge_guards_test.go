@@ -235,7 +235,7 @@ func TestDebugfGatedOffByDefault(t *testing.T) {
 	var buf bytes.Buffer
 	p := &proxyServer{logger: log.New(&buf, "", 0)}
 
-	p.debugf("chatty per-conn line")
+	p.connTracef("chatty per-conn line")
 	if buf.Len() != 0 {
 		t.Fatalf("debugf wrote with Debug=false: %q", buf.String())
 	}
@@ -246,7 +246,7 @@ func TestDebugfGatedOffByDefault(t *testing.T) {
 
 	buf.Reset()
 	p.debug = true
-	p.debugf("chatty per-conn line")
+	p.connTracef("chatty per-conn line")
 	if !strings.Contains(buf.String(), "chatty per-conn line") {
 		t.Fatalf("debugf must write with Debug=true, got %q", buf.String())
 	}

@@ -20,6 +20,7 @@ import (
 	"golang.org/x/time/rate"
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/lockfile"
 	"github.com/steveyegge/beads/internal/procid"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/identity"
@@ -70,6 +71,12 @@ type ProxyOpts struct {
 	// dial ok, copy done). Default false — these lines are the dominant write
 	// source under fleet churn and drive the macOS FSEvents/Spotlight storm.
 	Debug bool
+	// TraceConnections writes the per-connection trace lines (accept,
+	// handleConn start/end, backend dial ok, copy done) to proxy.log. Every
+	// bd command opens connections through the proxy, so these lines are
+	// off by default; db-proxy-child sets this from BD_DEBUG. Lifecycle and
+	// error lines are always written.
+	TraceConnections bool
 }
 
 type proxyServer struct {
@@ -84,6 +91,8 @@ type proxyServer struct {
 	backendPassword string
 	poolLifetime    time.Duration
 	debug           bool
+
+	traceConnections bool
 
 	// reportUpstreamOutage answers a connection whose upstream is not
 	// serving with a MySQL error instead of a bare close; see
@@ -175,6 +184,8 @@ func NewProxyServer(opts ProxyOpts) *proxyServer {
 		// At most one benign-disconnect log line per second, burst 1.
 		disconnectLogLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
 
+		traceConnections: opts.TraceConnections,
+
 		reportUpstreamOutage: reportsUpstreamOutage(opts.Server),
 	}
 }
@@ -221,10 +232,11 @@ func (p *proxyServer) tracef(format string, args ...any) {
 	p.logger.Printf(format, args...)
 }
 
-// debugf logs only when Debug is enabled. Use for per-connection events that
-// are chatty under fleet churn (accepted, handleConn, copy done).
-func (p *proxyServer) debugf(format string, args ...any) {
-	if p.debug {
+// connTracef writes a per-connection trace line, only when TraceConnections
+// (BD_DEBUG, upstream) or Debug (BEADS_PROXY_DEBUG, fork) is set. Lifecycle
+// and error lines use tracef and are always written.
+func (p *proxyServer) connTracef(format string, args ...any) {
+	if p.traceConnections || p.debug {
 		p.logger.Printf(format, args...)
 	}
 }
@@ -265,7 +277,13 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 		return fmt.Errorf("%w for %s: stop epoch advanced before startup", errStartInterrupted, p.rootDir)
 	}
 
-	lj := newProxyLogWriter(filepath.Join(p.rootDir, LogFileName))
+	logPath := filepath.Join(p.rootDir, LogFileName)
+	// Upstream's start-time rotation (proxy.log -> proxy.log.1, #7735); a
+	// spawned proxy was already rotated by forkExecChild, so this covers
+	// in-process callers. The fork's lumberjack writer then keeps rotating
+	// while a long-lived proxy runs, which a start-only rotation cannot.
+	doltserver.MaybeRotateLogFile(logPath)
+	lj := newProxyLogWriter(logPath)
 	p.logger = log.New(lj, "[proxy] ", log.LstdFlags|log.Lmicroseconds)
 	defer func() { _ = lj.Close() }()
 
@@ -575,7 +593,7 @@ func (p *proxyServer) acceptLoop(ctx context.Context) error {
 			_ = tc.SetKeepAlive(true)
 			_ = tc.SetKeepAlivePeriod(tcpKeepAlivePeriod)
 		}
-		p.debugf("acceptLoop accepted (remote=%s)", conn.RemoteAddr())
+		p.connTracef("acceptLoop accepted (remote=%s)", conn.RemoteAddr())
 		p.stats.IncAccept()
 		p.conns.Go(func() error {
 			return p.handleConn(ctx, conn)
@@ -585,11 +603,11 @@ func (p *proxyServer) acceptLoop(ctx context.Context) error {
 
 func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 	addr := client.RemoteAddr()
-	p.debugf("handleConn(%s) start", addr)
+	p.connTracef("handleConn(%s) start", addr)
 	p.activeConns.Add(1)
 	defer func() {
 		p.activeConns.Add(-1)
-		p.debugf("handleConn(%s) end (active=%d)", addr, p.activeConns.Load())
+		p.connTracef("handleConn(%s) end (active=%d)", addr, p.activeConns.Load())
 	}()
 
 	if p.pool != nil {
@@ -611,7 +629,7 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 		_ = client.Close()
 		return err
 	}
-	p.debugf("handleConn(%s) backend dial ok", addr)
+	p.connTracef("handleConn(%s) backend dial ok", addr)
 	p.stats.IncBackendDialSuccess()
 	p.stats.IncHandledConn()
 
@@ -636,7 +654,7 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 		defer func() { _ = client.Close() }()
 		n, err := io.Copy(backend, client)
 		p.stats.AddBytesClientToBackend(n)
-		p.debugf("handleConn(%s) client→backend done (n=%d, err=%v)", addr, n, err)
+		p.connTracef("handleConn(%s) client→backend done (n=%d, err=%v)", addr, n, err)
 		return err
 	})
 	g.Go(func() error {
@@ -645,7 +663,7 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 		defer func() { _ = client.Close() }()
 		n, err := io.Copy(client, backend)
 		p.stats.AddBytesBackendToClient(n)
-		p.debugf("handleConn(%s) backend→client done (n=%d, err=%v)", addr, n, err)
+		p.connTracef("handleConn(%s) backend→client done (n=%d, err=%v)", addr, n, err)
 		// A MySQL server speaks first, so a backend that reaches EOF having
 		// sent nothing never served this connection: a front whose own
 		// target is gone, or a server at its connection limit or shutting

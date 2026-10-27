@@ -176,20 +176,11 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 	// rather than undercount, which is a worse failure mode than the
 	// match-nothing treatment Status and IssueType accept above — so a typo
 	// is ErrValidation instead.
-	for _, raw := range in.ExcludeStatus {
-		for _, s := range strings.Split(raw, ",") {
-			s = strings.TrimSpace(s)
-			if s == "" {
-				continue
-			}
-			status := types.Status(s)
-			if !status.IsValidWithCustom(cfg.CustomStatusNames()) {
-				return types.IssueFilter{}, fmt.Errorf("invalid exclude-status %q (valid: %s)%.0w",
-					s, ValidStatusList(cfg.CustomStatusNames()), issueops.ErrValidation)
-			}
-			filter.ExcludeStatus = append(filter.ExcludeStatus, status)
-		}
+	excluded, err := ParseExcludeStatus(in.ExcludeStatus, cfg.CustomStatusNames())
+	if err != nil {
+		return types.IssueFilter{}, err
 	}
+	filter.ExcludeStatus = append(filter.ExcludeStatus, excluded...)
 
 	if in.IncludeInfra {
 		applyCountIncludeInfra(&filter, in.IssueType)
@@ -231,4 +222,29 @@ func applyCountIncludeInfra(filter *types.IssueFilter, issueType string) {
 	// into BuildCountFilter, because the default path needs it too. Setting it
 	// again here would be a no-op with the same value; leaving it out keeps one
 	// writer for the field.
+}
+
+// ParseExcludeStatus reads a caller's status exclusion list — the count's and
+// the listing's ExcludeStatus, one rule for both — into the statuses it names.
+// Entries may be comma-separated and are trimmed; blanks are skipped. Each
+// name IS validated against the workspace vocabulary (built-in statuses plus
+// customStatusNames): a misspelled exclusion would silently exclude nothing
+// and answer a WIDER set, so a typo is ErrValidation instead.
+func ParseExcludeStatus(raw []string, customStatusNames []string) ([]types.Status, error) {
+	var out []types.Status
+	for _, entry := range raw {
+		for _, s := range strings.Split(entry, ",") {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			status := types.Status(s)
+			if !status.IsValidWithCustom(customStatusNames) {
+				return nil, fmt.Errorf("invalid exclude-status %q (valid: %s)%.0w",
+					s, ValidStatusList(customStatusNames), issueops.ErrValidation)
+			}
+			out = append(out, status)
+		}
+	}
+	return out, nil
 }

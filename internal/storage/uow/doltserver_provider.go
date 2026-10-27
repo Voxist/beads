@@ -66,10 +66,12 @@ func NewDoltServerUOWProvider(
 		_ = os.WriteFile(noindex, nil, 0o444) //nolint:gosec // empty Spotlight-exclusion marker; perms are not security-sensitive
 	}
 
+	resolved := applyProviderOptions(opts)
 	ep, err := proxy.GetCreateDatabaseProxyServerEndpoint(absServerRootDir, proxy.OpenOpts{
 		Backend:             backend,
 		ConfigFilePath:      serverConfigFilePath,
 		LogFilePath:         serverLogFilePath,
+		RotateLogFile:       resolved.rotateServerLog,
 		DoltBinPath:         absDoltBinExec,
 		Database:            database,
 		IdleTimeout:         idleTimeout,
@@ -83,5 +85,5 @@ func NewDoltServerUOWProvider(
 		return nil, fmt.Errorf("uow: get proxy endpoint: %w", err)
 	}
 
-	return openAndInitSchema(ctx, ep, database, rootUser, rootPassword, "", teamServer, expectedProjectID, applyProviderOptions(opts))
+	return openAndInitSchema(ctx, ep, "", database, rootUser, rootPassword, "", teamServer, expectedProjectID, resolved)
 }
