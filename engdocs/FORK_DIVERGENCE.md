@@ -311,6 +311,75 @@ against the actual diff before working it.
 Ops-only, never upstreamable: `DEPLOY_BD` install guard, nix `vendorHash`
 recomputation, `prepared-dml-grandfather.txt`.
 
+**Windows and macOS CI run on GitHub-hosted runners, not Blacksmith (since
+2026-10-27).** Upstream #7355 (84390b03a) moved every Windows and macOS job to
+`blacksmith-*-windows-2025` / `blacksmith-6vcpu-macos-26` for every event,
+because Blacksmith serves fork PRs in the gastownhall org. The Voxist org has
+Blacksmith Linux runners only: on Voxist/beads#71 eight such jobs got no runner,
+sat queued until GitHub cancelled them at 24 h, and turned `CI Gate / Required`
+red. The fork patch swaps the labels for `windows-latest` and `macos-latest`
+(the runners these jobs used through Voxist/beads#69) in the eleven `runs-on`
+and matrix `runner` sites of `.github/workflows/main.yml` and `pr.yml`, and the
+matching constants in `scripts/ci_blacksmith_runner_test.go`. Comments and
+const names stay upstream's to keep the resync surface small. On each resync,
+`git grep -nE "^ *(runs-on|runner):.*blacksmith-[0-9]+vcpu-(windows|macos)" -- .github`
+must print nothing; a new upstream Windows or macOS job needs the same swap.
+Enabling Blacksmith Windows/macOS on the Voxist org would retire this patch.
+
+**The fork's own CI runs the Linux Dolt tiers locally (since 2026-10-27).**
+Upstream #7821 (068cdd628) puts a fork repository's own CI in Bazel mode local,
+never rbe-cache: rbe-cache's daily request budget closed it on 2026-10-19,
+largely on fork CI runs. Upstream's mode local also sets `enabled=false`,
+which skips the embedded, integration, proxied, server-storage and cmd-dolt
+tiers, and CI Gate then fails every PR here with `BAZEL_REMOTE has unexpected
+result: not-run-remotely`. Voxist/beads#71 failed that way too, as well as on
+the cancelled Windows/macOS jobs. The fork patch keeps mode local, so nothing
+touches rbe, rbe-cache or the mint, but sets `enabled=true` when
+`FORK_REPO` is true (`bazel.yml`'s decide step). `bazel-gate.sh` accepts
+`local/true` and excuses no Dolt tier in it, so every tier must run and pass;
+each lane's `check_testcases.py` step fails a lane whose shards ran no tests.
+dolt-int, dolt-race and the rbe prewarm stay remote-only and do not run.
+The integration lane is a cold tagged race build without the cache, so fork
+CI is slower. Pinning tests updated: `TestBazelRBEJobDecidesOnce`,
+`TestBazelGateSimulation`, `TestBazelCacheModeReachesTheRC`, and new rows in
+`TestBazelGateDoltTiersCrossCheck`. Do not "fix" this by routing fork CI back
+to rbe-cache.
+
+Running the tiers locally needed three more fork changes. First, the tier
+timeouts are sized for a GitHub-hosted runner: embedded and cmd-dolt
+150/140 min, proxied and server-storage 120/110 (job/step). Upstream's
+25-minute steps assume rbe's parallelism, and the first local run of
+server-storage hit that wall without a single test failure.
+`TestBazelDoltServerTiers` now allows up to 120. Second, the proxied lane
+installs `socat`, which the rbe workers carry and the proxied target
+requires (`BEADS_TEST_REQUIRE_SOCAT=1`). The install uses release.yml's
+bounded, retried apt shape and is registered in `aptStepBudgets`.
+Third, the proxied `config show` row of the topology capability matrix
+expects the correct answer: upstream pins it WRONG_ANSWER because
+`collectDatabaseEntries` swallows the proxied error, but the fork's
+`newProxiedServerRoutedStore` makes it read the database.
+
+The proxied lane also needs two runner adjustments in mode local. First,
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`: Ubuntu
+24.04's AppArmor blocks the unprivileged `unshare --user --net` that
+`tools/bazel/go_test_offline.sh` uses, which failed every
+`bd_managed_local_test` shard in 0.2 s. The wrapper still proves the
+namespace has no outbound network. Second, `--local_test_jobs=2`
+(`BAZEL_LOCAL_TEST_JOBS`, empty in mode remote). Four race-instrumented
+shards at `-test.parallel=4` on one 4-vCPU runner starved `bd serve`'s
+claim retries into `503 busy`.
+`TestProxiedServerServeClaimNext/concurrent_claimants_never_win_the_same_row`
+lost 2 of 6 rows to 503s. No row was ever won twice. The test passes 3/3
+locally in about 1.7 s with the proxy pool off, as it is by default.
+`TestBazelRetiredLanesArePinned` and `TestBazelDoltServerTiers` carry the
+fork's extra line and steps. The server-storage lane gets the same
+`--local_test_jobs=2`: with four shards at once, a `dolt_server_full_test`
+shard went from about 450 s to its 900 s `-test.timeout`. Known flake in
+mode local: upstream's `TestStart_PortFilePortMovesOutsideSharedMode`
+releases a `freeLoopbackPort` port and reuses it, so another concurrent test
+can take it first (it passes 10/10 alone). Re-run that job rather than
+patching it.
+
 ## The wisps plane rule — resolved into an additive flag
 
 `va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of
@@ -459,6 +528,26 @@ Recurring conflicts, roughly in descending pain:
    #6096 landed the fork's own BSD-sed fix upstream, so the file is
    byte-identical again and only the hash line in `default.nix` conflicts.
 4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
+5. **Migration gates** — `internal/storage/schema/schema.go` (`MigrateUp`),
+   `internal/storage/embeddeddolt/store.go`, and the override block in
+   `cmd/bd/main.go`. Since 2026-10-14 upstream has its own migration-consent
+   gate in the same spot as the fork's MIGRATION-FREEZE gate. Keep the order
+   freeze, then consent, then body: a frozen workspace must report the freeze,
+   not a "run bd migrate" hint. Upstream's `migrateUpConsented` (the
+   fresh-bootstrap heal path) skips consent but must still check the freeze.
+   In `main.go` the fork's copy of the `--force`/consent block sits *before*
+   the freeze lookup, so drop upstream's later copy and carry over any new
+   `schema.Set*` line it adds.
+6. **CI shard manifests** — `.github/scripts/{embedded-cmd,embedded-storage,
+   proxied-cmd}-test-shards.txt`. Upstream re-shards them wholesale, so never
+   hand-merge them. Take upstream's file, then re-place the fork-only tests
+   with `scripts/ci/gen_*_shard_manifest.py <N> --weights=duration --write`
+   (N is in the file header). There were 7 fork-only tests at the 2026-10-14
+   resync.
+
+Verify a resync's embedded zones with `BEADS_TEST_EMBEDDED_DOLT=1` and `-v`.
+Without that variable every `TestEmbedded*` test SKIPs, and `go test` still
+prints `ok`.
 
 ## Parked, deliberately not carried
 
@@ -531,6 +620,16 @@ None is a tree change you can prepare in advance; all are done per cycle.
    Verified working 2026-09-03 with no nix installed: the Docker fallback ran
    the real build, and #6096 having landed means no stray `default.nix''` is
    produced any more.
+
+   **Check `default.nix`'s `version` line too.** When an upstream release
+   bump lands, the version line can merge WITHOUT a conflict and take
+   upstream's version (the 2026-10-14 and 2026-10-27 resyncs both did:
+   1.3.0, then 1.3.2, on a 1.94.1 fork). `scripts/check-versions.sh` does not
+   cover `default.nix`, so it passes anyway. After the merge,
+   `grep -n '^  version' default.nix` must print the fork's version. If
+   Docker is unavailable for the vendorHash fallback, CI's `Test Nix Flake`
+   prints the right hash on failure ("got: sha256-..."); the go-modules hash
+   depends only on module content, not on the version line.
 
 3. **`make install` cannot succeed in this fork — use `install-force`.** The
    `check-up-to-date` target compares HEAD against `origin/main`, and here
