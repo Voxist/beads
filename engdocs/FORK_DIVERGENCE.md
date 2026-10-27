@@ -372,7 +372,13 @@ claim retries into `503 busy`.
 lost 2 of 6 rows to 503s. No row was ever won twice. The test passes 3/3
 locally in about 1.7 s with the proxy pool off, as it is by default.
 `TestBazelRetiredLanesArePinned` and `TestBazelDoltServerTiers` carry the
-fork's extra line and steps.
+fork's extra line and steps. The server-storage lane gets the same
+`--local_test_jobs=2`: with four shards at once, a `dolt_server_full_test`
+shard went from about 450 s to its 900 s `-test.timeout`. Known flake in
+mode local: upstream's `TestStart_PortFilePortMovesOutsideSharedMode`
+releases a `freeLoopbackPort` port and reuses it, so another concurrent test
+can take it first (it passes 10/10 alone). Re-run that job rather than
+patching it.
 
 ## The wisps plane rule — resolved into an additive flag
 

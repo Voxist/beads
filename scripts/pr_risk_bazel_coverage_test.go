@@ -1178,7 +1178,7 @@ func TestBazelRetiredLanesArePinned(t *testing.T) {
 	for lane, config := range bazelRetiredLaneConfigs {
 		test := workflow.job(t, lane).step(t, "bazel test //... --config="+config)
 		want := bazelTierTestRun(config)
-		if lane == bazelProxiedJobName {
+		if lane == bazelProxiedJobName || lane == bazelServerJobName {
 			// FORK (Voxist/beads): mode local caps concurrent test shards at
 			// two (BAZEL_LOCAL_TEST_JOBS); empty, and so absent, in mode remote.
 			want = strings.Replace(want, "  --experimental_build_event_upload_strategy=local \\\n",

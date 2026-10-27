@@ -2483,6 +2483,11 @@ jobs:
       # timeout is 15m per shard, 1200s Bazel cap), plus a compile.
       - name: bazel test //... --config=doltserver-integration
         id: test
+        env:
+          # FORK (Voxist/beads): as bazel-proxied: in mode local four shards at
+          # once pushed a dolt_server_full_test shard from ~450s to its 900s
+          # -test.timeout. Two at a time.
+          BAZEL_LOCAL_TEST_JOBS: ${{ needs.rbe.outputs.mode == 'local' && '--local_test_jobs=2' || '' }}
         timeout-minutes: 110
         run: |
           set -o pipefail
@@ -2493,6 +2498,7 @@ jobs:
             --execution_log_compact_file="$RUNNER_TEMP/bazel-exec.log.zst" \
             --profile="$RUNNER_TEMP/bazel-profile.json" \
             --experimental_build_event_upload_strategy=local \
+            ${BAZEL_LOCAL_TEST_JOBS:+"$BAZEL_LOCAL_TEST_JOBS"} \
             2>&1 | tee "$RUNNER_TEMP/bazel-test.log" || rc=$?
           echo "bazel test --config=doltserver-integration: exit $rc, $(( $(date +%s) - start ))s wall" | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$rc"
