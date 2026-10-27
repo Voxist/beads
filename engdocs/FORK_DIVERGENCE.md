@@ -567,6 +567,16 @@ None is a tree change you can prepare in advance; all are done per cycle.
    the real build, and #6096 having landed means no stray `default.nix''` is
    produced any more.
 
+   **Check `default.nix`'s `version` line too.** When an upstream release
+   bump lands, the version line can merge WITHOUT a conflict and take
+   upstream's version (the 2026-10-14 and 2026-10-27 resyncs both did:
+   1.3.0, then 1.3.2, on a 1.94.1 fork). `scripts/check-versions.sh` does not
+   cover `default.nix`, so it passes anyway. After the merge,
+   `grep -n '^  version' default.nix` must print the fork's version. If
+   Docker is unavailable for the vendorHash fallback, CI's `Test Nix Flake`
+   prints the right hash on failure ("got: sha256-..."); the go-modules hash
+   depends only on module content, not on the version line.
+
 3. **`make install` cannot succeed in this fork — use `install-force`.** The
    `check-up-to-date` target compares HEAD against `origin/main`, and here
    `origin` is UPSTREAM, so it always reports the fork as stale:
