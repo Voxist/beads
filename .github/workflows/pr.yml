@@ -70,7 +70,7 @@ jobs:
   # out.
   scope:
     name: Scope
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -110,7 +110,7 @@ jobs:
     name: Fast checks (frozen migrations, .beads diff)
     needs: scope
     if: ${{ needs.scope.outputs.linux == 'true' }}
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       migration-hygiene: ${{ steps.migration-hygiene.outcome }}
@@ -430,7 +430,7 @@ jobs:
     name: Check doc flags freshness
     needs: scope
     if: ${{ needs.scope.outputs.linux == 'true' }}
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -762,7 +762,7 @@ jobs:
     name: Advisory reports (examples build, complexity)
     needs: scope
     if: ${{ needs.scope.outputs.advisory == 'true' }}
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'ubuntu-latest' || 'ubuntu-latest' }}
     # Review N-2 (2026-10-03): step timeouts sum to 42 min; 60 (not 45) keeps
     # job setup/post overhead from turning a stacked near-timeout stall into a
     # job-level cancel, which would red this advisory check through "another
@@ -1477,7 +1477,7 @@ jobs:
     # GitHub-saved cache. Must match the TestSameRepoBlacksmithRunners pin;
     # the gate's NAME must never change (ruleset requires exactly "CI Gate /
     # Required").
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'ubuntu-latest' || 'ubuntu-latest' }}
     # F3: now on Blacksmith for same-repo PRs; a hang used to burn only the
     # default 360 minutes of a free GitHub-hosted runner, now Blacksmith
     # minutes too.
@@ -1644,6 +1644,9 @@ jobs:
           # bazel-gate.sh's skip list allows; each lane's own result is
           # required above. A push to main's run never starts the call
           # (skipped, which only its scope excuses).
+          # FORK (Voxist/beads): in the fork repository's own CI, mode local
+          # with enabled=true reads success here too: every Dolt tier ran, on
+          # the fork's GitHub-hosted runners (bazel-gate.sh).
           BAZEL_REMOTE="$(bash .github/scripts/bazel-gate.sh remote)"
           if [[ "$BAZEL_REMOTE" == not-run-remotely ]]; then
             echo "::error::The Bazel lanes did not run remotely on rbe-west (mode '${BAZEL_RBE_MODE:-none}'); they are this PR's only run of the Linux Go test tiers. In mode local on a PR without the CI secrets, rbe-fork was closed or refused this run: re-run all jobs later."

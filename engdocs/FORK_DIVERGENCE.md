@@ -37,6 +37,13 @@ should not be re-proposed; carry it indefinitely and merge upstream *around* it.
   [CONNECTION_POOLING_DEPLOYMENT.md](CONNECTION_POOLING_DEPLOYMENT.md).
 - Upstream vehicle was `gastownhall/beads#4303` (authored by `cstar`), which
   remains a **held-back draft**. Voxist never had its own upstream PR for this.
+- **Resync hazard:** `db-proxy-child` sets the pooling fields (`PoolSize`,
+  `BackendUser`, `PoolConnMaxLifetime`, `Debug`) inside upstream's
+  `dbProxyChildProxyOpts`, not at the call site, and
+  `TestDbProxyChildProxyOpts_CarriesForkPooling` pins them. A resync that
+  takes upstream's one-line `NewProxyServer(dbProxyChildProxyOpts(srv))`
+  keeps pooling on; before 2026-10-28 it would have turned pooling off
+  across the fleet with no failing test.
 
 ### proxied-server deploy path
 
@@ -311,20 +318,52 @@ against the actual diff before working it.
 Ops-only, never upstreamable: `DEPLOY_BD` install guard, nix `vendorHash`
 recomputation, `prepared-dml-grandfather.txt`.
 
-**Windows and macOS CI run on GitHub-hosted runners, not Blacksmith (since
-2026-10-27).** Upstream #7355 (84390b03a) moved every Windows and macOS job to
-`blacksmith-*-windows-2025` / `blacksmith-6vcpu-macos-26` for every event,
-because Blacksmith serves fork PRs in the gastownhall org. The Voxist org has
-Blacksmith Linux runners only: on Voxist/beads#71 eight such jobs got no runner,
-sat queued until GitHub cancelled them at 24 h, and turned `CI Gate / Required`
-red. The fork patch swaps the labels for `windows-latest` and `macos-latest`
-(the runners these jobs used through Voxist/beads#69) in the eleven `runs-on`
-and matrix `runner` sites of `.github/workflows/main.yml` and `pr.yml`, and the
-matching constants in `scripts/ci_blacksmith_runner_test.go`. Comments and
-const names stay upstream's to keep the resync surface small. On each resync,
-`git grep -nE "^ *(runs-on|runner):.*blacksmith-[0-9]+vcpu-(windows|macos)" -- .github`
-must print nothing; a new upstream Windows or macOS job needs the same swap.
-Enabling Blacksmith Windows/macOS on the Voxist org would retire this patch.
+**All fork CI runs on GitHub-hosted runners, never Blacksmith (Windows and
+macOS since 2026-10-27, Linux since 2026-10-28).** The Voxist org has no
+Blacksmith runners at all. A job on any `blacksmith-*` label gets no runner,
+sits queued until GitHub cancels it at 24 h, and turns its gate red.
+
+- **Windows/macOS.** Upstream #7355 (84390b03a) moved every Windows and macOS
+  job to `blacksmith-*-windows-2025` / `blacksmith-6vcpu-macos-26` for every
+  event (Blacksmith serves fork PRs in the gastownhall org). On
+  Voxist/beads#71 eight such jobs never ran. The fork swaps the labels for
+  `windows-latest` and `macos-latest` (what these jobs used through
+  Voxist/beads#69) in the eleven `runs-on` and matrix `runner` sites of
+  `main.yml` and `pr.yml`.
+- **Linux.** Upstream's "same-repo" expressions pick
+  `blacksmith-*-ubuntu-2404` for push, schedule, dispatch, merge-group and
+  same-repo PR events. A PR from the personal fork is not same-repo, so
+  #71/#73 ran on `ubuntu-latest`. But every push to `main` and every nightly
+  hung on Bazel's `execution mode` job (from 2026-10-06 until this patch). An
+  earlier version of this note wrongly said Voxist had Blacksmith Linux
+  runners. The fork swaps every `blacksmith-*-ubuntu-2404` for
+  `ubuntu-latest` in `bazel.yml`, `pr.yml`, `pr-risk.yml` and
+  `docs-mintlify.yml` (26 sites). The expressions keep their shape, so
+  several read `X && 'ubuntu-latest' || 'ubuntu-latest'`; each line then
+  differs from upstream only in the label, which keeps resync conflicts
+  mechanical.
+- **Tests.** The constants in `scripts/ci_blacksmith_runner_test.go`,
+  `ci_workflow_test.go` and `ci_f7c_advisory_test.go` take the same swap.
+  Four tests that required a Blacksmith runner are fork-adjusted:
+  `TestBazelCacheModeReachesTheRC`, `TestBlacksmithBazelRunnerSizes` (16
+  pytest workers follow mode, not label) and the two `ci_merge_queue_test.go`
+  merge-group checks (the fork has no merge queue). The Blacksmith secret-read
+  guards now find no Blacksmith jobs, which matches the fork having none.
+
+On each resync,
+`git grep -nE "blacksmith-[0-9]+vcpu-" -- .github` must print nothing; a new
+upstream job on a Blacksmith label needs the same swap.
+
+**Auto-start decisions are workspace-scoped (fork #56/#57).** Production code
+calls `doltserver.IsAutoStartDisabledFor(beadsDir)`, never upstream's global
+`IsAutoStartDisabled()`, which misses a workspace's own
+`dolt.auto-start: false`. The 2026-10-27 resync brought four new global calls
+in through a conflict-free merge: `doltserver/endpoint.go` (`endpointFor`),
+`storage/dolt/store.go` (the port-0 refusal and its remedy text) and
+`cmd/bd/dolt.go` (`externallyManagedFreshStartRefusal`). All four now pass the
+workspace. `scripts/fork_autostart_scope_policy_test.go` (in
+`//scripts:go_sources_test`) fails on any production call to the global
+check, so the next resync cannot reintroduce one silently.
 
 **The fork's own CI runs the Linux Dolt tiers locally (since 2026-10-27).**
 Upstream #7821 (068cdd628) puts a fork repository's own CI in Bazel mode local,
@@ -346,11 +385,12 @@ CI is slower. Pinning tests updated: `TestBazelRBEJobDecidesOnce`,
 to rbe-cache.
 
 Running the tiers locally needed three more fork changes. First, the tier
-timeouts are sized for a GitHub-hosted runner: embedded and cmd-dolt
-150/140 min, proxied and server-storage 120/110 (job/step). Upstream's
+timeouts are sized for a GitHub-hosted runner (job/step): embedded 200/190 min
+(its test step measured 102 and 127.5 min on two runs), cmd-dolt 150/140,
+proxied 125/110 (its step caps sum to 124), server-storage 120/110. Upstream's
 25-minute steps assume rbe's parallelism, and the first local run of
 server-storage hit that wall without a single test failure.
-`TestBazelDoltServerTiers` now allows up to 120. Second, the proxied lane
+`TestBazelDoltServerTiers` now allows up to 125. Second, the proxied lane
 installs `socat`, which the rbe workers carry and the proxied target
 requires (`BEADS_TEST_REQUIRE_SOCAT=1`). The install uses release.yml's
 bounded, retried apt shape and is registered in `aptStepBudgets`.
@@ -379,6 +419,12 @@ mode local: upstream's `TestStart_PortFilePortMovesOutsideSharedMode`
 releases a `freeLoopbackPort` port and reuses it, so another concurrent test
 can take it first (it passes 10/10 alone). Re-run that job rather than
 patching it.
+
+Because the fork sets `enabled=true` in mode local, the rbe job's worker-env
+preflight (the sparse checkout and `tools/rbe/worker-env-sync main`) would
+also run, and a gascity re-pin of `worker-env.txt` would turn every fork PR
+red, for a pin that mode local never uses. Both steps also require
+`mode != 'local'`.
 
 ## The wisps plane rule — resolved into an additive flag
 

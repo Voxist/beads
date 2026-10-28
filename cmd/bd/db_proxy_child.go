@@ -66,24 +66,11 @@ not intended to be invoked directly by users.`,
 		}
 		defer func() { _ = srv.Stop(context.Background()) }()
 
-		// Backend credentials for pooled connections. The user arrives via
-		// flag (default root); the password is read from the environment so it
-		// never appears on the command line. Only the external backend has a
-		// non-empty password; the managed loopback server uses root with no
-		// password.
-		backendPassword := ""
-		if backend == proxy.BackendExternal {
-			backendPassword = os.Getenv(configfile.ExternalDoltPasswordEnvVar)
-		}
-
 		opts := dbProxyChildProxyOpts(srv)
-		// Fork: pooled-connection settings and the proxy debug flag ride on
-		// top of upstream's options (see engdocs/FORK_DIVERGENCE.md).
-		opts.PoolSize = dbProxyChildPoolSize
-		opts.BackendUser = dbProxyChildBackendUser
-		opts.BackendPassword = backendPassword
-		opts.PoolConnMaxLifetime = dbProxyChildPoolConnMaxLifetime
-		opts.Debug = dbProxyChildDebug
+		// FORK (Voxist/beads): the pooled-connection password depends on the
+		// backend, so it is set here; the flag-driven pooling fields are in
+		// dbProxyChildProxyOpts.
+		opts.BackendPassword = dbProxyChildBackendPassword(backend)
 		p := proxy.NewProxyServer(opts)
 		if err := p.ListenAndServe(cmd.Context()); err != nil {
 			if errors.Is(err, proxy.ErrLockHeld) {
@@ -106,7 +93,26 @@ func dbProxyChildProxyOpts(srv server.DatabaseServer) proxy.ProxyOpts {
 		// The child inherits BD_DEBUG from the spawning bd; its
 		// PersistentPreRun is a no-op, so --verbose never reaches it.
 		TraceConnections: debug.Enabled(),
+		// FORK (Voxist/beads): db-proxy connection pooling and the proxy debug
+		// flag (engdocs/FORK_DIVERGENCE.md, permanent divergence). Set here,
+		// not at the call site, so a resync that takes upstream's one-line
+		// NewProxyServer(dbProxyChildProxyOpts(srv)) keeps pooling on.
+		PoolSize:            dbProxyChildPoolSize,
+		BackendUser:         dbProxyChildBackendUser,
+		PoolConnMaxLifetime: dbProxyChildPoolConnMaxLifetime,
+		Debug:               dbProxyChildDebug,
 	}
+}
+
+// dbProxyChildBackendPassword is the password the proxy authenticates its
+// pooled backend connections with (FORK, Voxist/beads). It is read from the
+// environment so it never appears on the command line. Only the external
+// backend has one; the managed loopback server uses root with no password.
+func dbProxyChildBackendPassword(backend proxy.Backend) string {
+	if backend == proxy.BackendExternal {
+		return os.Getenv(configfile.ExternalDoltPasswordEnvVar)
+	}
+	return ""
 }
 
 func newDatabaseServer(backend proxy.Backend, rootDir, configPath, logPath, doltBin, database string, external configfile.ExternalDoltConfig) (server.DatabaseServer, error) {

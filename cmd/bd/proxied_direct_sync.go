@@ -91,7 +91,7 @@ func storeForRawDoltSync(ctx context.Context, c Capability) storage.DoltStorage 
 	}
 	st, err := dolt.New(ctx, cfg)
 	if err != nil {
-		FatalErrorRespectJSON("%s: opening direct dolt endpoint %s:%d: %v", c, remedy.PrintedValue(cfg.ServerHost), cfg.ServerPort, err)
+		FatalErrorRespectJSON("%s: opening direct dolt endpoint %s:%d: %v", c, remedy.PrintedValue(cfg.ServerHost), cfg.ServerPort, remedy.PrintedError(err))
 	}
 	fmt.Fprintf(os.Stderr, "proxied scope: using direct dolt endpoint %s:%d for %s\n", remedy.PrintedValue(cfg.ServerHost), cfg.ServerPort, c)
 	return st

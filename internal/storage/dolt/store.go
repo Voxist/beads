@@ -2086,7 +2086,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	// serverOpenCanAutoStart because it also accepts spellings such as
 	// "false" that resolveAutoStart does not.
 	if cfg.ServerSocket == "" && cfg.ServerPort <= 0 &&
-		(!serverOpenCanAutoStart(cfg) || doltserver.IsAutoStartDisabled()) {
+		(!serverOpenCanAutoStart(cfg) || doltserver.IsAutoStartDisabledFor(resolvedBeadsDir)) {
 		return nil, unresolvedServerPortError(cfg, resolvedBeadsDir, serverDir)
 	}
 
@@ -2599,7 +2599,7 @@ func unresolvedServerPortError(cfg *Config, beadsDir, serverDir string) error {
 	// The remedy paragraph is the one an endpoint with no port gives
 	// (doltserver.Endpoint.UnresolvedAdvice).
 	b.WriteString(doltserver.UnresolvedPortRemedy(cfg.ServerHost, portFile,
-		doltserver.IsAutoStartDisabled(), !cfg.AutoStart))
+		doltserver.IsAutoStartDisabledFor(beadsDir), !cfg.AutoStart))
 	return fmt.Errorf("%w for %s\n\n%s", ErrUnresolvedServerPort, beadsDir, b.String())
 }
 

@@ -966,7 +966,7 @@ over existing data, or adopting a server bd already tracks, is unaffected. Use
 		}
 		serverDir := doltserver.ResolveServerDir(beadsDir)
 		force, _ := cmd.Flags().GetBool("force")
-		if err := externallyManagedFreshStartRefusal(serverDir, doltserver.IsAutoStartDisabled(), force); err != nil {
+		if err := externallyManagedFreshStartRefusal(serverDir, doltserver.IsAutoStartDisabledFor(beadsDir), force); err != nil {
 			return HandleError("%v", err)
 		}
 

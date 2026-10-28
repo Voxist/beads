@@ -215,7 +215,7 @@ var advisoryBlacksmithRunnerJobs = []struct {
 	blacksmithLabel string
 	fallback        string
 }{
-	{"docs-mintlify.yml", "broken-links", "blacksmith-2vcpu-ubuntu-2404", "ubuntu-latest"},
+	{"docs-mintlify.yml", "broken-links", "ubuntu-latest", "ubuntu-latest"},
 }
 
 // TestF7cAdvisorySameRepoBlacksmithExpressionSemantics evaluates each F7c

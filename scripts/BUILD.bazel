@@ -240,6 +240,7 @@ go_test(
     name = "go_sources_test",
     srcs = [
         "dolt_host_policy_test.go",
+        "fork_autostart_scope_policy_test.go",
         "host_tool_exec_policy_test.go",
         "repo_helpers_test.go",
         "testing_short_tree_test.go",

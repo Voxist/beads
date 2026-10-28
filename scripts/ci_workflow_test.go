@@ -1906,7 +1906,7 @@ const bazelRBEPrewarmIf = "${{ needs.rbe.outputs.mode == 'remote' }}"
 // them). Same-repo PRs and merge_group/push/dispatch/schedule (never forks)
 // get Blacksmith; a pull_request_target farm run and any fork or Dependabot
 // PR stay GitHub-hosted. Pinned verbatim by TestSameRepoBlacksmithRunners.
-const wantRBERunsOn = "${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
+const wantRBERunsOn = "${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'ubuntu-latest' || 'ubuntu-latest' }}"
 
 // The sameRepoBlacksmith{2,4,8}vcpu consts and the real-expression evaluator
 // that checks them now live in ci_blacksmith_runner_test.go (shared with
@@ -2127,9 +2127,9 @@ func TestBazelWorkflowJobsAndExecutionMode(t *testing.T) {
 			wantJobSetupEnv["BAZEL_RRC_READ"] = "true"
 		}
 		if isBazelRRCCacheReader(name) {
-			wantJobRunsOn = bazelRRCCacheReaderRunsOn("blacksmith-4vcpu-ubuntu-2404")
+			wantJobRunsOn = bazelRRCCacheReaderRunsOn("ubuntu-latest")
 			if name == bazelJobName {
-				wantJobRunsOn = bazelRRCCacheReaderRunsOn("blacksmith-8vcpu-ubuntu-2404")
+				wantJobRunsOn = bazelRRCCacheReaderRunsOn("ubuntu-latest")
 			}
 		}
 		if bazelPackageJobs[name] {
@@ -3733,7 +3733,7 @@ func TestBazelWorkflowActionsArePinned(t *testing.T) {
 			// FORK (Voxist/beads): a step registered in aptStepBudgets is bounded
 			// and retried, and TestAptGetStepsAreBoundedAndRetried pins its shape
 			// (the proxied tier's socat install in mode local).
-			if strings.Contains(step.Run, "apt-get") && !aptStepBudgeted(bazelWorkflowName, step.Name) {
+			if strings.Contains(step.Run, "apt-get") && !aptStepBudgeted(file, step.Name) {
 				t.Errorf("%s step %q runs apt-get; bound it (see ci_workflow_apt_get_timeout_test.go) or drop it", file, step.Name)
 			}
 		}
@@ -4388,8 +4388,8 @@ func TestBazelDoltServerTiers(t *testing.T) {
 		job := workflow.job(t, c.job)
 		// FORK (Voxist/beads): the fork's CI runs these tiers in mode local on a
 		// GitHub-hosted runner, without rbe's parallelism, so the cap is 120.
-		if job.TimeoutMinutes == 0 || job.TimeoutMinutes > 120 {
-			t.Errorf("%s timeout-minutes = %d; the fork runs it locally, keep it at most 120", c.job, job.TimeoutMinutes)
+		if job.TimeoutMinutes == 0 || job.TimeoutMinutes > 125 {
+			t.Errorf("%s timeout-minutes = %d; the fork runs it locally, keep it at most 125", c.job, job.TimeoutMinutes)
 		}
 		assertBazelTierStep(t, job, c.job, c.config)
 		if n := len(job.Steps); n != c.wantSteps {

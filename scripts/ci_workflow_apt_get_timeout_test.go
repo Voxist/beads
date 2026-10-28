@@ -74,11 +74,13 @@ func aptStepBudgets() []aptStepBudget {
 	}
 }
 
-// aptStepBudgeted reports whether workflow's step named step is a registered,
-// bounded apt-get step (FORK, Voxist/beads).
-func aptStepBudgeted(workflow, step string) bool {
+// aptStepBudgeted reports whether the step named step in workflowJob ("<workflow> <job>",
+// as TestBazelWorkflowActionsArePinned names it) is a registered, bounded
+// apt-get step (FORK, Voxist/beads). Job and step both match, so a
+// same-named unbounded step in another job is still caught.
+func aptStepBudgeted(workflowJob, step string) bool {
 	for _, b := range aptStepBudgets() {
-		if b.workflow == workflow && b.step == step {
+		if b.workflow+" "+b.job == workflowJob && b.step == step {
 			return true
 		}
 	}
