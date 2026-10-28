@@ -1080,14 +1080,14 @@ func TestNogoPolicyRejectsMutations(t *testing.T) {
 		{"1g owner excludes a target on a continuation line", replace(false, ownerProfile,
 			ownerProfile+"            -//cmd/bd/... \\\n")},
 		{"2 non-owner job runs the owner's config", replace(false,
-			"bazel test //... --config=embedded ${BAZEL_FRESH", "bazel test //... --config=ci ${BAZEL_FRESH")},
+			"bazel test --config=embedded ${BAZEL_FRESH", "bazel test --config=ci ${BAZEL_FRESH")}, // FORK: the matrix leg's command
 		// Must-fix 7 (independent review of #7486): a non-owner's own bazel
 		// command line can pass a key-affecting flag directly, overriding
 		// what its --config's .bazelrc lines say, while the config name
 		// itself still matches what every other check here expects.
 		{"7a non-owner embedded command line overrides race on the command line", replace(false,
-			"bazel test //... --config=embedded ${BAZEL_FRESH:+\"$BAZEL_FRESH\"} \\",
-			"bazel test //... --config=embedded --@rules_go//go/config:race=false ${BAZEL_FRESH:+\"$BAZEL_FRESH\"} \\")},
+			"bazel test --config=embedded ${BAZEL_FRESH:+\"$BAZEL_FRESH\"} \\", // FORK: the matrix leg's command
+			"bazel test --config=embedded --@rules_go//go/config:race=false ${BAZEL_FRESH:+\"$BAZEL_FRESH\"} \\")},
 		{"7b non-owner doltserver-cmd command line adds an extra tag", replace(false,
 			"bazel test //... --config=doltserver-cmd ${BAZEL_FRESH:+\"$BAZEL_FRESH\"} \\",
 			"bazel test //... --config=doltserver-cmd --@rules_go//go/config:tags=gms_pure_go,integration,extra ${BAZEL_FRESH:+\"$BAZEL_FRESH\"} \\")},

@@ -70,9 +70,10 @@ type Endpoint struct {
 	// Gateway reports that User is a CredentialCommand token (WithIdentity).
 	Gateway bool
 	// SharedServer and AutoStartDisabled are IsSharedServerMode and
-	// IsAutoStartDisabled under the configuration ResolveEndpoint ran with,
-	// so a caller that resolved another workspace's endpoint under
-	// config.WithBeadsDir classifies it by that workspace's settings.
+	// IsAutoStartDisabledFor(BeadsDir) under the configuration ResolveEndpoint
+	// ran with, so a caller that resolved another workspace's endpoint under
+	// config.WithBeadsDir classifies it by that workspace's settings, its own
+	// dolt.auto-start included (FORK, Voxist/beads #56/#57).
 	SharedServer      bool
 	AutoStartDisabled bool
 }

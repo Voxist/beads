@@ -148,7 +148,11 @@ func TestEndpointBDStartsServerIsTheStoresAutoStartRule(t *testing.T) {
 		name string
 		env  map[string]string
 		meta configfile.Config
-		want bool
+		// FORK (Voxist/beads): the workspace's own config.yaml, and the
+		// active (global) config's dolt.auto-start (fork #56/#57).
+		workspaceYAML   string
+		globalAutoStart string
+		want            bool
 	}{
 		{name: "bd's own server", want: true},
 		{name: "auto-start off", env: map[string]string{"BEADS_DOLT_AUTO_START": "0"}},
@@ -160,12 +164,27 @@ func TestEndpointBDStartsServerIsTheStoresAutoStartRule(t *testing.T) {
 		{name: "IPv6 loopback", meta: configfile.Config{DoltServerHost: "::1"}},
 		{name: "metadata.json dolt_server_port", meta: configfile.Config{DoltServerPort: 13999}},
 		{name: "shared server", env: map[string]string{"BEADS_DOLT_SHARED_SERVER": "1"}},
+		// FORK (Voxist/beads): a workspace's own dolt.auto-start: false turns
+		// auto-start off for the endpoint and the store alike, also when the
+		// active config says true (any source may disable it).
+		{name: "workspace config.yaml dolt.auto-start false", workspaceYAML: "dolt:\n  auto-start: false\n"},
+		{name: "global true, workspace false", globalAutoStart: "true", workspaceYAML: "dolt:\n  auto-start: false\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			beadsDir := storeEndpointTestEnv(t, nil)
 			t.Setenv("BEADS_DOLT_AUTO_START", "")
 			for k, v := range tc.env {
 				t.Setenv(k, v)
+			}
+			if tc.workspaceYAML != "" {
+				if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(tc.workspaceYAML), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.globalAutoStart != "" {
+				prev := config.GetString("dolt.auto-start")
+				config.Set("dolt.auto-start", tc.globalAutoStart)
+				t.Cleanup(func() { config.Set("dolt.auto-start", prev) })
 			}
 			meta := tc.meta
 			meta.Backend, meta.DoltMode, meta.DoltDatabase = configfile.BackendDolt, configfile.DoltModeServer, "autostart_rule"
@@ -184,7 +203,8 @@ func TestEndpointBDStartsServerIsTheStoresAutoStartRule(t *testing.T) {
 			}
 			ApplyCLIAutoStart(beadsDir, cfg)
 			applyConfigDefaults(cfg)
-			store := serverOpenCanAutoStart(cfg) && !doltserver.IsAutoStartDisabled()
+			// FORK (Voxist/beads): the store refuses on the workspace-scoped rule.
+			store := serverOpenCanAutoStart(cfg) && !doltserver.IsAutoStartDisabledFor(beadsDir)
 			ep := doltserver.ResolveEndpoint(beadsDir, fileCfg)
 			if got := ep.BDStartsServer(); got != store || got != tc.want {
 				t.Errorf("Endpoint.BDStartsServer() = %v, store auto-starts = %v, want both %v", got, store, tc.want)

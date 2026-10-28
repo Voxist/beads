@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -415,10 +416,45 @@ func TestBazelRetiredLanesCheckListedTestsRan(t *testing.T) {
 		for _, w := range c.whole {
 			want = append(want, "--whole "+w)
 		}
-		if got := strings.Join(strings.Fields(step.Run), " "); got != strings.Join(want, " ") {
+		run, wantIf := step.Run, "${{ always() && steps.test.outcome != 'skipped' }}"
+		if c.lane == bazelEmbedJobName {
+			// FORK (Voxist/beads): the embedded tier is a matrix; each leg passes
+			// its own suites ($COVERAGE from matrix.shard-suites). Together the
+			// legs must check exactly what upstream's single command does.
+			var legs []string
+			for _, inc := range job.Strategy.Matrix.Include {
+				fields := strings.Fields(inc.ShardSuites)
+				// --no-tiling: a leg running part of a shared TOTAL-shard block
+				// (cmd-a, cmd-b). Only partial suites (N@OFFSET/TOTAL) may skip
+				// it; the union compared below tiles the block.
+				if slices.Contains(fields, "--no-tiling") {
+					for i, f := range fields {
+						if f == "--suite" && i+3 < len(fields) && !strings.Contains(fields[i+3], "@") {
+							t.Errorf("embedded leg %q passes --no-tiling with a whole suite %s %s", inc.Group, fields[i+1], fields[i+3])
+						}
+					}
+					fields = slices.DeleteFunc(fields, func(f string) bool { return f == "--no-tiling" })
+				}
+				legs = append(legs, strings.Join(fields, " "))
+			}
+			// The step is `set -f`, a shellcheck comment, then the checker
+			// with $COVERAGE; compare the checker line with the legs' suites.
+			if !strings.Contains(run, "set -f") {
+				t.Errorf("%s coverage step does not disable globbing before expanding $COVERAGE:\n%s", c.lane, run)
+			}
+			var checker string
+			for _, line := range strings.Split(run, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "python3 ") {
+					checker = line
+				}
+			}
+			run = strings.Replace(checker, "$COVERAGE", strings.Join(legs, " "), 1)
+			wantIf = "${{ always() && steps.test.outcome != 'skipped' && matrix.shard-suites != '' }}"
+		}
+		if got := strings.Join(strings.Fields(run), " "); got != strings.Join(want, " ") {
 			t.Errorf("%s coverage step runs %q, want %q", c.lane, got, strings.Join(want, " "))
 		}
-		if step.If != "${{ always() && steps.test.outcome != 'skipped' }}" || step.ContinueOnError != nil {
+		if step.If != wantIf || step.ContinueOnError != nil {
 			t.Errorf("%s coverage step: if %q, continue-on-error %v; want always() after the test step and no continue-on-error", c.lane, step.If, step.ContinueOnError)
 		}
 		if !(job.stepIndex(t, "bazel test //... --config="+c.config) < job.stepIndex(t, step.Name) &&
@@ -612,6 +648,16 @@ esac
 			t.Errorf("%s: pass = %v, want %v (mention %q):\n%s", c.name, err == nil, c.pass, c.mention, out)
 		}
 	}
+	// FORK (Voxist/beads): --no-tiling lets one invocation check half of a
+	// split block (the embedded matrix's cmd-a and cmd-b legs); the same
+	// suite without it fails on the shard no target here runs.
+	if out, err := exec.Command(python, script, "--no-tiling", "--bep", splitBEP, "--testlogs", splitLogs, "--suite", "//pkg:p", shard, "1@0/2").CombinedOutput(); err != nil {
+		t.Errorf("--no-tiling with half of a split block failed:\n%s", out)
+	}
+	// ...but not the bound check: a range past the block's total still fails.
+	if out, err := exec.Command(python, script, "--no-tiling", "--bep", splitBEP, "--testlogs", splitLogs, "--suite", "//pkg:p", shard, "1@2/2").CombinedOutput(); err == nil || !strings.Contains(string(out), "exceed") {
+		t.Errorf("--no-tiling with a range past the total passed or did not say it exceeds:\n%s", out)
+	}
 	if out, err := exec.Command(python, script, "--bep", writeBEP(2), "--testlogs", filepath.Join(dir, "logs0"), "--suite", label, shard, "2", "--whole", "//pkg:absent").CombinedOutput(); err == nil {
 		t.Errorf("--whole for a target the BEP lacks passed:\n%s", out)
 	}
@@ -630,6 +676,13 @@ esac
 		if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "failed") {
 			t.Errorf("shard script %s %v: check passed or did not say it failed:\n%s", c.script, c.env, out)
 		}
+	}
+	// FORK (Voxist/beads): --no-tiling skips only the static tiling check; a
+	// failing shard script still fails the run.
+	cmd := exec.Command(python, script, "--no-tiling", "--bep", writeBEP(2), "--testlogs", logs, "--suite", label, shard, "2")
+	cmd.Env = append(os.Environ(), "FAKE_SHARD_FAIL=1")
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "failed") {
+		t.Errorf("--no-tiling with a failing shard script passed or did not say it failed:\n%s", out)
 	}
 }
 
@@ -1178,6 +1231,9 @@ func TestBazelRetiredLanesArePinned(t *testing.T) {
 	for lane, config := range bazelRetiredLaneConfigs {
 		test := workflow.job(t, lane).step(t, "bazel test //... --config="+config)
 		want := bazelTierTestRun(config)
+		if lane == bazelEmbedJobName {
+			want = bazelForkEmbeddedTestRun // FORK (Voxist/beads): the matrix leg's command
+		}
 		if lane == bazelProxiedJobName || lane == bazelServerJobName {
 			// FORK (Voxist/beads): mode local caps concurrent test shards at
 			// two (BAZEL_LOCAL_TEST_JOBS); empty, and so absent, in mode remote.

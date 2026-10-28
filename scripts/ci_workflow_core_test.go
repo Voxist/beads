@@ -68,8 +68,12 @@ type ciWorkflowMatrixInclude struct {
 	OS           string `yaml:"os"`
 	ExpectedGOOS string `yaml:"expected_goos"`
 	Coverage     bool   `yaml:"coverage"`
-	TestFlags    string `yaml:"test-flags"`
-	Runner       string `yaml:"runner"`
+	// FORK (Voxist/beads): bazel.yml's embedded matrix legs.
+	Group       string `yaml:"group"`
+	Targets     string `yaml:"targets"`
+	ShardSuites string `yaml:"shard-suites"`
+	TestFlags   string `yaml:"test-flags"`
+	Runner      string `yaml:"runner"`
 	// F7b review fix (S1): no typed `shard` field here. pr-preflight-
 	// platforms' Windows shard split (the one thing in this file that ever
 	// used it) was reverted as not measurably helpful, and a typed field
