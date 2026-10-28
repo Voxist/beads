@@ -16,21 +16,8 @@ import (
 // for the given .beads directory. It reads metadata.json to determine the
 // configured mode:
 //
-//   - Embedded mode (default): Opens via the CGo embedded Dolt engine.
-//   - Server mode: Connects to an external dolt sql-server via NewFromConfig.
-//   - Proxied-server mode: Connects to the local db-proxy via NewFromConfig.
-//     Proxied-server is server-backed (the proxy speaks the MySQL wire
-//     protocol), so it must NOT fall through to the embedded engine — doing so
-//     creates a fresh, typeless database and yields "invalid issue type".
-//
-// Registered extension backends dispatch before any Dolt path, mirroring the
-// CLI store factories so SDK callers get the backend they registered instead
-// of a silently-opened embedded Dolt store.
-//
-// The server-backed path asserts project identity on open (see
-// dolt.New / verifyProjectIdentity); a server serving a different project's
-// database fails with ErrStoreIdentityMismatch rather than being silently
-// served.
+//   - Embedded Dolt (default): Opens via the CGo embedded Dolt engine.
+//   - Dolt server: Connects to a dolt sql-server via OpenFromConfig.
 //
 // The returned Storage must be closed when no longer needed.
 //
@@ -101,7 +88,7 @@ func OpenBestAvailableWith(ctx context.Context, beadsDir string, opts OpenOption
 		return nil, fmt.Errorf("beads: OpenOptions.UserAgent is not supported for backend %q (Dolt has no per-open transport seam): %w", cfg.GetBackend(), backends.ErrUserAgentWithoutOpenWith)
 	}
 
-	if resolveOpenBackend(cfg) == openBackendServer {
+	if cfg.IsDoltServerMode() {
 		store, err := dolt.NewFromConfig(ctx, beadsDir)
 		if err != nil {
 			return nil, err

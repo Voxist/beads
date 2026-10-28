@@ -138,17 +138,6 @@ var constructionExemptions = map[string]string{
 	// mutates a bead.
 	"ado.go:getADOConfigValue": "throwaway store used for a single GetConfig read; no bead mutation is possible through it",
 
-	// FORK DELTA (engdocs/FORK_DIVERGENCE.md): the proxied-server direct-Dolt
-	// escape hatch. Its only three callers are `bd dolt push`, `bd dolt pull`
-	// and `bd dolt commit` (see dolt.go) — raw Dolt VCS transport against the
-	// direct endpoint, never bead mutation through this store's issue API.
-	// A pull's incoming rows arrive as Dolt commits from the remote, and a
-	// commit only seals a working set whose mutations were already journaled by
-	// the store that made them, so there is no unrecorded local mutation here.
-	// The sibling proxied constructor, newProxiedServerRoutedStore, is NOT
-	// exempt: it serves the store-based commands and activates for real.
-	"proxied_direct_sync.go:storeForRawDoltSync": "raw Dolt VCS transport for dolt push/pull/commit against the direct endpoint; no bead mutation flows through it",
-
 	// `bd config apply` / drift detection open a store to read and reconcile the
 	// workspace's Dolt REMOTE configuration. That is workspace state, not bead
 	// rows, so there is nothing for a replay consumer to apply.

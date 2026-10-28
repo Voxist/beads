@@ -232,9 +232,6 @@ func (p *doltSQLProvider) BeginTx(ctx context.Context) (Tx, error) {
 
 	_, err = conn.ExecContext(ctx, "START TRANSACTION;")
 	if err != nil {
-		// Close the just-pinned conn instead of leaking it in-use. With the
-		// pool capped at one connection, a leak here would block every
-		// subsequent BeginTx (including RunInTx's retries) until ctx timeout.
 		_ = conn.Close()
 		return nil, fmt.Errorf("uow: failed to start transaction: %w", err)
 	}
@@ -888,21 +885,6 @@ func openPool(dsn string, prove func(*sql.DB) error) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("uow: open db: %w", err)
 	}
-	// S3e (v3): bound the client-side *sql.DB pool. A bd invocation is a
-	// short-lived process; without a cap the driver opens an unbounded set of
-	// backend connections to the db-proxy, which (combined with the
-	// routed-store leak, since fixed) exhausted the proxy's connection budget
-	// and wedged it. The cap must NOT be 1: command frontends hold a unit of
-	// work open across the command while the issueops reader role opens one
-	// more per call (e.g. show_proxied_server.go holds its UOW through
-	// terminal rendering while rd.Get pins a second connection), so a
-	// single-connection pool deadlocks every such command against itself —
-	// db.Conn blocks forever on the conn the same process still holds. Four
-	// tolerates that nesting with margin while still bounding the blowup the
-	// cap exists for.
-	conn.SetMaxOpenConns(4)
-	conn.SetMaxIdleConns(2)
-	conn.SetConnMaxLifetime(5 * time.Minute)
 	if err := prove(conn); err != nil {
 		return nil, errors.Join(fmt.Errorf("uow: ping db: %w", err), conn.Close())
 	}

@@ -523,13 +523,6 @@ type Config struct {
 	// DisableAutoStart suppresses implicit server startup even when standalone
 	// defaults would enable it. Diagnostic paths use this to stay read-only.
 	DisableAutoStart bool
-	// RoutedThroughProxy indicates ServerHost/ServerPort point at a db-proxy
-	// listener (the proxied-server routed store), not the canonical dolt
-	// sql-server. The proxy port is ephemeral and reassigned on every respawn,
-	// so it must never be persisted into .beads/dolt-server.port — that file is
-	// the discovery hint for the real server and gets clobbered/stale if a
-	// forwarder port lands in it. Set by newProxiedServerRoutedStore.
-	RoutedThroughProxy bool
 
 	// MaxOpenConns overrides the connection pool size (0 = default 10).
 	// Set to 1 for branch isolation in tests (DOLT_CHECKOUT is session-level).
@@ -2423,18 +2416,12 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 		}
 	}
 
-	// Persist the resolved port only when this store targets the canonical local
-	// dolt sql-server (vp-w7tc): shouldPersistPortFileForConfig also refuses a
-	// proxied routed store, whose ephemeral db-proxy listener port would clobber
-	// the real server's discovery hint and go stale when the proxy respawns.
-	// persistResolvedPortFile itself records the port only for a server bd runs.
-	if shouldPersistPortFileForConfig(cfg) {
-		portFileDir := cfg.BeadsDir
-		if portFileDir == "" && cfg.Path != "" {
-			portFileDir = filepath.Dir(cfg.Path)
-		}
-		_ = persistResolvedPortFile(cfg, portFileDir)
+	// persistResolvedPortFile records the port only for a server bd runs.
+	portFileDir := cfg.BeadsDir
+	if portFileDir == "" && cfg.Path != "" {
+		portFileDir = filepath.Dir(cfg.Path)
 	}
+	_ = persistResolvedPortFile(cfg, portFileDir)
 
 	// All writers operate on main — transaction isolation via RunInTransaction
 	// replaces the former branch-per-worker approach (BD_BRANCH).
@@ -2660,21 +2647,6 @@ func persistResolvedPortFile(cfg *Config, beadsDir string) error {
 
 func shouldPersistResolvedPortFile() bool {
 	return os.Getenv("BEADS_DOLT_SERVER_PORT") == "" && os.Getenv("BEADS_DOLT_PORT") == ""
-}
-
-// shouldPersistPortFileForConfig reports whether a freshly-opened server-mode
-// store should record its resolved port into .beads/dolt-server.port. Only the
-// canonical local dolt sql-server qualifies. A proxied routed store
-// (RoutedThroughProxy) targets an ephemeral db-proxy listener whose port must
-// never become the on-disk discovery hint: it is clobbered on the next
-// reconcile and goes stale when the proxy respawns on a new port, breaking
-// endpoint resolution for any reader that trusts the file. An explicit port
-// override (BEADS_DOLT_SERVER_PORT / BEADS_DOLT_PORT) also suppresses the write.
-func shouldPersistPortFileForConfig(cfg *Config) bool {
-	if cfg == nil {
-		return false
-	}
-	return configfile.BdRunsServerAt(cfg.ServerHost) && shouldPersistResolvedPortFile() && !cfg.RoutedThroughProxy
 }
 
 // verifyProjectIdentity checks that the database belongs to the expected project.
