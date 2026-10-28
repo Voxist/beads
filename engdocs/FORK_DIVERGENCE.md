@@ -387,9 +387,51 @@ CI is slower. Pinning tests updated: `TestBazelRBEJobDecidesOnce`,
 `TestBazelGateDoltTiersCrossCheck`. Do not "fix" this by routing fork CI back
 to rbe-cache.
 
+**The embedded tier is a four-leg matrix (since 2026-10-28).** On one
+GitHub-hosted 4-vCPU runner it took 133 min against a 12.6 min critical path:
+CPU-bound, 488 CPU-min of test actions across ten targets (from the
+lane's CI analytics). That made it the whole PR run's critical path (about
+2 h 14 min). `bazel-embedded` now has four legs, `fail-fast: false`, split by
+target and balanced on those numbers:
+
+- `cmd-a`: `//cmd/bd:bd_embedded_test`
+- `cmd-b`: `//cmd/bd:bd_embedded_part2_test`
+- `storage`: `//internal/storage/embeddeddolt/...`
+- `rest`: `//...` minus the other three, so a new upstream target still runs
+
+Each leg runs `bazel test --config=embedded ... -- $TARGETS` and checks its
+own shard-coverage suites. `TestForkEmbeddedMatrixCoversEveryTarget` pins the
+partition, and the coverage pin checks that the legs' suites together equal
+upstream's list. The job's `result` output is the last leg's; CI Gate still
+fails on any failed leg through `BAZEL`, the whole call's result.
+
+A main-seeded Bazel disk cache (restore on PRs) was measured and set aside.
+The embedded tier's build alone fills a 5.5 GB disk cache (5.4 GB CAS, 10 MB
+action cache). The repo's Actions cache is 10 GB, with 4.5 GB already used.
+An action-cache-only cache does not help: a hit whose outputs are missing
+from the CAS is a miss. It becomes viable only if an org admin raises the
+repository's Actions cache limit.
+
+The legs check shard coverage per leg, and `cmd-a`/`cmd-b` each run half of
+one 100-shard block (`50@0/100`, `50@50/100`). So the upstream-owned
+`tools/bazel/check_shard_coverage.py` gains `--no-tiling` (default off), which
+those two legs pass. It skips only the static tiling check (and the
+exceeds-total bound check, which lives in the same function); every per-shard
+check still runs. That the legs together tile the block is pinned by
+`TestBazelRetiredLanesCheckListedTestsRan`, which compares the legs' suites
+(with `--no-tiling` removed) to upstream's list. Pins adapted for the split:
+`bazelForkEmbeddedTestRun` (the leg's command, used by
+`TestBazelEmbeddedJobRunsEmbeddedTier` and `TestBazelRetiredLanesArePinned`;
+`bazelEmbeddedTestRun` stays upstream's for the proxied and server-storage
+derivations), the anchors of two `TestNogoPolicyRejectsMutations` mutations,
+the per-leg analytics upload name, and a name exemption in
+`TestBazelArtifactNamesUniqueInCallerRuns` for `bazel-embedded-served-testxml`,
+which only the `rest` leg uploads.
+
 Running the tiers locally needed two more fork changes. First, the tier
-timeouts are sized for a GitHub-hosted runner (job/step): embedded 200/190 min
-(its test step measured 102 and 127.5 min on two runs), cmd-dolt 150/140,
+timeouts are sized for a GitHub-hosted runner (job/step): embedded 120/110 min
+per matrix leg (legs measured 36 to 44 min; the single-runner tier took 102 and
+127.5 min), cmd-dolt 150/140,
 proxied 135/110 (its capped steps sum to 129: namespaces 1, socat 13, test
 110, analytics 3 + 2), server-storage 120/110. Upstream's
 25-minute steps assume rbe's parallelism, and the first local run of
