@@ -51,7 +51,8 @@ as history only.
 Lumberjack rotation and gzip for `proxy.log`, the per-connection trace gate
 (`Debug` / `BEADS_PROXY_DEBUG`, `db-proxy-child --debug`), the rate-limited
 disconnect logger and the `.metadata_never_index` Spotlight marker survived the
-2026-10-28 retirement. `TestDbProxyChildProxyOpts_CarriesForkDebug` pins the
+2026-10-28 retirement. The disconnect logger (`logSessionError`) has had no
+production caller since then: its only caller was the pooled session path. `TestDbProxyChildProxyOpts_CarriesForkDebug` pins the
 `Debug` field inside upstream's `dbProxyChildProxyOpts`, so a resync that takes
 upstream's one-line `NewProxyServer(dbProxyChildProxyOpts(srv))` keeps it.
 

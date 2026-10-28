@@ -182,19 +182,21 @@ func isExpectedClientDisconnect(err error) bool {
 	return false
 }
 
-// logSessionError logs a handlePooledConn error, rate-limiting benign client
+// logSessionError logs a session error, rate-limiting benign client
 // disconnects (S3d) while always logging genuine faults. Suppressed benign
-// lines are counted and surfaced on the next emitted benign line.
+// lines are counted and surfaced on the next emitted benign line. Its only
+// production caller was the retired pooled session path (2026-10-28); the
+// transparent path logs teardown through connTracef, off unless Debug is set.
 func (p *proxyServer) logSessionError(remote net.Addr, err error) {
 	if !isExpectedClientDisconnect(err) {
-		p.tracef("handlePooledConn(%s) session error: %v", remote, err)
+		p.tracef("session(%s) session error: %v", remote, err)
 		return
 	}
 	if p.disconnectLogLimiter == nil || p.disconnectLogLimiter.Allow() {
 		if dropped := p.droppedDisconnectLogs.Swap(0); dropped > 0 {
-			p.tracef("handlePooledConn(%s) client disconnected: %v (+%d similar suppressed)", remote, err, dropped)
+			p.tracef("session(%s) client disconnected: %v (+%d similar suppressed)", remote, err, dropped)
 		} else {
-			p.tracef("handlePooledConn(%s) client disconnected: %v", remote, err)
+			p.tracef("session(%s) client disconnected: %v", remote, err)
 		}
 		return
 	}

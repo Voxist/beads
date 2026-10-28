@@ -2694,8 +2694,8 @@ func (s *DoltStore) verifyProjectIdentity(ctx context.Context, beadsDir string, 
 // Why keep the wrap at all, stated accurately: storage.ErrStoreIdentityMismatch
 // is EXPORTED API, and internal/storage/storage.go documents that the detailed
 // open errors wrap it so callers can detect a mismatch without string matching.
-// An earlier version of this comment claimed beads_cgo.go, beads_nocgo.go and
-// open_backend.go branch on it with errors.Is; they do NOT -- they cite it in
+// An earlier version of this comment claimed beads_cgo.go and beads_nocgo.go
+// branch on it with errors.Is; they do NOT -- they cite it in
 // prose and propagate the error unchanged, and nothing in this tree calls
 // errors.Is on it today. The wrap is kept because dropping it would silently
 // break that documented exported contract for any consumer that does, and
