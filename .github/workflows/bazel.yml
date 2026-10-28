@@ -497,7 +497,7 @@ jobs:
     # run and any fork or Dependabot PR stay on GitHub-hosted runners. This
     # job reads no repository code and holds no secret value (see below), so
     # Blacksmith sees nothing sensitive either way.
-    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       enabled: ${{ steps.decide.outputs.enabled }}
@@ -639,8 +639,11 @@ jobs:
 
       # The worker-env preflight (see the job's comment): the PR's own copy,
       # so a PR that syncs it passes. Only the two paths it compares.
+      # FORK (Voxist/beads): not in mode local, which the fork's own CI runs
+      # with enabled=true but no rbe worker to be in step with; a gascity
+      # re-pin would otherwise turn every fork PR red.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ steps.decide.outputs.enabled == 'true' }}
+        if: ${{ steps.decide.outputs.enabled == 'true' && steps.decide.outputs.mode != 'local' }}
         with:
           ref: ${{ inputs.checkout-sha }}
           persist-credentials: false
@@ -650,7 +653,7 @@ jobs:
             platforms
 
       - name: worker-env in step with gascity main
-        if: ${{ steps.decide.outputs.enabled == 'true' }}
+        if: ${{ steps.decide.outputs.enabled == 'true' && steps.decide.outputs.mode != 'local' }}
         env:
           MODE: ${{ steps.decide.outputs.mode }}
           WORKER_ENV_SYNC_GRACE: ${{ steps.decide.outputs.mode == 'remote' && vars.RBE_WORKER_ENV_GRACE == 'true' && '1' || '' }}
@@ -713,7 +716,7 @@ jobs:
     # secrets either, below. See "rbe-west Pre-warm",
     # engdocs/CI_REQUIRED_CHECK_TOPOLOGY.md.
     if: ${{ needs.rbe.outputs.mode == 'remote' }}
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     timeout-minutes: 5
     # Job-level, not step-level: the only continue-on-error in this workflow
     # (TestBazelWorkflowSecretsAndFailureSurface and
@@ -886,7 +889,7 @@ jobs:
     # parallelizes across the client's cores. Analysis-only, seeded runner
     # cache (ga-vnycm2.8): 38.3s on 2 vCPU, 25.6s on 4, 16.3s on 8.
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-24.04' }}
     # Remote execution goes to rbe-west (instance "oss", the Blacksmith-backed
     # worker pool shared with gascity). Skipped only in mode skip (same-repo
     # runs while RBE_WEST_WORKERS is unset).
@@ -1186,7 +1189,7 @@ jobs:
     name: pure-Go and js/wasm
     # Same runner and skip rule as bazel-test.
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-24.04' }}
     if: ${{ needs.rbe.outputs.mode != 'skip' }}
     timeout-minutes: 90
     outputs:
@@ -1413,7 +1416,7 @@ jobs:
   bazel-release-cross:
     name: release cross-compile
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.mode != 'skip' }}
     timeout-minutes: 90
     outputs:
@@ -1507,10 +1510,10 @@ jobs:
     # The runs-on expression is the shared one: Blacksmith in modes remote
     # and cache, GitHub-hosted in the fork modes (a client only).
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
-    timeout-minutes: 150
+    timeout-minutes: 200
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
@@ -1562,7 +1565,7 @@ jobs:
       # --build_event_json_file is a command option, so it goes after `test`.
       - name: bazel test //... --config=embedded
         id: test
-        timeout-minutes: 140
+        timeout-minutes: 190
         run: |
           set -o pipefail
           start=$(date +%s)
@@ -1709,7 +1712,7 @@ jobs:
     # A caller may turn it off with integration: "off"; pr.yml and
     # bazel-farm.yml pass "on".
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-24.04' }}
     if: ${{ (needs.rbe.outputs.enabled == 'true' || needs.rbe.outputs.mode == 'cache') && inputs.integration != 'off' }}
     # F5 S2 Variant A added the "Nogo: integration library files" step after
     # `test`; +5 over the previous 85 keeps it headroom without exceeding
@@ -1892,7 +1895,7 @@ jobs:
     # Same runner as bazel-test; bazel-test's skip rule, plus mode remote
     # (bazel-dolt-race's).
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-24.04' }}
     if: ${{ needs.rbe.outputs.mode != 'skip' && needs.rbe.outputs.mode != 'remote' && inputs.dolt-tiers != 'off' }}
     timeout-minutes: 90
     outputs:
@@ -2034,10 +2037,10 @@ jobs:
     # This lane is the tier's only PR run (pr-risk.yml's legacy jobs are
     # retired) and pr.yml's gate requires it to have run here and passed.
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && needs.rbe.outputs.mode != 'remote' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
-    timeout-minutes: 120
+    timeout-minutes: 125
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
@@ -2249,7 +2252,7 @@ jobs:
   bazel-dolt-race:
     name: dolt-race
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.mode == 'remote' && inputs.dolt-tiers != 'off' }}
     # At least every step's timeout-minutes plus 5, and below the merge
     # queue's 60-minute check timeout so this job alone cannot exhaust it
@@ -2427,7 +2430,7 @@ jobs:
     # This lane is the tier's only PR run (pr-risk.yml's legacy jobs are
     # retired) and pr.yml's gate requires it to have run here and passed.
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && needs.rbe.outputs.mode != 'remote' && inputs.integration != 'off' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
     timeout-minutes: 120
@@ -2609,7 +2612,7 @@ jobs:
     # the server-Dolt storage tier (item 5 A2). See bazel-server-storage's
     # comment above.
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-24.04' }}
     if: ${{ (needs.rbe.outputs.enabled == 'true' || needs.rbe.outputs.mode == 'cache') && inputs.integration != 'off' && needs.rbe.outputs.mode != 'remote' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
     timeout-minutes: 150
@@ -2802,7 +2805,7 @@ jobs:
   bazel-dolt-int:
     name: dolt-int
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.mode == 'remote' && inputs.integration != 'off' && inputs.dolt-tiers != 'off' }}
     # At least every step's timeout-minutes plus 5, and below the merge
     # queue's 60-minute check timeout so this job alone cannot exhaust it
@@ -3066,7 +3069,7 @@ jobs:
     # dominated by per-test `bd init` fixture setup, which is CPU-bound.
     # Was 4 vCPU / -n 8 (tools/f3 timing, 2026-10: ~2.7-3x on 4 CPUs);
     # revert to that if the A/B does not save at least 15s.
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ inputs.package-gates == 'on' }}
     timeout-minutes: 30
     outputs:
@@ -3188,7 +3191,7 @@ jobs:
   package-npm:
     name: Package Gate (npm)
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ inputs.package-gates == 'on' }}
     timeout-minutes: 30
     outputs:
@@ -3319,7 +3322,7 @@ jobs:
     name: repo contents cache seed
     needs: rbe
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.rbe.outputs.mode == 'remote' && needs.rbe.outputs.rrc != 'off' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
@@ -3369,7 +3372,7 @@ jobs:
     name: repo contents cache verify
     needs: rbe
     if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.rbe.outputs.mode == 'remote' && needs.rbe.outputs.rrc != 'off' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read

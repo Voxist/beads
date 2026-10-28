@@ -10,6 +10,9 @@
 #                              local:  the remote-only BAZEL_EMBEDDED,
 #                                      BAZEL_PROXIED, BAZEL_SERVER_STORAGE,
 #                                      BAZEL_INTEGRATION and BAZEL_CMD_DOLT
+#                                      (FORK, Voxist/beads: none in local
+#                                      with enabled=true, the fork
+#                                      repository's own CI, which runs them)
 #                              cache:  BAZEL_EMBEDDED, BAZEL_PROXIED,
 #                                      BAZEL_SERVER_STORAGE (integration
 #                                      and cmd-dolt run with the read-only
@@ -29,6 +32,9 @@
 #   bazel-gate.sh remote     the value to gate on for BAZEL_REMOTE: success
 #                            when the lanes executed on rbe-west (modes
 #                            remote, fork-ro, fork-rw), else not-run-remotely.
+#                            FORK (Voxist/beads): also success in local with
+#                            enabled=true, meaning the fork's own CI ran every
+#                            Dolt tier on its GitHub-hosted runners.
 #
 # A call that never started (pr.yml's scope skipped it on a push to main,
 # where bazel.yml's own push run is every lane, or the scope job failed)

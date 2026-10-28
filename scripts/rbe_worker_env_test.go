@@ -46,7 +46,9 @@ const (
 	rbeWorkerEnvSyncIssue  = "tools/rbe/worker-env-sync-issue"
 	// bazel.yml's rbe job checks out only what worker-env-sync compares.
 	bazelRBESparseCheckout = "tools/rbe\nplatforms\n"
-	rbeWorkerEnvEnabledIf  = "${{ steps.decide.outputs.enabled == 'true' }}"
+	// FORK (Voxist/beads): not in mode local, where the fork's own CI runs
+	// with enabled=true and no rbe worker to keep in step with.
+	rbeWorkerEnvEnabledIf  = "${{ steps.decide.outputs.enabled == 'true' && steps.decide.outputs.mode != 'local' }}"
 	nightlyWorkerEnvJob    = "rbe-worker-env-sync"
 	nightlyWorkerEnvReport = "${{ runner.temp }}/worker-env-sync.md"
 )

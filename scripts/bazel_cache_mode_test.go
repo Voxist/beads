@@ -259,11 +259,14 @@ func TestBazelCacheModeReachesTheRC(t *testing.T) {
 				if !runs {
 					continue
 				}
-				// rbe-cache refuses GitHub-hosted runners: every lane that
-				// runs in mode cache is on Blacksmith.
+				// FORK (Voxist/beads): upstream puts mode-cache lanes on Blacksmith
+				// because rbe-cache refuses GitHub-hosted runners. The fork has no
+				// Blacksmith runners, and its own CI never reaches mode cache (the
+				// decide step forces a fork repository to mode local), so every lane
+				// is GitHub-hosted.
 				if mode == "cache" {
-					if got := mustEvalGHRunsOn(t, job.RunsOn, map[string]string{"needs.rbe.outputs.mode": mode}); !strings.HasPrefix(got, "blacksmith-") {
-						t.Errorf("%s runs in mode cache on %q, want a Blacksmith runner (rbe-cache refuses GitHub-hosted ones)", name, got)
+					if got := mustEvalGHRunsOn(t, job.RunsOn, map[string]string{"needs.rbe.outputs.mode": mode}); got != "ubuntu-latest" && got != "ubuntu-24.04" {
+						t.Errorf("%s runs in mode cache on %q, want GitHub-hosted ubuntu (the fork has no Blacksmith runners)", name, got)
 					}
 				}
 				lanes = append(lanes, name)
