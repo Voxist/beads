@@ -415,10 +415,28 @@ func TestBazelRetiredLanesCheckListedTestsRan(t *testing.T) {
 		for _, w := range c.whole {
 			want = append(want, "--whole "+w)
 		}
-		if got := strings.Join(strings.Fields(step.Run), " "); got != strings.Join(want, " ") {
+		run, wantIf := step.Run, "${{ always() && steps.test.outcome != 'skipped' }}"
+		if c.lane == bazelEmbedJobName {
+			// FORK (Voxist/beads): the embedded tier is a matrix; each leg passes
+			// its own suites ($COVERAGE from matrix.shard-suites). Together the
+			// legs must check exactly what upstream's single command does.
+			var legs []string
+			for _, inc := range job.Strategy.Matrix.Include {
+				legs = append(legs, inc.ShardSuites)
+			}
+			var kept []string
+			for _, line := range strings.Split(run, "\n") {
+				if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+					kept = append(kept, line)
+				}
+			}
+			run = strings.Replace(strings.Join(kept, "\n"), "$COVERAGE", strings.Join(legs, " "), 1)
+			wantIf = "${{ always() && steps.test.outcome != 'skipped' && matrix.shard-suites != '' }}"
+		}
+		if got := strings.Join(strings.Fields(run), " "); got != strings.Join(want, " ") {
 			t.Errorf("%s coverage step runs %q, want %q", c.lane, got, strings.Join(want, " "))
 		}
-		if step.If != "${{ always() && steps.test.outcome != 'skipped' }}" || step.ContinueOnError != nil {
+		if step.If != wantIf || step.ContinueOnError != nil {
 			t.Errorf("%s coverage step: if %q, continue-on-error %v; want always() after the test step and no continue-on-error", c.lane, step.If, step.ContinueOnError)
 		}
 		if !(job.stepIndex(t, "bazel test //... --config="+c.config) < job.stepIndex(t, step.Name) &&
@@ -1178,6 +1196,9 @@ func TestBazelRetiredLanesArePinned(t *testing.T) {
 	for lane, config := range bazelRetiredLaneConfigs {
 		test := workflow.job(t, lane).step(t, "bazel test //... --config="+config)
 		want := bazelTierTestRun(config)
+		if lane == bazelEmbedJobName {
+			want = bazelForkEmbeddedTestRun // FORK (Voxist/beads): the matrix leg's command
+		}
 		if lane == bazelProxiedJobName || lane == bazelServerJobName {
 			// FORK (Voxist/beads): mode local caps concurrent test shards at
 			// two (BAZEL_LOCAL_TEST_JOBS); empty, and so absent, in mode remote.

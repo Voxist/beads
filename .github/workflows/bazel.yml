@@ -1472,7 +1472,7 @@ jobs:
   # bazel-test's critical path and budget, and it compiles nothing bazel-test
   # does not (same race configuration, shared through the remote cache).
   bazel-embedded:
-    name: embedded Dolt tier
+    name: embedded Dolt tier (${{ matrix.group }})
     # Remote execution only: skipped unless the rbe job chose remote,
     # fork-ro or fork-rw (enabled; not in modes cache, local or skip).
     # Locally the tier is 72 race test
@@ -1513,9 +1513,36 @@ jobs:
     runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
-    timeout-minutes: 200
+    timeout-minutes: 120
     outputs:
       result: ${{ steps.result.outputs.result }}
+    # FORK (Voxist/beads): mode local runs this tier on GitHub-hosted 4-vCPU
+    # runners, where one runner took 133 min against a 12.6 min critical path
+    # (CPU-bound). The tier's ten targets are split across four parallel legs;
+    # "rest" is //... minus the other groups, so a target upstream adds still
+    # runs. Each leg records its result; a matrix job's output is the last
+    # leg's, so a failed leg can show here as success, but CI Gate also
+    # requires BAZEL (the whole call's result), which any failed leg fails.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: cmd-a
+            targets: //cmd/bd:bd_embedded_test
+            shard-suites: --suite //cmd/bd:bd_embedded_test .github/scripts/embedded-test-shard.sh 50@0/100
+          - group: cmd-b
+            targets: //cmd/bd:bd_embedded_part2_test
+            shard-suites: --suite //cmd/bd:bd_embedded_part2_test .github/scripts/embedded-test-shard.sh 50@50/100
+          - group: storage
+            targets: //internal/storage/embeddeddolt/...
+            shard-suites: >-
+              --suite //internal/storage/embeddeddolt:embeddeddolt_embedded_test .github/scripts/embedded-storage-test-shard.sh 40
+              --whole //internal/storage/embeddeddolt:embeddeddolt_conformance_core_test
+              --whole //internal/storage/embeddeddolt:embeddeddolt_conformance_core_slow_test
+              --whole //internal/storage/embeddeddolt:embeddeddolt_conformance_audit_test
+          - group: rest
+            targets: //... -//cmd/bd:bd_embedded_test -//cmd/bd:bd_embedded_part2_test -//internal/storage/embeddeddolt/...
+            shard-suites: ''
     steps:
       # inputs.checkout-sha: see the header (empty: the event's default ref).
       # checkout v7 refuses a fork head on pull_request_target unless opted
@@ -1565,16 +1592,22 @@ jobs:
       # --build_event_json_file is a command option, so it goes after `test`.
       - name: bazel test //... --config=embedded
         id: test
-        timeout-minutes: 190
+        timeout-minutes: 110
+        env:
+          TARGETS: ${{ matrix.targets }}
         run: |
           set -o pipefail
           start=$(date +%s)
           rc=0
-          bazel test //... --config=embedded ${BAZEL_FRESH:+"$BAZEL_FRESH"} \
+          # FORK: this leg's targets (matrix.targets) after --, so the
+          # "rest" group's -//... exclusions are target patterns, not flags.
+          # shellcheck disable=SC2086 # TARGETS is a word list of patterns
+          bazel test --config=embedded ${BAZEL_FRESH:+"$BAZEL_FRESH"} \
             --build_event_json_file="$RUNNER_TEMP/bazel-bep.json" \
             --execution_log_compact_file="$RUNNER_TEMP/bazel-exec.log.zst" \
             --profile="$RUNNER_TEMP/bazel-profile.json" \
             --experimental_build_event_upload_strategy=local \
+            -- $TARGETS \
             2>&1 | tee "$RUNNER_TEMP/bazel-test.log" || rc=$?
           echo "bazel test --config=embedded: exit $rc, $(( $(date +%s) - start ))s wall" | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$rc"
@@ -1594,23 +1627,20 @@ jobs:
       # top-level test that was not skipped (an injected -test.short or
       # BEADS_TEST_SKIP turns the tier into t.Skip calls).
       - name: Every listed test ran in its shard
-        if: ${{ always() && steps.test.outcome != 'skipped' }}
-        run: >-
-          python3 tools/bazel/check_shard_coverage.py
-          --bep "$RUNNER_TEMP/bazel-bep.json"
-          --suite //cmd/bd:bd_embedded_test .github/scripts/embedded-test-shard.sh 50@0/100
-          --suite //cmd/bd:bd_embedded_part2_test .github/scripts/embedded-test-shard.sh 50@50/100
-          --suite //internal/storage/embeddeddolt:embeddeddolt_embedded_test .github/scripts/embedded-storage-test-shard.sh 40
-          --whole //internal/storage/embeddeddolt:embeddeddolt_conformance_core_test
-          --whole //internal/storage/embeddeddolt:embeddeddolt_conformance_core_slow_test
-          --whole //internal/storage/embeddeddolt:embeddeddolt_conformance_audit_test
+        # FORK: each leg checks the suites it ran; "rest" has none listed.
+        if: ${{ always() && steps.test.outcome != 'skipped' && matrix.shard-suites != '' }}
+        env:
+          COVERAGE: ${{ matrix.shard-suites }}
+        run: |
+          # shellcheck disable=SC2086 # COVERAGE is the leg's argument list
+          python3 tools/bazel/check_shard_coverage.py --bep "$RUNNER_TEMP/bazel-bep.json" $COVERAGE
 
       - name: Upload test logs
         if: ${{ failure() && steps.test.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           overwrite: true # a job re-run is the same run: replace, not 409
-          name: bazel-embedded-testlogs
+          name: bazel-embedded-testlogs-${{ matrix.group }}
           path: |
             bazel-testlogs/**/test.log
             bazel-testlogs/**/test.xml
@@ -1625,7 +1655,8 @@ jobs:
       # nothing in CI reads it, so an artifact 5xx or stall must not fail or
       # hold the lane (scripts TestBazelEmbeddedServedTimingsUploadIsTelemetry).
       - name: Upload served test timings
-        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        # FORK: backend/http's served targets run in the "rest" leg only.
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' && matrix.group == 'rest' }}
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -1662,7 +1693,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           overwrite: true # a job re-run is the same run: replace, not 409
-          name: ci-analytics-embedded-${{ github.run_attempt }}
+          name: ci-analytics-embedded-${{ matrix.group }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-analytics/ci-analytics.json
           retention-days: 7
           if-no-files-found: ignore
@@ -1677,30 +1708,6 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: echo "result=$JOB_STATUS" >> "$GITHUB_OUTPUT"
 
-  # main.yml's "Main Linux integration packages (N/6)" and "Main Linux
-  # integration cmd/bd (N/8)" jobs (and nightly.yml's retired Full Test
-  # Suite, the same go test in one job) as --config=integration: every package with
-  # -tags=integration,gms_pure_go, race, no -short, BEADS_TEST_SKIP=dolt (see
-  # .bazelrc). A job of its own: ci and integration share bazel-testlogs, so
-  # bazel-test's equivalence step would read this lane's test.xml if both ran
-  # in one job, and the tagged race build is a second full compile.
-  # No equivalence step: equivalence.py's default mode is the --config=ci
-  # selection (go list without the integration tag, -short, ^TestEmbedded
-  # skipped), and its job mode needs the integration jobs' go test -json,
-  # which no run here has. check_testcases.py still catches a target or
-  # shard that ran no tests. pr.yml's gate requires it (BAZEL_INTEGRATION)
-  # on same-repo PRs; see the header.
-  # Exactly-once cmd/bd: where the caller says bazel-cmd-dolt is required
-  # (inputs.cmd-dolt-required true: pr.yml while its
-  # BAZEL_CMD_DOLT_REQUIRED is "true"), the target set is //... minus
-  # //cmd/bd:bd_test. bazel-cmd-dolt has this job's `if:`, so it runs in
-  # every mode this one does (remote, fork-ro, fork-rw, cache; Dependabot
-  # too), bazel-gate.sh accepts the two lanes' skips in the same modes, and
-  # its //cmd/bd:bd_dolt_server_test runs that same integration-build
-  # bd_test without BEADS_TEST_SKIP=dolt (a superset: the skip only skips).
-  # Rollback: commit BAZEL_CMD_DOLT_REQUIRED "false" and pr.yml's
-  # cmd-dolt-required: false together (policy-tested equal); bd_test is
-  # back here on the next run.
   bazel-integration:
     name: integration
     # Remote (modes remote, fork-ro, fork-rw), or local with the read-only

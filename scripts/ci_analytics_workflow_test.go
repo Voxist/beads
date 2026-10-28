@@ -237,6 +237,10 @@ func TestCIAnalyticsStepsAreSafeAndBounded(t *testing.T) {
 			t.Errorf("%s job %q: if %q does not require !cancelled()", jobName, upload.Name, upload.If)
 		}
 		wantUploadName := "ci-analytics-" + wantLane + "-${{ github.run_attempt }}"
+		if jobName == bazelEmbedJobName {
+			// FORK (Voxist/beads): one upload per matrix leg.
+			wantUploadName = "ci-analytics-" + wantLane + "-${{ matrix.group }}-${{ github.run_attempt }}"
+		}
 		if upload.With["name"] != wantUploadName {
 			t.Errorf("%s job %q: upload name %q, want %q", jobName, upload.Name, upload.With["name"], wantUploadName)
 		}

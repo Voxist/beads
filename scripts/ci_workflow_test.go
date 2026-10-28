@@ -3538,7 +3538,10 @@ func TestBazelArtifactNamesUniqueInCallerRuns(t *testing.T) {
 				t.Fatalf("%s run has no upload from %s; the collector did not follow the call", caller, bazelWorkflowName)
 			}
 			for i, a := range uses {
-				if a.matrix && a.pattern == nil {
+				// FORK (Voxist/beads): only the embedded matrix's "rest" leg uploads
+				// bazel-embedded-served-testxml (its step's if pins matrix.group ==
+				// 'rest'; TestForkEmbeddedMatrixCoversEveryTarget checks that).
+				if a.matrix && a.pattern == nil && a.name != "bazel-embedded-served-testxml" {
 					t.Errorf("%s: %s uploads fixed name %q from a matrix job; every leg collides", caller, a.where, a.name)
 				}
 				for _, b := range uses[i+1:] {
@@ -4459,11 +4462,31 @@ var bazelEmbeddedRCLines = []string{
 	"test:embedded --norun_validations",
 }
 
+// bazelForkEmbeddedTestRun is the fork's embedded command (FORK, Voxist/beads):
+// the tier is a four-leg matrix in mode local, so each leg names its targets
+// after -- (matrix.targets in $TARGETS). bazelEmbeddedTestRun stays upstream's,
+// since bazelTierTestRun derives the proxied and server-storage commands from it.
+const bazelForkEmbeddedTestRun = `set -o pipefail
+start=$(date +%s)
+rc=0
+# FORK: this leg's targets (matrix.targets) after --, so the
+# "rest" group's -//... exclusions are target patterns, not flags.
+# shellcheck disable=SC2086 # TARGETS is a word list of patterns
+bazel test --config=embedded ${BAZEL_FRESH:+"$BAZEL_FRESH"} \
+  --build_event_json_file="$RUNNER_TEMP/bazel-bep.json" \
+  --execution_log_compact_file="$RUNNER_TEMP/bazel-exec.log.zst" \
+  --profile="$RUNNER_TEMP/bazel-profile.json" \
+  --experimental_build_event_upload_strategy=local \
+  -- $TARGETS \
+  2>&1 | tee "$RUNNER_TEMP/bazel-test.log" || rc=$?
+echo "bazel test --config=embedded: exit $rc, $(( $(date +%s) - start ))s wall" | tee -a "$GITHUB_STEP_SUMMARY"
+exit "$rc"`
+
 func TestBazelEmbeddedJobRunsEmbeddedTier(t *testing.T) {
 	job := readCIWorkflow(t, bazelWorkflowName).job(t, bazelEmbedJobName)
 	test := job.step(t, "bazel test //... --config=embedded")
-	if !strings.Contains(test.Run, "bazel test //... --config=embedded") || !strings.Contains(test.Run, "set -o pipefail") {
-		t.Errorf("embedded step does not run --config=embedded over //...:\n%s", test.Run)
+	if !strings.Contains(test.Run, "bazel test --config=embedded") || !strings.Contains(test.Run, "-- $TARGETS") || !strings.Contains(test.Run, "set -o pipefail") {
+		t.Errorf("embedded step does not run --config=embedded over its leg's targets:\n%s", test.Run)
 	}
 	if strings.Contains(test.Run, "--config=remote-exec") {
 		t.Errorf("embedded step selects remote-exec itself; setup-bazel's rc does that only when secrets are present")
@@ -4473,8 +4496,8 @@ func TestBazelEmbeddedJobRunsEmbeddedTier(t *testing.T) {
 	// tier's only pre-merge run on same-repo PRs, so an extra flag (a
 	// --test_filter, a --test_arg=-test.short/-test.run/-test.skip) that
 	// quietly narrows it must be a reviewed edit of this test too.
-	if strings.TrimSpace(test.Run) != bazelEmbeddedTestRun {
-		t.Errorf("embedded step run changed; want exactly:\n%s\ngot:\n%s", bazelEmbeddedTestRun, test.Run)
+	if strings.TrimSpace(test.Run) != bazelForkEmbeddedTestRun {
+		t.Errorf("embedded step run changed; want exactly:\n%s\ngot:\n%s", bazelForkEmbeddedTestRun, test.Run)
 	}
 	// A shard with no tests assigned, or a selector that matches nothing,
 	// exits 0; the job fails on any target or shard whose test.xml lists none.
