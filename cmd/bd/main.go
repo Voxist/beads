@@ -72,12 +72,6 @@ var (
 	storeMutex  sync.Mutex // Protects store access from background goroutine
 	storeActive = false    // Tracks if store is available
 
-	// routedStoreOpenErr records why the proxied routed store failed to open,
-	// so store-requiring commands can report the real cause (S2) instead of
-	// panicking on a nil store. Nil in direct mode and when the routed store
-	// opened successfully.
-	routedStoreOpenErr error
-
 	// Version upgrade tracking
 	versionUpgradeDetected = false // Set to true if bd version changed since last run
 	previousVersion        = ""    // The last bd version user had (empty = first run or unknown)
@@ -2174,87 +2168,6 @@ var rootCmd = &cobra.Command{
 				reconcileVersionProxiedServer(rootCtx)
 			}
 
-			// Also route a server-mode store through the proxy so the legacy
-			// store-based commands (list/ready/stats/update/close/...) work in
-			// proxied mode instead of dereferencing a nil store. Both the uow
-			// provider and this store connect through the same proxy and share
-			// its backend connection pool. Best-effort: `bd create` uses the uow
-			// provider and does not need the store, so a routing failure here
-			// must not break the proxied-create path.
-			if s, serr := newProxiedServerRoutedStore(rootCtx, beadsDir); serr == nil {
-				store = s
-				storeMutex.Lock()
-				storeActive = true
-				storeMutex.Unlock()
-				// REUSE the runner built for uowSinks above — do not construct a
-				// second one. Run() is asynchronous and waitForCommandHooks()
-				// waits on the GLOBAL hookRunner, so overwriting it here left the
-				// uow plumbing firing into instance A while the waiter waited on
-				// instance B, which had nothing pending: the process exited
-				// before A's goroutines reached exec and the hook silently never
-				// fired. One runner means Wait() covers both plumbings.
-				//
-				// Both spellings resolve the same directory. Use the resolved
-				// .beads dir, not filepath.Dir(dbPath): for a registered
-				// WorkspaceIsBeadsDir backend dbPath IS the .beads directory, so
-				// Dir(dbPath) walked up to the workspace root and loaded hooks
-				// from <repo>/hooks — silently firing nothing (same bug the
-				// embedded path fixed below).
-				if hookRunner == nil && beadsDir != "" {
-					hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
-				}
-				if hookRunner != nil && !config.GetBool("no-hooks") {
-					store = storage.NewHookFiringStore(store, hookRunner)
-				}
-			} else {
-				// Keep store nil and record the cause. bd create only needs the
-				// uow provider, so we must not fail the whole proxied path here;
-				// store-requiring commands fail loudly at the use site via
-				// requireStore() (S2) rather than dereferencing a nil store.
-				routedStoreOpenErr = serr
-				debug.Logf("proxied-server: routed store unavailable, store-based commands disabled: %v", serr)
-			}
-
-			// S2 (central guard): if the routed store failed to open, every
-			// store-requiring command reaching this block would dereference a nil
-			// store (~600 sites pass the global store into helpers like
-			// resolveAndGetFromStore that call store methods directly). Fail loudly
-			// once, here, with the captured cause + actionable hint. bd create is the
-			// only command reaching this block that runs on the uow provider alone,
-			// so it must tolerate a missing routed store; dolt push/pull/commit are
-			// unsupported and surface their own typed error in the command body.
-			if store == nil && cmdName != "create" {
-				_ = requireStore() // exits non-zero; never returns when store is nil
-			}
-
-			// S4: restore workspace-identity validation in proxied mode. The
-			// direct-path call (below, ~1142) is unreachable here because the
-			// proxied block returns early, so without this a write command could
-			// silently mutate the wrong scope through a misconfigured proxy.
-			// validateWorkspaceIdentity reads _project_id over the routed store
-			// and no-ops when the store is nil, so it is safe in best-effort mode.
-			if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
-				// Upstream made the store an explicit parameter. Read the
-				// package-level global, NOT getStore().
-				//
-				// getStore() returns cmdCtx.Store unless shouldUseGlobals(),
-				// and the routed store above is installed with a bare
-				// `store = s` rather than setStore(), so cmdCtx.Store is not
-				// backfilled until syncCommandContext() runs -- three lines
-				// BELOW this call. getStore() would therefore hand
-				// validateWorkspaceIdentity a nil store on every production
-				// run, and its `if s == nil` guard would return immediately:
-				// the S4 check would be a permanent no-op, letting a write
-				// land on the wrong project's database through a misconfigured
-				// proxy. Tests would not have caught it either, because
-				// testModeUseGlobals makes getStore() fall back to this same
-				// global.
-				storeMutex.Lock()
-				routedStore := store
-				storeMutex.Unlock()
-				_ = validateWorkspaceIdentity(rootCtx, routedStore, beadsDir) //nolint:errcheck // best-effort identity check; no-ops when routing failed and left the store nil
-			}
-
 			syncCommandContext()
 			return nil
 		}
@@ -2498,9 +2411,6 @@ var rootCmd = &cobra.Command{
 			if shouldAutoPruneEventsJournal(cmd) {
 				maybeAutoPruneEventsJournal(rootCtx, beads.FindBeadsDir())
 			}
-			// Auto-backup runs BEFORE the routed-store close below: it goes
-			// through the provider this command opened, so tearing down first
-			// would silently skip it in proxied mode.
 			// Auto-backup, through the provider this command opened. Same
 			// gate as the direct arm's maintenance net below (strict
 			// --readonly, `bd serve` and a migration freeze all skip it),
@@ -2509,26 +2419,6 @@ var rootCmd = &cobra.Command{
 			// topology, so this stays inert off managed-local.
 			if runsPostCommandMaintenance(cmd.Name(), readonlyMode) && !isPreviewCommand(cmd) && !commandFreeze.Frozen() {
 				runPostRunAutoBackup(rootCtx)
-			}
-
-			// S1 (v2): close the routed store too. PreRun opens a proxied
-			// routed *sql.DB-backed store (newProxiedServerRoutedStore); closing
-			// only uowProvider here leaked one backend connection to the db-proxy
-			// per bd invocation, which exhausted the pool and wedged the proxy.
-			//
-			// storeActive drops FIRST, under the mutex, exactly as the two other
-			// close sites do (the non-proxied arm below, and
-			// closeStoreBeforeGateRelease). It is what flushBatchCommitOnShutdown
-			// reads to decide whether to CommitPending: leaving it true across
-			// the close would let a signal arriving in that window commit through
-			// an already-closed store, and would leave it true for the rest of
-			// every proxied-mode process.
-			if store != nil {
-				storeMutex.Lock()
-				storeActive = false
-				storeMutex.Unlock()
-				_ = store.Close()
-				store = nil
 			}
 			if uowProvider != nil {
 				_ = uowProvider.Close(rootCtx)
@@ -2895,30 +2785,6 @@ func flushBatchCommitOnShutdown() {
 	}
 
 	fmt.Fprintf(os.Stderr, "\nFlushed pending batch commit on shutdown\n")
-}
-
-// requireStore returns the active store, or exits with a clear, non-panicking
-// error when it is nil (S2). In proxied mode the routed store can be nil when
-// the db-proxy is unreachable. The proxied PreRun installs a central guard that
-// calls this for every store-requiring command (every command reaching the
-// proxied store-init block except bd create), so the ~600 raw store-deref sites
-// fail loudly here instead of panicking — the bd ready nil-store panic. It is
-// also called directly at the bd ready use sites. bd create deliberately does
-// not trigger it: it uses the uow provider and tolerates a missing routed store.
-func requireStore() storage.DoltStorage {
-	storeMutex.Lock()
-	st := store
-	storeMutex.Unlock()
-	if st != nil {
-		return st
-	}
-	const hint = "the beads store is unavailable; in proxied mode ensure the db-proxy is running and reachable, or set [beads] proxied=false to use direct ServerMode"
-	if routedStoreOpenErr != nil {
-		FatalErrorWithHintRespectJSON(
-			fmt.Sprintf("no database connection: routed store unavailable: %v", routedStoreOpenErr), hint)
-	}
-	FatalErrorWithHintRespectJSON("no database connection: store is not available", hint)
-	return nil // unreachable: FatalError* exits
 }
 
 // isBootstrapPreviewErr reports whether err is the identity check's preview

@@ -20,43 +20,41 @@ The naming is inverted from the usual convention: `origin` is *upstream*, not
 the fork. A bare `git push` on an untracked branch targets upstream. Check
 `git status -sb` before pushing.
 
+## Retired 2026-10-28 (gascity #266)
+
+Gas City retired its `[beads] proxied` opt-in (gascity #266, merged and
+deployed; the live city runs `dolt_mode=server`), so the fork's proxied stack
+was dropped on `refactor/ga-s69mk.3-bd-drop-proxied-stack` (ga-s69mk.17). The
+evidence and commit lists are in the Phase 0 census,
+`gascity/worktrees/converge-20261014-artifacts/census-bd.md`, rows F1, F2 and F5.
+
+- **db-proxy connection pooling** (F1, plus F2 `BEADS_PROXY_IDLE_TIMEOUT`):
+  the session-pooling proxy (`pool.go`, `pooledconn.go`, `mysqlwire.go`),
+  `BEADS_PROXY_POOL_SIZE` and the `db-proxy-child --pool-*` flags are gone;
+  upstream never took #4303, and its `--proxied-server-idle-timeout` replaces
+  the env knob.
+- **proxied-server deploy path** (F5): the routed `DoltStorage`, the
+  `requireStore` nil-store guard, `storeForRawDoltSync`, the
+  `proxied_unsupported` guards, the vp-w7tc port-file fix and the
+  `open_backend.go` routing are gone; bd is back on upstream's proxied mode,
+  which routes through the UOW provider and refuses unsupported operations
+  itself. `ErrStoreIdentityMismatch` (census F6) is a separate row and stays.
+
+[CONNECTION_POOLING.md](CONNECTION_POOLING.md) and
+[CONNECTION_POOLING_DEPLOYMENT.md](CONNECTION_POOLING_DEPLOYMENT.md) are kept
+as history only.
+
 ## Permanent divergence — stays local
 
-Upstream has declined the db-proxy work. It is **not** a resync backlog item and
-should not be re-proposed; carry it indefinitely and merge upstream *around* it.
+### db-proxy log hygiene (census F3)
 
-### db-proxy connection pooling
-
-- `internal/storage/dbproxy/proxy/` — `pool.go`, `pooledconn.go`, `mysqlwire.go`,
-  `endpoint.go`, plus `server.go` / `stats.go` changes and their tests.
-- ~2,800 lines, 14 files.
-- Rationale: multi-agent orchestrators (gascity/gc) fork `bd` per agent
-  operation, so the in-process `*sql.DB` pool never survives the process and
-  there is zero cross-invocation reuse. See
-  [CONNECTION_POOLING.md](CONNECTION_POOLING.md) and
-  [CONNECTION_POOLING_DEPLOYMENT.md](CONNECTION_POOLING_DEPLOYMENT.md).
-- Upstream vehicle was `gastownhall/beads#4303` (authored by `cstar`), which
-  remains a **held-back draft**. Voxist never had its own upstream PR for this.
-- **Resync hazard:** `db-proxy-child` sets the pooling fields (`PoolSize`,
-  `BackendUser`, `PoolConnMaxLifetime`, `Debug`) inside upstream's
-  `dbProxyChildProxyOpts`, not at the call site, and
-  `TestDbProxyChildProxyOpts_CarriesForkPooling` pins them. A resync that
-  takes upstream's one-line `NewProxyServer(dbProxyChildProxyOpts(srv))`
-  keeps pooling on; before 2026-10-28 it would have turned pooling off
-  across the fleet with no failing test.
-
-### proxied-server deploy path
-
-- `open_backend.go`, `internal/storage/storage.go` (`ErrStoreIdentityMismatch`),
-  `internal/storage/uow/*_provider.go` routing, `bd init --proxied-server`,
-  the central nil-store guard, and `storeForRawDoltSync` (direct-endpoint escape
-  hatch for `dolt push` / `pull` / `commit` in proxied mode).
-- Depends on the pooling work above; shares its fate.
-- `gastownhall/beads#4313` (dolt-server.port clobber) was the one piece still
-  open upstream. It was **closed on 2026-08-31** as a draft, blocked behind
-  #4303 and never given the repro recipe maintainers asked for twice. #4303
-  itself is still an open draft. Branch:
-  `fix/proxied-routed-store-portfile-clobber`.
+Lumberjack rotation and gzip for `proxy.log`, the per-connection trace gate
+(`Debug` / `BEADS_PROXY_DEBUG`, `db-proxy-child --debug`), the rate-limited
+disconnect logger and the `.metadata_never_index` Spotlight marker survived the
+2026-10-28 retirement. The disconnect logger (`logSessionError`) has had no
+production caller since then: its only caller was the pooled session path. `TestDbProxyChildProxyOpts_CarriesForkDebug` pins the
+`Debug` field inside upstream's `dbProxyChildProxyOpts`, so a resync that takes
+upstream's one-line `NewProxyServer(dbProxyChildProxyOpts(srv))` keeps it.
 
 ### be-pen9 shared backend (unmerged, fork-only)
 
@@ -384,7 +382,7 @@ CI is slower. Pinning tests updated: `TestBazelRBEJobDecidesOnce`,
 `TestBazelGateDoltTiersCrossCheck`. Do not "fix" this by routing fork CI back
 to rbe-cache.
 
-Running the tiers locally needed three more fork changes. First, the tier
+Running the tiers locally needed two more fork changes. First, the tier
 timeouts are sized for a GitHub-hosted runner (job/step): embedded 200/190 min
 (its test step measured 102 and 127.5 min on two runs), cmd-dolt 150/140,
 proxied 125/110 (its step caps sum to 124), server-storage 120/110. Upstream's
@@ -394,10 +392,8 @@ server-storage hit that wall without a single test failure.
 installs `socat`, which the rbe workers carry and the proxied target
 requires (`BEADS_TEST_REQUIRE_SOCAT=1`). The install uses release.yml's
 bounded, retried apt shape and is registered in `aptStepBudgets`.
-Third, the proxied `config show` row of the topology capability matrix
-expects the correct answer: upstream pins it WRONG_ANSWER because
-`collectDatabaseEntries` swallows the proxied error, but the fork's
-`newProxiedServerRoutedStore` makes it read the database.
+The topology matrix's proxied `config show` row is back to upstream's
+WRONG_ANSWER pin since the routed store was retired on 2026-10-28.
 
 The proxied lane also needs two runner adjustments in mode local. First,
 `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`: Ubuntu
@@ -410,7 +406,7 @@ shards at `-test.parallel=4` on one 4-vCPU runner starved `bd serve`'s
 claim retries into `503 busy`.
 `TestProxiedServerServeClaimNext/concurrent_claimants_never_win_the_same_row`
 lost 2 of 6 rows to 503s. No row was ever won twice. The test passes 3/3
-locally in about 1.7 s with the proxy pool off, as it is by default.
+locally in about 1.7 s.
 `TestBazelRetiredLanesArePinned` and `TestBazelDoltServerTiers` carry the
 fork's extra line and steps. The server-storage lane gets the same
 `--local_test_jobs=2`: with four shards at once, a `dolt_server_full_test`
@@ -573,7 +569,7 @@ Recurring conflicts, roughly in descending pain:
    resync. `scripts/update-nix-vendorhash.sh` left this zone on 2026-09-03:
    #6096 landed the fork's own BSD-sed fix upstream, so the file is
    byte-identical again and only the hash line in `default.nix` conflicts.
-4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
+4. `cmd/bd/main.go`, `Makefile`.
 5. **Migration gates** — `internal/storage/schema/schema.go` (`MigrateUp`),
    `internal/storage/embeddeddolt/store.go`, and the override block in
    `cmd/bd/main.go`. Since 2026-10-14 upstream has its own migration-consent

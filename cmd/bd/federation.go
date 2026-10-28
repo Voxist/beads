@@ -149,10 +149,9 @@ func getFederatedStore() (storage.DoltStorage, error) {
 }
 
 func runFederationSync(cmd *cobra.Command, args []string) error {
-	// S5: federation sync performs staging-branch surgery over raw Dolt and
-	// cannot run through the proxy. Status/list-peers reads stay serviceable.
-	guardUnsupportedInProxiedMode(CapabilityFederation)
-
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("federation sync is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("federation-sync")
 	defer func() {
 		if c := metrics.Global(); c != nil {

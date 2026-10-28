@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-	"time"
 
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
@@ -70,31 +69,15 @@ func TestDbProxyChildProxyOpts_TraceConnectionsFollowsDebug(t *testing.T) {
 	assert.Equal(t, debug.Enabled(), dbProxyChildProxyOpts(nil).TraceConnections, "TraceConnections must follow debug.Enabled()")
 }
 
-// FORK (Voxist/beads): the db-proxy pooling flags reach the proxy through
-// dbProxyChildProxyOpts, so a resync that calls it alone keeps pooling on.
-func TestDbProxyChildProxyOpts_CarriesForkPooling(t *testing.T) {
-	saved := []any{dbProxyChildPoolSize, dbProxyChildBackendUser, dbProxyChildPoolConnMaxLifetime, dbProxyChildDebug}
-	t.Cleanup(func() {
-		dbProxyChildPoolSize = saved[0].(int)
-		dbProxyChildBackendUser = saved[1].(string)
-		dbProxyChildPoolConnMaxLifetime = saved[2].(time.Duration)
-		dbProxyChildDebug = saved[3].(bool)
-	})
-	dbProxyChildPoolSize = 7
-	dbProxyChildBackendUser = "pooler"
-	dbProxyChildPoolConnMaxLifetime = 90 * time.Second
+// FORK (Voxist/beads): the proxy debug flag reaches the proxy through
+// dbProxyChildProxyOpts, so a resync that calls it alone keeps it.
+func TestDbProxyChildProxyOpts_CarriesForkDebug(t *testing.T) {
+	saved := dbProxyChildDebug
+	t.Cleanup(func() { dbProxyChildDebug = saved })
 	dbProxyChildDebug = true
-	opts := dbProxyChildProxyOpts(nil)
-	assert.Equal(t, 7, opts.PoolSize)
-	assert.Equal(t, "pooler", opts.BackendUser)
-	assert.Equal(t, 90*time.Second, opts.PoolConnMaxLifetime)
-	assert.True(t, opts.Debug)
-}
-
-func TestDbProxyChildBackendPassword_ExternalOnly(t *testing.T) {
-	t.Setenv(configfile.ExternalDoltPasswordEnvVar, "test-key-do-not-use")
-	assert.Equal(t, "test-key-do-not-use", dbProxyChildBackendPassword(proxy.BackendExternal))
-	assert.Equal(t, "", dbProxyChildBackendPassword(proxy.BackendLocalServer))
+	assert.True(t, dbProxyChildProxyOpts(nil).Debug)
+	dbProxyChildDebug = false
+	assert.False(t, dbProxyChildProxyOpts(nil).Debug)
 }
 
 func TestNewDatabaseServer_BackendLocalSharedServerStillStubbed(t *testing.T) {

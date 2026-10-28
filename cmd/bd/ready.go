@@ -125,7 +125,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 
 		ctx := rootCtx
 
-		activeStore := requireStore()
+		activeStore := store
 		if claimReady {
 			CheckReadonly("ready --claim")
 		} else {
@@ -608,7 +608,7 @@ func readyExplainFilter() (types.WorkFilter, error) {
 func runReadyExplain(_ *cobra.Command) error {
 	ctx := rootCtx
 
-	activeStore := requireStore()
+	activeStore := store
 
 	filter, err := readyExplainFilter()
 	if err != nil {

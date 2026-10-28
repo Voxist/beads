@@ -217,12 +217,10 @@ var capabilityProbes = []probe{
 		direct: expectation{
 			outcome: outcomeHonored, substr: `"source": "database"`, reason: reasonNA,
 		},
-		// FORK (Voxist/beads): the fork's proxied deploy path routes the
-		// store-based commands through newProxiedServerRoutedStore, so
-		// collectDatabaseEntries reads the database and proxied config show
-		// answers like direct. Upstream pins this row as WRONG_ANSWER.
 		proxied: expectation{
-			outcome: outcomeHonored, substr: `"source": "database"`, reason: reasonNA,
+			outcome: outcomeWrongAnswer, substr: `"source": "default"`, absent: `"source": "database"`,
+			knownBad: "config_show.go collectDatabaseEntries swallows the proxied error and omits every DB-stored setting (design 1.5 / slice S6)",
+			reason:   reasonNA,
 		},
 	},
 

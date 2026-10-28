@@ -50,23 +50,6 @@ type ProxyOpts struct {
 	// leave this nil.
 	Stats *Stats
 
-	// PoolSize enables connection pooling when > 0: instead of dialing a fresh
-	// backend per client and closing it on disconnect (the transparent path),
-	// the proxy terminates each client handshake itself and lends a backend
-	// from a pool of up to PoolSize warm, already-authenticated connections,
-	// resetting and returning them on client disconnect. This collapses the
-	// per-bd-invocation connection churn that dolt pays for as setup CPU.
-	// 0 (default) preserves the original transparent forwarding behavior.
-	PoolSize int
-	// BackendUser / BackendPassword are the credentials the proxy uses to
-	// authenticate pooled backend connections to dolt. Only consulted when
-	// PoolSize > 0. For the managed loopback server this is root / empty.
-	BackendUser     string
-	BackendPassword string
-	// PoolConnMaxLifetime optionally retires pooled connections after this
-	// duration. 0 (default) keeps them indefinitely — a short lifetime would
-	// re-create the very connection churn pooling exists to eliminate.
-	PoolConnMaxLifetime time.Duration
 	// Debug enables per-connection trace lines (accepted, handleConn start/end,
 	// dial ok, copy done). Default false — these lines are the dominant write
 	// source under fleet churn and drive the macOS FSEvents/Spotlight storm.
@@ -80,17 +63,13 @@ type ProxyOpts struct {
 }
 
 type proxyServer struct {
-	rootDir         string
-	port            int
-	idleTimeout     time.Duration
-	server          server.DatabaseServer
-	stats           *Stats
-	stopEpoch       string
-	poolSize        int
-	backendUser     string
-	backendPassword string
-	poolLifetime    time.Duration
-	debug           bool
+	rootDir     string
+	port        int
+	idleTimeout time.Duration
+	server      server.DatabaseServer
+	stats       *Stats
+	stopEpoch   string
+	debug       bool
 
 	traceConnections bool
 
@@ -101,8 +80,6 @@ type proxyServer struct {
 
 	logger      *log.Logger
 	listener    net.Listener
-	pool        *backendPool
-	connID      atomic.Uint32
 	activeConns atomic.Int64
 	conns       errgroup.Group
 
@@ -170,17 +147,13 @@ func newProxyLogWriter(path string) *lumberjack.Logger {
 
 func NewProxyServer(opts ProxyOpts) *proxyServer {
 	return &proxyServer{
-		rootDir:         opts.RootDir,
-		port:            opts.Port,
-		idleTimeout:     opts.IdleTimeout,
-		server:          opts.Server,
-		stats:           opts.Stats,
-		stopEpoch:       opts.StopEpoch,
-		poolSize:        opts.PoolSize,
-		backendUser:     opts.BackendUser,
-		backendPassword: opts.BackendPassword,
-		poolLifetime:    opts.PoolConnMaxLifetime,
-		debug:           opts.Debug,
+		rootDir:     opts.RootDir,
+		port:        opts.Port,
+		idleTimeout: opts.IdleTimeout,
+		server:      opts.Server,
+		stats:       opts.Stats,
+		stopEpoch:   opts.StopEpoch,
+		debug:       opts.Debug,
 		// At most one benign-disconnect log line per second, burst 1.
 		disconnectLogLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
 
@@ -209,19 +182,21 @@ func isExpectedClientDisconnect(err error) bool {
 	return false
 }
 
-// logSessionError logs a handlePooledConn error, rate-limiting benign client
+// logSessionError logs a session error, rate-limiting benign client
 // disconnects (S3d) while always logging genuine faults. Suppressed benign
-// lines are counted and surfaced on the next emitted benign line.
+// lines are counted and surfaced on the next emitted benign line. Its only
+// production caller was the retired pooled session path (2026-10-28); the
+// transparent path logs teardown through connTracef, off unless Debug is set.
 func (p *proxyServer) logSessionError(remote net.Addr, err error) {
 	if !isExpectedClientDisconnect(err) {
-		p.tracef("handlePooledConn(%s) session error: %v", remote, err)
+		p.tracef("session(%s) session error: %v", remote, err)
 		return
 	}
 	if p.disconnectLogLimiter == nil || p.disconnectLogLimiter.Allow() {
 		if dropped := p.droppedDisconnectLogs.Swap(0); dropped > 0 {
-			p.tracef("handlePooledConn(%s) client disconnected: %v (+%d similar suppressed)", remote, err, dropped)
+			p.tracef("session(%s) client disconnected: %v (+%d similar suppressed)", remote, err, dropped)
 		} else {
-			p.tracef("handlePooledConn(%s) client disconnected: %v", remote, err)
+			p.tracef("session(%s) client disconnected: %v", remote, err)
 		}
 		return
 	}
@@ -466,29 +441,6 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 	}
 	defer func() { _ = pidfile.Remove(p.rootDir, PIDFileName) }()
 
-	if p.poolSize > 0 {
-		user := p.backendUser
-		if user == "" {
-			user = "root"
-		}
-		p.pool = newBackendPool(
-			func(dctx context.Context) (net.Conn, error) { return p.server.Dial(dctx) },
-			user, p.backendPassword, p.poolSize, p.poolLifetime, p.stats,
-		)
-		p.tracef("connection pooling enabled (maxIdle=%d, user=%q, lifetime=%s)", p.poolSize, user, p.poolLifetime)
-		defer p.pool.drain()
-
-		// S3a (v2, primary anti-wedge): cap the number of concurrently-handled
-		// client connections to poolSize. errgroup.SetLimit makes acceptLoop's
-		// p.conns.Go block (kernel backlog absorbs the queue) rather than
-		// spawning an unbounded set of handlers, each of which would dial or
-		// borrow a backend connection. This is what bounds live backend
-		// connections per proxy; with poolSize=2 an N-scope city peaks at
-		// N×(poolSize+1) backend connections. Only set when pooling is enabled:
-		// SetLimit(0) would block every handler and wedge the non-pooled path.
-		p.conns.SetLimit(p.poolSize)
-	}
-
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		<-gctx.Done()
@@ -610,16 +562,10 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 		p.connTracef("handleConn(%s) end (active=%d)", addr, p.activeConns.Load())
 	}()
 
-	if p.pool != nil {
-		return p.handlePooledConn(ctx, client)
-	}
-
 	p.stats.IncBackendDialAttempt()
-	dialDone := p.stats.DialBegin() // S3f: concurrent-dial peak gauge
 	dialCtx, cancelDial := context.WithTimeout(ctx, backendDialTimeout)
 	backend, err := p.server.Dial(dialCtx)
 	cancelDial()
-	dialDone()
 	if err != nil {
 		p.tracef("handleConn(%s) backend dial error: %v", addr, err)
 		p.stats.IncBackendDialError()
@@ -677,32 +623,6 @@ func (p *proxyServer) handleConn(ctx context.Context, client net.Conn) error {
 		return err
 	})
 	return g.Wait()
-}
-
-// handlePooledConn serves one client connection in pooling mode: terminate the
-// client handshake, borrow a wire-compatible backend from the pool, forward the
-// command phase byte-transparently, and reset+return the backend on disconnect.
-func (p *proxyServer) handlePooledConn(ctx context.Context, client net.Conn) error {
-	defer func() { _ = client.Close() }()
-	p.stats.IncHandledConn()
-	res, err := runPooledSession(ctx, p.stats, p.pool, client, p.connID.Add(1))
-	if err != nil {
-		p.logSessionError(client.RemoteAddr(), err)
-		if res.backend != nil {
-			_ = res.backend.conn.Close()
-		}
-		return err
-	}
-	if res.backend == nil {
-		return nil
-	}
-	if res.reusable {
-		p.pool.put(res.backend)
-	} else {
-		_ = res.backend.conn.Close()
-		p.stats.IncPoolRetire()
-	}
-	return nil
 }
 
 func waitForServerReady(ctx context.Context, s server.DatabaseServer, timeout time.Duration) error {

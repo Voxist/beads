@@ -1426,7 +1426,6 @@ bd db-proxy-child
     | DatabaseServer. It is spawned by the parent bd process via fork+exec and is
     | not intended to be invoked directly by users.
   flag --backend type=string default="" annotations={cobra_annotation_bash_completion_one_required_flag=["true"]} usage="backend kind: external | local-server | local-shared-server"
-  flag --backend-user type=string default="root" usage="user the proxy authenticates pooled backend connections as"
   flag --config type=string default="" usage="path to backend server config (e.g. dolt sql-server YAML)"
   flag --database type=string default="" usage="database to select when running shutdown maintenance (local-server backend)"
   flag --debug type=bool default="false" usage="enable per-connection trace logging"
@@ -1437,8 +1436,6 @@ bd db-proxy-child
   flag --external-socket-path type=string default="" usage="external backend: absolute path to a unix domain socket (overrides host/port)"
   flag --idle-timeout type=duration default="0s" usage="idle timeout before shutdown (0 or negative = never shut down)"
   flag --logpath type=string default="" usage="path the backend server should write its stdout/stderr to"
-  flag --pool-conn-max-lifetime type=duration default="0s" usage="if >0, retire pooled backend connections after this duration (0 keeps them indefinitely)"
-  flag --pool-size type=int default="0" usage="if >0, pool up to N warm authenticated backend connections instead of dialing one per client"
   flag --port type=int default="0" annotations={cobra_annotation_bash_completion_one_required_flag=["true"]} usage="port to listen on"
   flag --root type=string default="" annotations={cobra_annotation_bash_completion_one_required_flag=["true"]} usage="root directory holding proxy.lock, proxy.pid, proxy.log"
   flag --stop-epoch type=string default="" usage="stop epoch the parent observed at spawn; the proxy aborts before publishing if it advances"

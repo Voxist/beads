@@ -148,7 +148,6 @@
 34 16 TestProxiedServerBackupRefusedOnExternalTopology
 34 16 TestProxiedServerCascadeParity
 34 16 TestProxiedServerConfigSetMany
-34 16 TestProxiedServerExternalStoreCommands
 34 16 TestProxiedServerKV
 34 16 TestProxiedServerServeCount
 34 16 TestProxiedServerServeCreate

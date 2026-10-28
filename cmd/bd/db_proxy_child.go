@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -17,23 +16,20 @@ import (
 )
 
 var (
-	dbProxyChildRoot                string
-	dbProxyChildPort                int
-	dbProxyChildIdleTimeout         time.Duration
-	dbProxyChildBackend             string
-	dbProxyChildConfig              string
-	dbProxyChildLogPath             string
-	dbProxyChildDoltBin             string
-	dbProxyChildDatabase            string
-	dbProxyChildExternalHost        string
-	dbProxyChildExternalPort        int
-	dbProxyChildExternalSocketPath  string
-	dbProxyChildExternalKeepAlive   time.Duration
-	dbProxyChildStopEpoch           string
-	dbProxyChildPoolSize            int
-	dbProxyChildBackendUser         string
-	dbProxyChildPoolConnMaxLifetime time.Duration
-	dbProxyChildDebug               bool
+	dbProxyChildRoot               string
+	dbProxyChildPort               int
+	dbProxyChildIdleTimeout        time.Duration
+	dbProxyChildBackend            string
+	dbProxyChildConfig             string
+	dbProxyChildLogPath            string
+	dbProxyChildDoltBin            string
+	dbProxyChildDatabase           string
+	dbProxyChildExternalHost       string
+	dbProxyChildExternalPort       int
+	dbProxyChildExternalSocketPath string
+	dbProxyChildExternalKeepAlive  time.Duration
+	dbProxyChildStopEpoch          string
+	dbProxyChildDebug              bool
 )
 
 var dbProxyChildCmd = &cobra.Command{
@@ -66,12 +62,7 @@ not intended to be invoked directly by users.`,
 		}
 		defer func() { _ = srv.Stop(context.Background()) }()
 
-		opts := dbProxyChildProxyOpts(srv)
-		// FORK (Voxist/beads): the pooled-connection password depends on the
-		// backend, so it is set here; the flag-driven pooling fields are in
-		// dbProxyChildProxyOpts.
-		opts.BackendPassword = dbProxyChildBackendPassword(backend)
-		p := proxy.NewProxyServer(opts)
+		p := proxy.NewProxyServer(dbProxyChildProxyOpts(srv))
 		if err := p.ListenAndServe(cmd.Context()); err != nil {
 			if errors.Is(err, proxy.ErrLockHeld) {
 				return &exitError{Code: proxy.LockHeldExitCode}
@@ -93,26 +84,11 @@ func dbProxyChildProxyOpts(srv server.DatabaseServer) proxy.ProxyOpts {
 		// The child inherits BD_DEBUG from the spawning bd; its
 		// PersistentPreRun is a no-op, so --verbose never reaches it.
 		TraceConnections: debug.Enabled(),
-		// FORK (Voxist/beads): db-proxy connection pooling and the proxy debug
-		// flag (engdocs/FORK_DIVERGENCE.md, permanent divergence). Set here,
-		// not at the call site, so a resync that takes upstream's one-line
-		// NewProxyServer(dbProxyChildProxyOpts(srv)) keeps pooling on.
-		PoolSize:            dbProxyChildPoolSize,
-		BackendUser:         dbProxyChildBackendUser,
-		PoolConnMaxLifetime: dbProxyChildPoolConnMaxLifetime,
-		Debug:               dbProxyChildDebug,
+		// FORK (Voxist/beads): the proxy debug flag (BEADS_PROXY_DEBUG, proxy
+		// log hygiene). Set here, not at the call site, so a resync that takes
+		// upstream's one-line NewProxyServer(dbProxyChildProxyOpts(srv)) keeps it.
+		Debug: dbProxyChildDebug,
 	}
-}
-
-// dbProxyChildBackendPassword is the password the proxy authenticates its
-// pooled backend connections with (FORK, Voxist/beads). It is read from the
-// environment so it never appears on the command line. Only the external
-// backend has one; the managed loopback server uses root with no password.
-func dbProxyChildBackendPassword(backend proxy.Backend) string {
-	if backend == proxy.BackendExternal {
-		return os.Getenv(configfile.ExternalDoltPasswordEnvVar)
-	}
-	return ""
 }
 
 func newDatabaseServer(backend proxy.Backend, rootDir, configPath, logPath, doltBin, database string, external configfile.ExternalDoltConfig) (server.DatabaseServer, error) {
@@ -148,9 +124,6 @@ func init() {
 	dbProxyChildCmd.Flags().IntVar(&dbProxyChildExternalPort, "external-port", 0, "external backend: TCP port of the dolt sql-server")
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildExternalSocketPath, "external-socket-path", "", "external backend: absolute path to a unix domain socket (overrides host/port)")
 	dbProxyChildCmd.Flags().DurationVar(&dbProxyChildExternalKeepAlive, "external-keep-alive", 0, "external backend: TCP keepalive period (default 30s)")
-	dbProxyChildCmd.Flags().IntVar(&dbProxyChildPoolSize, "pool-size", 0, "if >0, pool up to N warm authenticated backend connections instead of dialing one per client")
-	dbProxyChildCmd.Flags().StringVar(&dbProxyChildBackendUser, "backend-user", "root", "user the proxy authenticates pooled backend connections as")
-	dbProxyChildCmd.Flags().DurationVar(&dbProxyChildPoolConnMaxLifetime, "pool-conn-max-lifetime", 0, "if >0, retire pooled backend connections after this duration (0 keeps them indefinitely)")
 	dbProxyChildCmd.Flags().BoolVar(&dbProxyChildDebug, "debug", false, "enable per-connection trace logging")
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildStopEpoch, "stop-epoch", "", "stop epoch the parent observed at spawn; the proxy aborts before publishing if it advances")
 	_ = dbProxyChildCmd.MarkFlagRequired("root")

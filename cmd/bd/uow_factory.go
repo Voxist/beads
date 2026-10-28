@@ -13,87 +13,10 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/doltversion"
-	"github.com/steveyegge/beads/internal/storage"
-	"github.com/steveyegge/beads/internal/storage/dbproxy/pidfile"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/uow"
 )
-
-// newProxiedServerRoutedStore builds a server-mode DoltStorage that connects
-// through the already-running db-proxy (the same proxy newProxiedServerUOWProvider
-// ensured). Proxied-server mode historically only wired the uow provider, which
-// covers `bd create` but leaves the legacy store-based commands (list, ready,
-// stats, update, close, ...) hitting a nil store. Routing a normal server-mode
-// store at the proxy endpoint makes every store-based command work in proxied
-// mode, and — crucially — those connections flow through the proxy's backend
-// pool just like the uow provider's.
-//
-// The proxy terminates the client handshake with skip-auth, so the user and
-// password sent here are irrelevant; root/empty is used. The real backend
-// credentials live in the proxy child (managed) or its inherited env (external).
-func newProxiedServerRoutedStore(ctx context.Context, beadsDir string) (s storage.DoltStorage, err error) {
-	// The journal contract is upstream's and this fork-only constructor is bound
-	// by it: this is the store EVERY store-based command uses in proxied-server
-	// mode (list, ready, stats, update, close), so it mutates beads. Without
-	// activation those mutations would journal nothing while the command
-	// reported success — the one outcome that breaks a consumer's cursor.
-	// ActivateStore passes a non-nil err straight through, so registering the
-	// defer before the argument checks below is safe.
-	// Versioned history (upstream #6661) binds this constructor the same way:
-	// registered before the journal defer, as upstream's factories do, so the
-	// journal activates first.
-	defer func() { s, err = activateVersionedHistoryStore(ctx, s, err) }()
-	defer func() { s, err = activateEventsJournalStore(beadsDir, s, err) }()
-
-	if beadsDir == "" {
-		return nil, fmt.Errorf("newProxiedServerRoutedStore: beadsDir must be set")
-	}
-	rootPath, err := resolveProxiedServerRootPath(beadsDir)
-	if err != nil {
-		return nil, fmt.Errorf("newProxiedServerRoutedStore: resolve root path: %w", err)
-	}
-	pf, err := pidfile.Read(rootPath, proxy.PIDFileName)
-	if err != nil {
-		return nil, fmt.Errorf("newProxiedServerRoutedStore: read proxy endpoint from %s: %w", rootPath, err)
-	}
-	// Split from the error arm above rather than folded into it: on these two
-	// the read SUCCEEDED and err is nil, so a single %w arm rendered
-	// "%!w(<nil>)". This string is not swallowed — it is stored in
-	// routedStoreOpenErr and printed by the S2 requireStore() guard as the
-	// stated reason store-based commands are disabled, so an operator with a
-	// portless pidfile got a formatting artifact instead of a diagnosis.
-	if pf == nil || pf.Port == 0 {
-		return nil, fmt.Errorf("newProxiedServerRoutedStore: proxy pidfile in %s has no listener port; is the db-proxy running?", rootPath)
-	}
-
-	persisted, _ := configfile.Load(beadsDir)
-	database := configfile.DefaultDoltDatabase
-	if persisted != nil {
-		database = persisted.GetDoltDatabase()
-	}
-
-	cfg := &dolt.Config{
-		Path:       beadsDir,
-		BeadsDir:   beadsDir,
-		Database:   database,
-		ServerMode: true,
-		ServerHost: "127.0.0.1",
-		ServerPort: pf.Port,
-		ServerUser: "root",
-		// AutoStart stays false: the proxy owns the backend lifecycle. We must
-		// never try to spawn a dolt server for the proxy's listener port.
-		//
-		// RoutedThroughProxy stops newServerMode from persisting pf.Port (the
-		// ephemeral proxy listener) into .beads/dolt-server.port. That file is
-		// the canonical-server discovery hint; a proxy port written there is
-		// clobbered on the next reconcile and goes stale when the proxy respawns
-		// on a new port, breaking endpoint resolution for any reader that trusts
-		// it.
-		RoutedThroughProxy: true,
-	}
-	return dolt.New(ctx, cfg)
-}
 
 // doltVersionWarnOnce ensures the dolt-version advisory (unverifiable
 // version) is printed at most once per process, even though

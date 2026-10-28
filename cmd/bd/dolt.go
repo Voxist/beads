@@ -633,18 +633,10 @@ The remote must already exist (see 'bd dolt remote add').`,
 			fmt.Println("To re-enable remote sync: bd config unset dolt.local-only")
 			return nil
 		}
-		// S5: raw-Dolt remote sync is impossible *through the proxy* (the routed
-		// DoltRemoteUseCase covers remote config CRUD only). In proxied-server
-		// mode this opens a direct ServerMode store at the scope's recorded
-		// external endpoint instead, and exits with the typed unsupported error
-		// when none is recorded — never appearing to succeed.
 		ctx := context.Background()
-		st := storeForRawDoltSync(ctx, CapabilityDoltPush)
+		st := getStore()
 		if st == nil {
 			return HandleError("no store available")
-		}
-		if proxiedServerMode {
-			defer st.Close() //nolint:errcheck // best-effort close of the per-command direct-endpoint store
 		}
 		force, _ := cmd.Flags().GetBool("force")
 		remote, _ := cmd.Flags().GetString("remote")
@@ -724,8 +716,6 @@ aborting the pull for manual resolution. Embedded storage only (#4992); on
 server-mode/sql-server storage use 'bd conflicts resolve' after a pull that
 reports conflicts.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// S5: see doltPushCmd — direct-endpoint escape hatch in proxied mode,
-		// typed unsupported error when no external endpoint is recorded.
 		if isDoltLocalOnly() {
 			if jsonOutput {
 				if err := outputJSONRaw(map[string]string{"status": "disabled", "reason": "dolt.local-only=true"}); err != nil {
@@ -739,12 +729,9 @@ reports conflicts.`,
 			return nil
 		}
 		ctx := context.Background()
-		st := storeForRawDoltSync(ctx, CapabilityDoltPull)
+		st := getStore()
 		if st == nil {
 			return HandleError("no store available")
-		}
-		if proxiedServerMode {
-			defer st.Close() //nolint:errcheck // best-effort close of the per-command direct-endpoint store
 		}
 		remote, _ := cmd.Flags().GetString("remote")
 		strategy, _ := cmd.Flags().GetString("strategy")
@@ -845,14 +832,9 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 			err       error
 		)
 		if usesProxiedServer() {
-			// Proxied mode routes through the UOW provider here. Upstream's
-			// wording for this branch said "proxied mode never opens a store
-			// ... so getStore() is nil here"; that invariant is NOT true in
-			// this fork, whose root pre-run does install a routed store in
-			// proxied mode (cmd/bd/main.go, newProxiedServerRoutedStore). The
-			// branch is still correct because it keys on usesProxiedServer()
-			// rather than on the store being nil — but do not build on the
-			// nil-store claim. This is the flush
+			// Proxied mode never opens a store — the root pre-run returns
+			// before newDoltStore — so getStore() is nil here and the UOW
+			// provider is the only handle on the server. This is the flush
 			// point dolt.auto-commit=batch/off defers to on that route
 			// (GH#4995). The message is built above so both routes name the
 			// same default.
