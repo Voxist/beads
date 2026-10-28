@@ -111,12 +111,12 @@ def tiling_problems(suites):
     return problems
 
 
-def check(tested, testlogs, suites, lister=listed_tests, whole=()):
+def check(tested, testlogs, suites, lister=listed_tests, whole=(), tiling=True):
     """Return ([summary lines], [problems]) for suites of (label, script, shards)
     or (label, script, shards, offset, total), and whole (unsharded or
     sharded) labels that must not be all-skipped."""
     suites = [s if len(s) == 5 else (*s, 0, s[2]) for s in suites]
-    lines, problems = [], tiling_problems(suites)
+    lines, problems = [], (tiling_problems(suites) if tiling else [])
     for label in whole:
         if label not in tested:
             problems.append(f"{label}: --whole, but the BEP has no result for it")
@@ -184,6 +184,13 @@ def main(argv=None):
                          "N@OFFSET/TOTAL for one of several targets splitting a TOTAL-shard block (repeatable)")
     ap.add_argument("--whole", action="append", default=[], metavar="LABEL",
                     help="a target none of whose test.xml may be all skipped (repeatable)")
+    # FORK (Voxist/beads): the fork's embedded tier is a matrix whose cmd-a and
+    # cmd-b legs each run half of one 100-shard block, so neither leg's suites
+    # tile it alone. Each leg passes --no-tiling; that the legs together tile
+    # it is pinned statically (TestBazelRetiredLanesCheckListedTestsRan).
+    ap.add_argument("--no-tiling", action="store_true",
+                    help="skip the check that suites sharing a script tile its TOTAL-shard block "
+                         "(another invocation runs the rest of it)")
     args = ap.parse_args(argv)
 
     suites = []
@@ -197,7 +204,7 @@ def main(argv=None):
         suites.append((label, script, shards, offset, total))
     tested, _, bep_testlogs = read_bep(args.bep)
     testlogs = args.testlogs or bep_testlogs or "bazel-testlogs"
-    lines, problems = check(tested, testlogs, suites, whole=args.whole)
+    lines, problems = check(tested, testlogs, suites, whole=args.whole, tiling=not args.no_tiling)
     for line in lines:
         print(line)
     for p in problems:

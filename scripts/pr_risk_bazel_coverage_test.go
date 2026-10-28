@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -422,7 +423,19 @@ func TestBazelRetiredLanesCheckListedTestsRan(t *testing.T) {
 			// legs must check exactly what upstream's single command does.
 			var legs []string
 			for _, inc := range job.Strategy.Matrix.Include {
-				legs = append(legs, inc.ShardSuites)
+				fields := strings.Fields(inc.ShardSuites)
+				// --no-tiling: a leg running part of a shared TOTAL-shard block
+				// (cmd-a, cmd-b). Only partial suites (N@OFFSET/TOTAL) may skip
+				// it; the union compared below tiles the block.
+				if slices.Contains(fields, "--no-tiling") {
+					for i, f := range fields {
+						if f == "--suite" && i+3 < len(fields) && !strings.Contains(fields[i+3], "@") {
+							t.Errorf("embedded leg %q passes --no-tiling with a whole suite %s %s", inc.Group, fields[i+1], fields[i+3])
+						}
+					}
+					fields = slices.DeleteFunc(fields, func(f string) bool { return f == "--no-tiling" })
+				}
+				legs = append(legs, strings.Join(fields, " "))
 			}
 			var kept []string
 			for _, line := range strings.Split(run, "\n") {
@@ -630,6 +643,12 @@ esac
 			t.Errorf("%s: pass = %v, want %v (mention %q):\n%s", c.name, err == nil, c.pass, c.mention, out)
 		}
 	}
+	// FORK (Voxist/beads): --no-tiling lets one invocation check half of a
+	// split block (the embedded matrix's cmd-a and cmd-b legs); the same
+	// suite without it fails on the shard no target here runs.
+	if out, err := exec.Command(python, script, "--no-tiling", "--bep", splitBEP, "--testlogs", splitLogs, "--suite", "//pkg:p", shard, "1@0/2").CombinedOutput(); err != nil {
+		t.Errorf("--no-tiling with half of a split block failed:\n%s", out)
+	}
 	if out, err := exec.Command(python, script, "--bep", writeBEP(2), "--testlogs", filepath.Join(dir, "logs0"), "--suite", label, shard, "2", "--whole", "//pkg:absent").CombinedOutput(); err == nil {
 		t.Errorf("--whole for a target the BEP lacks passed:\n%s", out)
 	}
@@ -648,6 +667,13 @@ esac
 		if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "failed") {
 			t.Errorf("shard script %s %v: check passed or did not say it failed:\n%s", c.script, c.env, out)
 		}
+	}
+	// FORK (Voxist/beads): --no-tiling skips only the static tiling check; a
+	// failing shard script still fails the run.
+	cmd := exec.Command(python, script, "--no-tiling", "--bep", writeBEP(2), "--testlogs", logs, "--suite", label, shard, "2")
+	cmd.Env = append(os.Environ(), "FAKE_SHARD_FAIL=1")
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "failed") {
+		t.Errorf("--no-tiling with a failing shard script passed or did not say it failed:\n%s", out)
 	}
 }
 
