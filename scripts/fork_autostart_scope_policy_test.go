@@ -15,60 +15,59 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// scanGlobalAutoStartCalls returns "file:line" for every call of
-// IsAutoStartDisabled() (package-qualified or not) in src.
+// scanGlobalAutoStartCalls returns "file:line" for every reference to
+// IsAutoStartDisabled (package-qualified or not) in src: a call, a function
+// value, or a struct field initialised with it. Only its own declaration is
+// skipped.
 func scanGlobalAutoStartCalls(rel string, src []byte) ([]string, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, rel, src, 0)
 	if err != nil {
 		return nil, err
 	}
+	const name = "IsAutoStartDisabled"
+	declared := map[*ast.Ident]bool{}
+	selected := map[*ast.Ident]bool{}
+	for _, d := range f.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
+			declared[fn.Name] = true
+		}
+	}
 	var found []string
 	ast.Inspect(f, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		name := ""
-		switch fun := call.Fun.(type) {
-		case *ast.Ident:
-			name = fun.Name
+		switch x := n.(type) {
 		case *ast.SelectorExpr:
-			name = fun.Sel.Name
-		}
-		if name == "IsAutoStartDisabled" {
-			found = append(found, rel+":"+itoa(fset.Position(call.Pos()).Line))
+			if x.Sel.Name == name {
+				selected[x.Sel] = true
+				found = append(found, rel+":"+strconv.Itoa(fset.Position(x.Pos()).Line))
+			}
+		case *ast.Ident:
+			if x.Name == name && !declared[x] && !selected[x] {
+				found = append(found, rel+":"+strconv.Itoa(fset.Position(x.Pos()).Line))
+			}
 		}
 		return true
 	})
 	return found, nil
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for ; n > 0; n /= 10 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-	}
-	return string(b)
-}
-
 // TestGlobalAutoStartScanCatchesBothShapes keeps the scan from passing by
-// matching nothing.
+// matching nothing: a qualified call, a bare call, a function value and a
+// struct field are all found; the declaration itself and the workspace-scoped
+// IsAutoStartDisabledFor are not.
 func TestGlobalAutoStartScanCatchesBothShapes(t *testing.T) {
-	src := []byte("package p\n\nfunc a() bool { return doltserver.IsAutoStartDisabled() }\n\nfunc b() bool { return IsAutoStartDisabled() || IsAutoStartDisabledFor(\"d\") }\n")
+	src := []byte("package p\n\nfunc a() bool { return doltserver.IsAutoStartDisabled() }\n\nfunc b() bool { return IsAutoStartDisabled() || IsAutoStartDisabledFor(\"d\") }\n\nvar f = doltserver.IsAutoStartDisabled\n\nvar s = struct{ off func() bool }{off: IsAutoStartDisabled}\n\nfunc IsAutoStartDisabled() bool { return false }\n")
 	got, err := scanGlobalAutoStartCalls("p/p.go", src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got, ",") != "p/p.go:3,p/p.go:5" {
-		t.Fatalf("scan found %v, want the qualified call on line 3 and the bare one on line 5", got)
+	if strings.Join(got, ",") != "p/p.go:3,p/p.go:5,p/p.go:7,p/p.go:9" {
+		t.Fatalf("scan found %v, want the qualified call (3), the bare call (5), the function value (7) and the struct field (9), not the declaration (11)", got)
 	}
 }
 

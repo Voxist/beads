@@ -2047,7 +2047,7 @@ jobs:
     runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && needs.rbe.outputs.mode != 'remote' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
-    timeout-minutes: 125
+    timeout-minutes: 135
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:

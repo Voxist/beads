@@ -4390,9 +4390,10 @@ func TestBazelDoltServerTiers(t *testing.T) {
 	} {
 		job := workflow.job(t, c.job)
 		// FORK (Voxist/beads): the fork's CI runs these tiers in mode local on a
-		// GitHub-hosted runner, without rbe's parallelism, so the cap is 120.
-		if job.TimeoutMinutes == 0 || job.TimeoutMinutes > 125 {
-			t.Errorf("%s timeout-minutes = %d; the fork runs it locally, keep it at most 125", c.job, job.TimeoutMinutes)
+		// GitHub-hosted runner, without rbe's parallelism, so the cap is 135
+		// (proxied: its capped steps sum to 129 min).
+		if job.TimeoutMinutes == 0 || job.TimeoutMinutes > 135 {
+			t.Errorf("%s timeout-minutes = %d; the fork runs it locally, keep it at most 135", c.job, job.TimeoutMinutes)
 		}
 		assertBazelTierStep(t, job, c.job, c.config)
 		if n := len(job.Steps); n != c.wantSteps {

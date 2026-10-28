@@ -2075,7 +2075,8 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	// Port 0 means "not yet resolved", and only auto-start resolves it. An
 	// open that will not start a server must not dial 127.0.0.1:0 and then
 	// report an outage: the server may be healthy and bd simply has no
-	// address for it (bd-7pkvvd). IsAutoStartDisabled is checked as well as
+	// address for it (bd-7pkvvd). IsAutoStartDisabledFor (the workspace-scoped
+	// rule, FORK #56/#57) is checked as well as
 	// serverOpenCanAutoStart because it also accepts spellings such as
 	// "false" that resolveAutoStart does not.
 	if cfg.ServerSocket == "" && cfg.ServerPort <= 0 &&
