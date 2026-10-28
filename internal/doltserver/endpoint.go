@@ -108,7 +108,9 @@ func endpointFor(beadsDir string, fileCfg *configfile.Config, dial *Config) Endp
 		Database:          fileCfg.GetDoltDatabase(),
 		CredentialCommand: fileCfg.GetDoltCredentialCommand(),
 		SharedServer:      IsSharedServerMode(),
-		AutoStartDisabled: IsAutoStartDisabled(),
+		// FORK (Voxist/beads): workspace-scoped, so this workspace's own
+		// dolt.auto-start: false counts (fork #56/#57).
+		AutoStartDisabled: IsAutoStartDisabledFor(beadsDir),
 	}
 	return ep
 }
