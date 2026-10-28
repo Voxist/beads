@@ -68,19 +68,6 @@ type OpenOpts struct {
 	Database       string
 	Port           int
 	External       configfile.ExternalDoltConfig
-	// PoolSize, when > 0, makes the spawned proxy pool backend connections
-	// (see ProxyOpts.PoolSize). BackendUser is the user the proxy uses to
-	// authenticate those pooled connections; the password, when needed, is
-	// inherited by the child via the environment (it is never passed on the
-	// command line). 0 preserves the transparent, non-pooling proxy.
-	PoolSize    int
-	BackendUser string
-	// PoolConnMaxLifetime, when > 0, retires pooled backend connections after
-	// this duration (see ProxyOpts.PoolConnMaxLifetime). 0 (default) keeps them
-	// indefinitely, which is the right choice for steady-state pooling; the knob
-	// exists as an operator escape hatch (e.g. to recycle connections around a
-	// backend that leaks server-side state). Only consulted when PoolSize > 0.
-	PoolConnMaxLifetime time.Duration
 	// Debug enables per-connection trace logging in the proxy child process.
 	// Leave false in production; set true only for diagnostic runs.
 	Debug bool
@@ -108,71 +95,6 @@ const (
 )
 
 var ResolveExecutable = os.Executable
-
-// PoolSizeEnvVar is the opt-in switch for backend connection pooling. When set
-// to a positive integer, a proxy spawned by this process pools up to that many
-// warm backend connections instead of dialing one per client. Unset or 0
-// disables pooling (transparent forwarding, the historical behavior).
-const PoolSizeEnvVar = "BEADS_PROXY_POOL_SIZE"
-
-// PoolSizeFromEnv reads PoolSizeEnvVar, returning 0 (pooling disabled) when
-// unset, empty, non-numeric, or negative.
-func PoolSizeFromEnv() int {
-	v := strings.TrimSpace(os.Getenv(PoolSizeEnvVar))
-	if v == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		return 0
-	}
-	return n
-}
-
-// PoolConnMaxLifetimeEnvVar optionally retires pooled backend connections after
-// the given Go duration (e.g. "30m"). Unset, empty, unparseable, or non-positive
-// keeps pooled connections indefinitely — the steady-state pooling default.
-// Only has effect when pooling is enabled (PoolSizeEnvVar > 0).
-const PoolConnMaxLifetimeEnvVar = "BEADS_PROXY_CONN_MAX_LIFETIME"
-
-// PoolConnMaxLifetimeFromEnv reads PoolConnMaxLifetimeEnvVar, returning 0
-// (connections kept indefinitely) when unset, empty, unparseable, or non-positive.
-func PoolConnMaxLifetimeFromEnv() time.Duration {
-	v := strings.TrimSpace(os.Getenv(PoolConnMaxLifetimeEnvVar))
-	if v == "" {
-		return 0
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil || d <= 0 {
-		return 0
-	}
-	return d
-}
-
-// IdleTimeoutEnvVar overrides how long a pooling proxy stays alive with no
-// active client connections before it shuts down. The default (30s) is tuned
-// for a single busy workspace; an orchestrator that touches many scopes
-// sparsely (e.g. an orchestrator probing dozens of scopes once per patrol) starves each
-// proxy below that window, so it spawns, serves one op, idle-dies, and respawns
-// on the next touch — pure churn that never reaches the warm-pool steady state
-// pooling exists to provide. Raising the timeout (e.g. "10m") keeps proxies warm
-// across sparse bursts. Accepts a Go duration string.
-const IdleTimeoutEnvVar = "BEADS_PROXY_IDLE_TIMEOUT"
-
-// IdleTimeoutFromEnv reads IdleTimeoutEnvVar, returning fallback when unset,
-// empty, or unparseable. A parsed non-positive value (e.g. "0") is returned
-// verbatim, which disables the idle timeout (proxy stays up until stopped).
-func IdleTimeoutFromEnv(fallback time.Duration) time.Duration {
-	v := strings.TrimSpace(os.Getenv(IdleTimeoutEnvVar))
-	if v == "" {
-		return fallback
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return fallback
-	}
-	return d
-}
 
 // DebugEnvVar re-enables the proxy's per-connection trace lines (accepted,
 // handleConn start/end, dial ok, copy done) for diagnostic runs. They default
@@ -573,15 +495,6 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, stopEpoch string, lo
 	}
 	if opts.Database != "" {
 		args = append(args, "--database", opts.Database)
-	}
-	if opts.PoolSize > 0 {
-		args = append(args, "--pool-size", strconv.Itoa(opts.PoolSize))
-		if opts.BackendUser != "" {
-			args = append(args, "--backend-user", opts.BackendUser)
-		}
-		if opts.PoolConnMaxLifetime > 0 {
-			args = append(args, "--pool-conn-max-lifetime", opts.PoolConnMaxLifetime.String())
-		}
 	}
 	if opts.Debug {
 		args = append(args, "--debug")
