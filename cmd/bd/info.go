@@ -228,6 +228,16 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.95.0",
+		Date:    "2026-10-28",
+		Changes: []string{
+			"FORK RELEASE: Voxist/beads main after the 2026-10-27 resync with upstream 43f41374a (Voxist/beads#73) and the retirement of the fork's own proxied stack (Voxist/beads#76).",
+			"SCHEMA: 0069 -> 0072 (ignored plane 0027 -> 0028): 0070 participation_generation, 0071 removed_restriction, 0072 epoch_minted_addresses. NOT a binary swap: migrate each database with 'bd migrate schema' in a window. A 1.94.x bd refuses a 0072 database (schema skew), so roll back by restoring the pre-migration snapshot, not by copying the old binary back.",
+			"DOLT: bd refuses a Dolt server older than 2.6.0 outside embedded mode, reads included (upstream #7836). Upgrade the server first.",
+			"PROXIED: the fork's db-proxy connection pooling, BEADS_PROXY_IDLE_TIMEOUT and proxied deploy path are gone; proxied-server mode is upstream's again. Fork log hygiene (rotation, BEADS_PROXY_DEBUG) and MIGRATION-FREEZE remain.",
+		},
+	},
+	{
 		Version: "1.3.2",
 		Date:    "2026-10-23",
 		Changes: []string{
