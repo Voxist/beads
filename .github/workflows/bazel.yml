@@ -1495,8 +1495,10 @@ jobs:
     # //cmd/bd:bd_embedded_part2_test (51-100), because Bazel caps a rule at
     # 50 shards ("Having more than 50 shards is indicative of poor test
     # organization. Please reduce the number of shards." -- a native
-    # analysis-time error, not a style lint); the step below checks that
-    # the two ranges tile the block exactly once. After its slowest
+    # analysis-time error, not a style lint); the two ranges tile the
+    # block exactly once (FORK: pinned statically by
+    # TestBazelRetiredLanesCheckListedTestsRan, since the cmd-a and cmd-b
+    # legs each check their half with --no-tiling). After its slowest
     # functions were split into smaller top-level tests, a cmd shard's wall
     # time is its slowest test: ~45s median, and at most the *Concurrent
     # stress tests' 65-145s (their bd subprocesses queue on one workspace's
@@ -1597,6 +1599,7 @@ jobs:
           TARGETS: ${{ matrix.targets }}
         run: |
           set -o pipefail
+          set -f # FORK: $TARGETS is split into words, never glob-expanded
           start=$(date +%s)
           rc=0
           # FORK: this leg's targets (matrix.targets) after --, so the
@@ -1632,6 +1635,7 @@ jobs:
         env:
           COVERAGE: ${{ matrix.shard-suites }}
         run: |
+          set -f # FORK: the leg's suites are split into words, never glob-expanded
           # shellcheck disable=SC2086 # COVERAGE is the leg's argument list
           python3 tools/bazel/check_shard_coverage.py --bep "$RUNNER_TEMP/bazel-bep.json" $COVERAGE
 
@@ -1708,6 +1712,30 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: echo "result=$JOB_STATUS" >> "$GITHUB_OUTPUT"
 
+  # main.yml's "Main Linux integration packages (N/6)" and "Main Linux
+  # integration cmd/bd (N/8)" jobs (and nightly.yml's retired Full Test
+  # Suite, the same go test in one job) as --config=integration: every package with
+  # -tags=integration,gms_pure_go, race, no -short, BEADS_TEST_SKIP=dolt (see
+  # .bazelrc). A job of its own: ci and integration share bazel-testlogs, so
+  # bazel-test's equivalence step would read this lane's test.xml if both ran
+  # in one job, and the tagged race build is a second full compile.
+  # No equivalence step: equivalence.py's default mode is the --config=ci
+  # selection (go list without the integration tag, -short, ^TestEmbedded
+  # skipped), and its job mode needs the integration jobs' go test -json,
+  # which no run here has. check_testcases.py still catches a target or
+  # shard that ran no tests. pr.yml's gate requires it (BAZEL_INTEGRATION)
+  # on same-repo PRs; see the header.
+  # Exactly-once cmd/bd: where the caller says bazel-cmd-dolt is required
+  # (inputs.cmd-dolt-required true: pr.yml while its
+  # BAZEL_CMD_DOLT_REQUIRED is "true"), the target set is //... minus
+  # //cmd/bd:bd_test. bazel-cmd-dolt has this job's `if:`, so it runs in
+  # every mode this one does (remote, fork-ro, fork-rw, cache; Dependabot
+  # too), bazel-gate.sh accepts the two lanes' skips in the same modes, and
+  # its //cmd/bd:bd_dolt_server_test runs that same integration-build
+  # bd_test without BEADS_TEST_SKIP=dolt (a superset: the skip only skips).
+  # Rollback: commit BAZEL_CMD_DOLT_REQUIRED "false" and pr.yml's
+  # cmd-dolt-required: false together (policy-tested equal); bd_test is
+  # back here on the next run.
   bazel-integration:
     name: integration
     # Remote (modes remote, fork-ro, fork-rw), or local with the read-only

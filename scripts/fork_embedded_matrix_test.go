@@ -51,7 +51,16 @@ func TestForkEmbeddedMatrixCoversEveryTarget(t *testing.T) {
 	}
 
 	served := job.step(t, "Upload served test timings")
-	if !strings.Contains(served.If, "matrix.group == 'rest'") {
-		t.Errorf("served test timings upload if = %q; only the rest leg runs backend/http and may upload bazel-embedded-served-testxml", served.If)
+	if want := "${{ !cancelled() && steps.test.outcome != 'skipped' && matrix.group == 'rest' }}"; served.If != want {
+		t.Errorf("served test timings upload if = %q, want %q; only the rest leg runs backend/http and may upload bazel-embedded-served-testxml", served.If, want)
+	}
+
+	// Each leg reads its own targets and suites from the matrix; a wrong
+	// mapping (every leg on one leg's targets) would silently drop the rest.
+	if got := job.step(t, "bazel test //... --config=embedded").Env["TARGETS"]; got != "${{ matrix.targets }}" {
+		t.Errorf("embedded test step TARGETS = %q, want ${{ matrix.targets }}", got)
+	}
+	if got := job.step(t, "Every listed test ran in its shard").Env["COVERAGE"]; got != "${{ matrix.shard-suites }}" {
+		t.Errorf("embedded coverage step COVERAGE = %q, want ${{ matrix.shard-suites }}", got)
 	}
 }

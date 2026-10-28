@@ -3,7 +3,7 @@
 
 Usage: check_shard_coverage.py --bep <build_event_json_file> [--testlogs DIR]
                                --suite LABEL SCRIPT SHARDS[@OFFSET/TOTAL] [--suite ...]
-                               [--whole LABEL ...]
+                               [--whole LABEL ...] [--no-tiling]
 
 The manifest-sharded targets (//cmd/bd:bd_embedded_test runs
 .github/scripts/embedded-test-shard.sh, ...) discover their tests from
@@ -87,6 +87,13 @@ def all_skipped_problem(where, got, skipped):
     return None
 
 
+def bound_problems(suites):
+    """Problems with suites whose shard range runs past their script's TOTAL.
+    Checked even with --no-tiling (FORK, Voxist/beads)."""
+    return [f"{label}: shards {offset + 1}..{offset + shards} exceed {script}'s total {total}"
+            for label, script, shards, offset, total in suites if offset + shards > total]
+
+
 def tiling_problems(suites):
     """Problems with suites of (label, script, shards, offset, total) that
     split one SCRIPT's TOTAL-shard block over several targets: together they
@@ -94,8 +101,6 @@ def tiling_problems(suites):
     problems = []
     parts = {}
     for label, script, shards, offset, total in suites:
-        if offset + shards > total:
-            problems.append(f"{label}: shards {offset + 1}..{offset + shards} exceed {script}'s total {total}")
         parts.setdefault((script, total), []).append((offset, shards, label))
     for (script, total), ranges in sorted(parts.items()):
         covered = {}
@@ -116,7 +121,7 @@ def check(tested, testlogs, suites, lister=listed_tests, whole=(), tiling=True):
     or (label, script, shards, offset, total), and whole (unsharded or
     sharded) labels that must not be all-skipped."""
     suites = [s if len(s) == 5 else (*s, 0, s[2]) for s in suites]
-    lines, problems = [], (tiling_problems(suites) if tiling else [])
+    lines, problems = [], bound_problems(suites) + (tiling_problems(suites) if tiling else [])
     for label in whole:
         if label not in tested:
             problems.append(f"{label}: --whole, but the BEP has no result for it")

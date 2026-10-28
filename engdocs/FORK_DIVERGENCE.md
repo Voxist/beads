@@ -415,9 +415,8 @@ repository's Actions cache limit.
 The legs check shard coverage per leg, and `cmd-a`/`cmd-b` each run half of
 one 100-shard block (`50@0/100`, `50@50/100`). So the upstream-owned
 `tools/bazel/check_shard_coverage.py` gains `--no-tiling` (default off), which
-those two legs pass. It skips only the static tiling check (and the
-exceeds-total bound check, which lives in the same function); every per-shard
-check still runs. That the legs together tile the block is pinned by
+those two legs pass. It skips only the static tiling check; the exceeds-total
+bound check and every per-shard check still run. That the legs together tile the block is pinned by
 `TestBazelRetiredLanesCheckListedTestsRan`, which compares the legs' suites
 (with `--no-tiling` removed) to upstream's list. Pins adapted for the split:
 `bazelForkEmbeddedTestRun` (the leg's command, used by

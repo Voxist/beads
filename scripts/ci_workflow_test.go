@@ -4468,6 +4468,7 @@ var bazelEmbeddedRCLines = []string{
 // after -- (matrix.targets in $TARGETS). bazelEmbeddedTestRun stays upstream's,
 // since bazelTierTestRun derives the proxied and server-storage commands from it.
 const bazelForkEmbeddedTestRun = `set -o pipefail
+set -f # FORK: $TARGETS is split into words, never glob-expanded
 start=$(date +%s)
 rc=0
 # FORK: this leg's targets (matrix.targets) after --, so the

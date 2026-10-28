@@ -56,11 +56,11 @@ func scanGlobalAutoStartCalls(rel string, src []byte) ([]string, error) {
 	return found, nil
 }
 
-// TestGlobalAutoStartScanCatchesBothShapes keeps the scan from passing by
+// TestGlobalAutoStartScanCatchesEveryShape keeps the scan from passing by
 // matching nothing: a qualified call, a bare call, a function value and a
 // struct field are all found; the declaration itself and the workspace-scoped
 // IsAutoStartDisabledFor are not.
-func TestGlobalAutoStartScanCatchesBothShapes(t *testing.T) {
+func TestGlobalAutoStartScanCatchesEveryShape(t *testing.T) {
 	src := []byte("package p\n\nfunc a() bool { return doltserver.IsAutoStartDisabled() }\n\nfunc b() bool { return IsAutoStartDisabled() || IsAutoStartDisabledFor(\"d\") }\n\nvar f = doltserver.IsAutoStartDisabled\n\nvar s = struct{ off func() bool }{off: IsAutoStartDisabled}\n\nfunc IsAutoStartDisabled() bool { return false }\n")
 	got, err := scanGlobalAutoStartCalls("p/p.go", src)
 	if err != nil {

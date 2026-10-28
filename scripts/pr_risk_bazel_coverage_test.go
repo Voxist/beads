@@ -437,13 +437,18 @@ func TestBazelRetiredLanesCheckListedTestsRan(t *testing.T) {
 				}
 				legs = append(legs, strings.Join(fields, " "))
 			}
-			var kept []string
+			// The step is `set -f`, a shellcheck comment, then the checker
+			// with $COVERAGE; compare the checker line with the legs' suites.
+			if !strings.Contains(run, "set -f") {
+				t.Errorf("%s coverage step does not disable globbing before expanding $COVERAGE:\n%s", c.lane, run)
+			}
+			var checker string
 			for _, line := range strings.Split(run, "\n") {
-				if !strings.HasPrefix(strings.TrimSpace(line), "#") {
-					kept = append(kept, line)
+				if strings.HasPrefix(strings.TrimSpace(line), "python3 ") {
+					checker = line
 				}
 			}
-			run = strings.Replace(strings.Join(kept, "\n"), "$COVERAGE", strings.Join(legs, " "), 1)
+			run = strings.Replace(checker, "$COVERAGE", strings.Join(legs, " "), 1)
 			wantIf = "${{ always() && steps.test.outcome != 'skipped' && matrix.shard-suites != '' }}"
 		}
 		if got := strings.Join(strings.Fields(run), " "); got != strings.Join(want, " ") {
@@ -648,6 +653,10 @@ esac
 	// suite without it fails on the shard no target here runs.
 	if out, err := exec.Command(python, script, "--no-tiling", "--bep", splitBEP, "--testlogs", splitLogs, "--suite", "//pkg:p", shard, "1@0/2").CombinedOutput(); err != nil {
 		t.Errorf("--no-tiling with half of a split block failed:\n%s", out)
+	}
+	// ...but not the bound check: a range past the block's total still fails.
+	if out, err := exec.Command(python, script, "--no-tiling", "--bep", splitBEP, "--testlogs", splitLogs, "--suite", "//pkg:p", shard, "1@2/2").CombinedOutput(); err == nil || !strings.Contains(string(out), "exceed") {
+		t.Errorf("--no-tiling with a range past the total passed or did not say it exceeds:\n%s", out)
 	}
 	if out, err := exec.Command(python, script, "--bep", writeBEP(2), "--testlogs", filepath.Join(dir, "logs0"), "--suite", label, shard, "2", "--whole", "//pkg:absent").CombinedOutput(); err == nil {
 		t.Errorf("--whole for a target the BEP lacks passed:\n%s", out)
