@@ -17,43 +17,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// TestDialBeginTracksConcurrentPeak verifies the S3f gauge records the
-// high-water mark of simultaneous in-flight dials.
-func TestDialBeginTracksConcurrentPeak(t *testing.T) {
-	s := &Stats{}
-
-	// Open three dials concurrently, then close them.
-	d1 := s.DialBegin()
-	d2 := s.DialBegin()
-	d3 := s.DialBegin()
-	if got := s.Snapshot().BackendDialConcurrentPeak; got != 3 {
-		t.Fatalf("peak = %d, want 3", got)
-	}
-	d1()
-	d2()
-	d3()
-
-	// Peak is a high-water mark: it does not decay when dials complete.
-	if got := s.Snapshot().BackendDialConcurrentPeak; got != 3 {
-		t.Fatalf("peak after close = %d, want 3 (high-water mark must not decay)", got)
-	}
-
-	// A later, smaller burst does not lower the peak.
-	d := s.DialBegin()
-	d()
-	if got := s.Snapshot().BackendDialConcurrentPeak; got != 3 {
-		t.Fatalf("peak after smaller burst = %d, want 3", got)
-	}
-}
-
-// TestDialBeginNilStatsSafe ensures the gauge is safe on a nil *Stats (the
-// proxy tolerates a nil stats sink).
-func TestDialBeginNilStatsSafe(t *testing.T) {
-	var s *Stats
-	done := s.DialBegin()
-	done() // must not panic
-}
-
 // TestIsExpectedClientDisconnect covers the S3d benign/real classification.
 func TestIsExpectedClientDisconnect(t *testing.T) {
 	deadlineErr := func() error {
@@ -235,7 +198,7 @@ func TestDebugfGatedOffByDefault(t *testing.T) {
 	var buf bytes.Buffer
 	p := &proxyServer{logger: log.New(&buf, "", 0)}
 
-	p.debugf("chatty per-conn line")
+	p.connTracef("chatty per-conn line")
 	if buf.Len() != 0 {
 		t.Fatalf("debugf wrote with Debug=false: %q", buf.String())
 	}
@@ -246,7 +209,7 @@ func TestDebugfGatedOffByDefault(t *testing.T) {
 
 	buf.Reset()
 	p.debug = true
-	p.debugf("chatty per-conn line")
+	p.connTracef("chatty per-conn line")
 	if !strings.Contains(buf.String(), "chatty per-conn line") {
 		t.Fatalf("debugf must write with Debug=true, got %q", buf.String())
 	}

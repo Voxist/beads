@@ -1,5 +1,9 @@
 # Connection pooling — deployment, validation, gascity integration
 
+> **Retired 2026-10-28 (gascity #266, ga-s69mk.17).** The fork's db-proxy
+> pooling and proxied deploy path were removed; this page is kept as history.
+> See [FORK_DIVERGENCE.md](FORK_DIVERGENCE.md#retired-2026-10-28-gascity-266).
+
 Companion to [CONNECTION_POOLING.md](CONNECTION_POOLING.md) (the design). This
 covers how to turn pooling on end-to-end, the real-CLI validation numbers, and
 the exact gascity wiring change needed to make it durable.

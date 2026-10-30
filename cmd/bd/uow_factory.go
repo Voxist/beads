@@ -13,85 +13,12 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/doltversion"
-	"github.com/steveyegge/beads/internal/storage"
-	"github.com/steveyegge/beads/internal/storage/dbproxy/pidfile"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/uow"
 )
 
-// newProxiedServerRoutedStore builds a server-mode DoltStorage that connects
-// through the already-running db-proxy (the same proxy newProxiedServerUOWProvider
-// ensured). Proxied-server mode historically only wired the uow provider, which
-// covers `bd create` but leaves the legacy store-based commands (list, ready,
-// stats, update, close, ...) hitting a nil store. Routing a normal server-mode
-// store at the proxy endpoint makes every store-based command work in proxied
-// mode, and — crucially — those connections flow through the proxy's backend
-// pool just like the uow provider's.
-//
-// The proxy terminates the client handshake with skip-auth, so the user and
-// password sent here are irrelevant; root/empty is used. The real backend
-// credentials live in the proxy child (managed) or its inherited env (external).
-func newProxiedServerRoutedStore(ctx context.Context, beadsDir string) (s storage.DoltStorage, err error) {
-	// The journal contract is upstream's and this fork-only constructor is bound
-	// by it: this is the store EVERY store-based command uses in proxied-server
-	// mode (list, ready, stats, update, close), so it mutates beads. Without
-	// activation those mutations would journal nothing while the command
-	// reported success — the one outcome that breaks a consumer's cursor.
-	// ActivateStore passes a non-nil err straight through, so registering the
-	// defer before the argument checks below is safe.
-	defer func() { s, err = activateEventsJournalStore(beadsDir, s, err) }()
-
-	if beadsDir == "" {
-		return nil, fmt.Errorf("newProxiedServerRoutedStore: beadsDir must be set")
-	}
-	rootPath, err := resolveProxiedServerRootPath(beadsDir)
-	if err != nil {
-		return nil, fmt.Errorf("newProxiedServerRoutedStore: resolve root path: %w", err)
-	}
-	pf, err := pidfile.Read(rootPath, proxy.PIDFileName)
-	if err != nil {
-		return nil, fmt.Errorf("newProxiedServerRoutedStore: read proxy endpoint from %s: %w", rootPath, err)
-	}
-	// Split from the error arm above rather than folded into it: on these two
-	// the read SUCCEEDED and err is nil, so a single %w arm rendered
-	// "%!w(<nil>)". This string is not swallowed — it is stored in
-	// routedStoreOpenErr and printed by the S2 requireStore() guard as the
-	// stated reason store-based commands are disabled, so an operator with a
-	// portless pidfile got a formatting artifact instead of a diagnosis.
-	if pf == nil || pf.Port == 0 {
-		return nil, fmt.Errorf("newProxiedServerRoutedStore: proxy pidfile in %s has no listener port; is the db-proxy running?", rootPath)
-	}
-
-	persisted, _ := configfile.Load(beadsDir)
-	database := configfile.DefaultDoltDatabase
-	if persisted != nil {
-		database = persisted.GetDoltDatabase()
-	}
-
-	cfg := &dolt.Config{
-		Path:       beadsDir,
-		BeadsDir:   beadsDir,
-		Database:   database,
-		ServerMode: true,
-		ServerHost: "127.0.0.1",
-		ServerPort: pf.Port,
-		ServerUser: "root",
-		// AutoStart stays false: the proxy owns the backend lifecycle. We must
-		// never try to spawn a dolt server for the proxy's listener port.
-		//
-		// RoutedThroughProxy stops newServerMode from persisting pf.Port (the
-		// ephemeral proxy listener) into .beads/dolt-server.port. That file is
-		// the canonical-server discovery hint; a proxy port written there is
-		// clobbered on the next reconcile and goes stale when the proxy respawns
-		// on a new port, breaking endpoint resolution for any reader that trusts
-		// it.
-		RoutedThroughProxy: true,
-	}
-	return dolt.New(ctx, cfg)
-}
-
-// doltVersionWarnOnce ensures the dolt-version advisory (old/unverifiable
+// doltVersionWarnOnce ensures the dolt-version advisory (unverifiable
 // version) is printed at most once per process, even though
 // resolveAndProbeDolt can run repeatedly against the same resolved binary
 // (retries, multiple UOW providers opened in one command, or bd init
@@ -115,8 +42,11 @@ func doltProbeCachePath() string {
 }
 
 // resolveAndProbeDolt resolves the external dolt binary (env override >
-// sidecar > PATH) and hardened-probes it, printing the version-recommendation
-// advisory (if any) at most once per process via doltVersionWarnOnce.
+// sidecar > PATH) and hardened-probes it. A binary below
+// doltversion.RequiredMin is refused with the probe's *BelowMinimumError,
+// which names the version, the minimum and how to upgrade; one whose version
+// does not parse prints an advisory at most once per process via
+// doltVersionWarnOnce and is used anyway.
 //
 // quiet suppresses the advisory (errors still return). It is a parameter
 // rather than a read of the global quietFlag because bd init defines its own
@@ -157,6 +87,12 @@ func resolveAndProbeDolt(ctx context.Context, errPrefix string, quiet bool) (dol
 	cachePath := doltProbeCachePath()
 	res, err := doltversion.ProbeWithPolicyCached(ctx, doltBin, cachePath, time.Now())
 	if err != nil {
+		if errors.Is(err, doltversion.ErrBelowRequiredMin) {
+			// The binary works; it is too old. The error carries its own
+			// upgrade advice, so the generic install hint would only
+			// repeat it less precisely.
+			return doltBin, fmt.Errorf("%s: %w (source: %s)", errPrefix, err, doltSrc)
+		}
 		if errors.Is(err, context.Canceled) {
 			// The probe was killed because OUR context was canceled (user
 			// hit Ctrl-C, outer operation gave up) — dolt itself was never
@@ -283,7 +219,33 @@ func openProxiedServerUOWProvider(ctx context.Context, beadsDir, databaseOverrid
 	if err != nil {
 		return nil, err
 	}
-	return newSQLServerUOWProvider(ctx, beadsDir, topology, opts...)
+	// This is the one entry point that is proxied-server mode by definition;
+	// the funnel below is shared with `bd serve`'s SERVER-mode provider, which
+	// must not be told it is proxied. The distinction reaches exactly one
+	// thing: a migration-gate refusal whose remedy is `bd dolt pull` has to
+	// say where that pull can be run, because proxied mode refuses it at the
+	// front door (proxy.dolt_pull.unsupported) and server mode does not.
+	return newSQLServerUOWProvider(ctx, beadsDir, topology, proxiedProviderOptions(opts)...)
+}
+
+// proxiedProviderOptions is opts plus uow.WithProxiedServerMode(), built on a
+// fresh slice so the caller's backing array is never written even when it has
+// spare capacity. Extracted (rather than inlined at the call site) so the
+// wiring has something to unit test; see TestProxiedProviderOptions.
+func proxiedProviderOptions(opts []uow.ProviderOption) []uow.ProviderOption {
+	return append(append([]uow.ProviderOption{}, opts...), uow.WithProxiedServerMode())
+}
+
+// serverLogProviderOptions is opts plus uow.WithServerLogRotation() when the
+// server log is bd's default one, built on a fresh slice like
+// proxiedProviderOptions. A custom log (BEADS_PROXIED_SERVER_LOG or the
+// sidecar's log path) is the operator's: bd neither rotates it at proxy start
+// nor retires it on migration (proxiedLogAssets), so both follow isCustomLog.
+func serverLogProviderOptions(opts []uow.ProviderOption, isCustomLog bool) []uow.ProviderOption {
+	if isCustomLog {
+		return opts
+	}
+	return append(append([]uow.ProviderOption{}, opts...), uow.WithServerLogRotation())
 }
 
 // newSQLServerUOWProvider is the single funnel every unit-of-work provider bd
@@ -522,6 +484,7 @@ func resolveServerModeUOWTopologyWithTransportResolver(ctx context.Context, bead
 // the paths it resolves (root, log) are the same ones proxied mode uses because
 // both modes root their server at the same directory.
 func newExternalProxiedServerUOWProvider(ctx context.Context, beadsDir string, topology sqlServerUOWTopology, opts ...uow.ProviderOption) (p uow.UnitOfWorkProvider, err error) {
+	defer func() { p, err = activateVersionedHistoryProvider(ctx, p, err) }()
 	defer func() { p, err = activateEventsJournalProvider(ctx, beadsDir, p, err) }()
 	rootPath, err := resolveProxiedServerRootPath(beadsDir)
 	if err != nil {
@@ -540,6 +503,7 @@ func newExternalProxiedServerUOWProvider(ctx context.Context, beadsDir string, t
 			return nil, fmt.Errorf("newExternalProxiedServerUOWProvider: proxied server log (from env or %s): %w", configfile.ProxiedServerClientInfoFileName, err)
 		}
 	}
+	opts = serverLogProviderOptions(opts, isCustomLog)
 
 	if err := os.MkdirAll(rootPath, config.BeadsDirPerm); err != nil {
 		return nil, fmt.Errorf("newExternalProxiedServerUOWProvider: mkdir %s: %w", rootPath, err)
@@ -562,6 +526,7 @@ func newExternalProxiedServerUOWProvider(ctx context.Context, beadsDir string, t
 }
 
 func newManagedProxiedServerUOWProvider(ctx context.Context, beadsDir string, topology sqlServerUOWTopology, opts ...uow.ProviderOption) (p uow.UnitOfWorkProvider, err error) {
+	defer func() { p, err = activateVersionedHistoryProvider(ctx, p, err) }()
 	defer func() { p, err = activateEventsJournalProvider(ctx, beadsDir, p, err) }()
 	// Resolve and hardened-probe the external dolt binary before spawning
 	// it: an env/sidecar override that is explicitly named but broken
@@ -602,6 +567,7 @@ func newManagedProxiedServerUOWProvider(ctx context.Context, beadsDir string, to
 			return nil, fmt.Errorf("newProxiedServerUOWProvider: proxied server log (from env or %s): %w", configfile.ProxiedServerClientInfoFileName, err)
 		}
 	}
+	opts = serverLogProviderOptions(opts, isCustomLog)
 
 	return uow.NewDoltServerUOWProvider(
 		ctx,

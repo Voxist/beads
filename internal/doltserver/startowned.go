@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -21,16 +22,31 @@ type startedServer struct {
 	exited chan struct{}
 }
 
+// launchedServers holds, by PID, each child launchServer started whose wait
+// has not returned. The wait reaps the child just before it removes the
+// entry, and until a child is reaped its PID cannot name another process.
+var launchedServers sync.Map // int -> *startedServer
+
 func launchServer(cmd *exec.Cmd) (*startedServer, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	s := &startedServer{pid: cmd.Process.Pid, proc: cmd.Process, exited: make(chan struct{})}
+	launchedServers.Store(s.pid, s)
 	go func() {
 		_, _ = s.proc.Wait()
+		launchedServers.CompareAndDelete(s.pid, s)
 		close(s.exited)
 	}()
 	return s, nil
+}
+
+// launchedHere reports whether pid is a dolt sql-server this process launched
+// and has not seen exit. That identifies the server Start recorded without
+// the process list, which a sandbox can refuse (GH#7214).
+func launchedHere(pid int) bool {
+	_, ok := launchedServers.Load(pid)
+	return ok
 }
 
 func (s *startedServer) hasExited() bool {
@@ -142,8 +158,8 @@ const (
 // own startup, which under load takes longer than any fixed grace period, so
 // a greeting only counts once the listener is shown to be the child's: by
 // dolt's ready line in the child's output when its log level emits one, or
-// else by the listening socket belonging to the child's process tree (Linux,
-// via /proc). When the socket is shown to belong to someone else the wait
+// else by the listening socket belonging to the child's process tree (Linux
+// via /proc, darwin via lsof and ps). When the socket is shown to belong to someone else the wait
 // ends at once with ErrPortInUse. Where neither proof is available the
 // greeting decides, as before, unless the log level promises a ready line.
 // Either way a child that exits, or says its port is taken, ends the wait,

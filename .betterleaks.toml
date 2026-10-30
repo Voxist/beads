@@ -89,6 +89,17 @@ useDefault = true
 #     a pinned GitHub Action commit SHA (appTokenActionSHA) and on
 #     `${{ secrets.NAME }}` workflow template expressions. Neither is a
 #     credential.
+#   - Voxist/beads#71, resync to upstream 9c4b3d8ba: five generic-api-key
+#     hits, all from upstream commits, none a credential.
+#     * .github/actions/setup-bazel/cache-rrc-probe.sh (c1ccb728e): the
+#       probe's action key is sha256("cache-rrc-probe: no action has this
+#       key"), a digest chosen to be absent from the action cache.
+#     * scripts/bazel_rrc_test.go (f53010a23): the sha256 pin of the vendored
+#       .github/scripts/rrc-writer-credential.sh, i.e. a content hash.
+#       These two are allowlisted by path AND the exact digest, so a real
+#       secret added to either file later is still caught.
+#     * internal/httpclient/credential{,_source}_test.go (6d21d337a): bearer
+#       token fixtures ("127.0.0.1=tok-env", "from-env", "s3cr3t").
 #
 # Example (uncomment and adapt when actually needed):
 # [[allowlists]]
@@ -101,4 +112,22 @@ useDefault = true
 description = "upstream CI workflow tests: pinned action SHAs and ${{ secrets.* }} template strings, not credentials (Voxist/beads#67)"
 paths = [
   '''^scripts/ci_workflow_test\.go$''',
+]
+
+[[allowlists]]
+description = "upstream content-hash pins: the cache-rrc probe's absent action key and the vendored rrc-writer-credential.sh sha256 (Voxist/beads#71)"
+condition = "AND"
+paths = [
+  '''^\.github/actions/setup-bazel/cache-rrc-probe\.sh$''',
+  '''^scripts/bazel_rrc_test\.go$''',
+]
+regexes = [
+  '''ad12d7a2f1dec188fc1f2c4f5535a4a65eb630fa2f309eca423695e6ec7abee7''',
+  '''021788a724876bd1df7e5c117a4b3e1e60c5b25bb18bca472d61c35a08cb1fac''',
+]
+
+[[allowlists]]
+description = "upstream httpclient credential tests: fixture bearer tokens, not credentials (Voxist/beads#71)"
+paths = [
+  '''^internal/httpclient/credential(?:_source)?_test\.go$''',
 ]
