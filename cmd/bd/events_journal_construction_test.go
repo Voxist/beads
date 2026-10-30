@@ -89,14 +89,20 @@ var qualifiedActivationCalls = map[string]map[string]bool{
 
 // scannedPackages are the directories searched for construction sites: every
 // package that builds a store or provider for the bd binary, plus the standalone
-// embedded-Dolt utility so it is accounted for rather than merely unnoticed.
-// Each maps to the prefix its sites are keyed under.
+// embedded-Dolt utility and the Go SDK's own opens (the repository root), so they
+// are accounted for rather than merely unnoticed. Each maps to the prefix its
+// sites are keyed under.
 var scannedPackages = map[string]string{
 	".":          "",
 	"doctor":     "doctor/",
 	"doctor/fix": "doctor/fix/",
 	"../../internal/storage/embeddeddolt/cmd": "embeddeddolt-cmd/",
+	"../..": "sdk/",
 }
+
+// sdkOpenExemptionReason is the one reason the Go SDK's five opens share. It has
+// to be true of both per-store switches, because the exemption list is shared.
+const sdkOpenExemptionReason = "SDK entry point (library surface, not the bd binary): applies neither per-store switch, the events journal's or versioned history's; the bd binary's factories do"
 
 // constructionExemptions are construction sites that legitimately do NOT
 // activate the events journal, each with a reason. Keyed by
@@ -113,11 +119,13 @@ var scannedPackages = map[string]string{
 // The staleness check below fails if an exemption stops matching a real
 // construction site, so an exemption cannot rot into a permanent excuse.
 var constructionExemptions = map[string]string{
-	// Non-mutating opens. Every arm returns a store that refuses writes
-	// (OpenReadOnly / OpenForPreviewCommand / a ReadOnly server config), so
-	// there is no mutation for a journal row to accompany.
-	"store_factory.go:openNonMutatingStoreFromConfig":   "read-only/preview open: the store refuses writes, so no mutation can go unrecorded",
-	"store_factory_nocgo.go:newReadOnlyStoreFromConfig": "read-only open: the store refuses writes, so no mutation can go unrecorded",
+	// Non-mutating opens. Every built-in arm returns a store that refuses
+	// writes (OpenReadOnly / OpenForPreviewCommand / a ReadOnly server config),
+	// so there is no mutation for a journal row to accompany. The registry arm
+	// may not refuse — the http client's read-only open is writable — but its
+	// writes are applied, and journaled, by the bd serve it dials.
+	"store_factory.go:openNonMutatingStoreFromConfig":   "read-only/preview open: built-in arms refuse writes and the http arm's writes are journaled by its server, so no mutation can go unrecorded",
+	"store_factory_nocgo.go:newReadOnlyStoreFromConfig": "read-only open: built-in arms refuse writes and the http arm's writes are journaled by its server, so no mutation can go unrecorded",
 
 	// Store-open-time reconciliation, which runs BEFORE the command's own store
 	// exists and therefore before any workspace config could be applied to it.
@@ -129,17 +137,6 @@ var constructionExemptions = map[string]string{
 	// Config reads through a throwaway store. GetConfig only; nothing here
 	// mutates a bead.
 	"ado.go:getADOConfigValue": "throwaway store used for a single GetConfig read; no bead mutation is possible through it",
-
-	// FORK DELTA (engdocs/FORK_DIVERGENCE.md): the proxied-server direct-Dolt
-	// escape hatch. Its only three callers are `bd dolt push`, `bd dolt pull`
-	// and `bd dolt commit` (see dolt.go) — raw Dolt VCS transport against the
-	// direct endpoint, never bead mutation through this store's issue API.
-	// A pull's incoming rows arrive as Dolt commits from the remote, and a
-	// commit only seals a working set whose mutations were already journaled by
-	// the store that made them, so there is no unrecorded local mutation here.
-	// The sibling proxied constructor, newProxiedServerRoutedStore, is NOT
-	// exempt: it serves the store-based commands and activates for real.
-	"proxied_direct_sync.go:storeForRawDoltSync": "raw Dolt VCS transport for dolt push/pull/commit against the direct endpoint; no bead mutation flows through it",
 
 	// `bd config apply` / drift detection open a store to read and reconcile the
 	// workspace's Dolt REMOTE configuration. That is workspace state, not bead
@@ -181,6 +178,17 @@ var constructionExemptions = map[string]string{
 	// A standalone developer utility binary, not bd. It has no workspace config
 	// to read and never runs as part of a bd command.
 	"embeddeddolt-cmd/main.go:main": "standalone embeddeddolt debug utility, not the bd binary; no workspace config and no bd command context",
+
+	// The Go SDK's own opens (the repository root's beads package). They are a
+	// library surface that embedders call directly, and they build stores without
+	// applying either per-store switch. They are declared here so that a new SDK
+	// open is noticed rather than missed. Making them apply the switches would
+	// change the library's behavior for every embedder, so it is a separate change.
+	"sdk/beads.go:Open":                        sdkOpenExemptionReason,
+	"sdk/beads.go:OpenFromConfig":              sdkOpenExemptionReason,
+	"sdk/beads.go:OpenGated":                   sdkOpenExemptionReason,
+	"sdk/beads_cgo.go:OpenBestAvailableWith":   sdkOpenExemptionReason,
+	"sdk/beads_nocgo.go:OpenBestAvailableWith": sdkOpenExemptionReason,
 }
 
 func TestEveryStoreConstructionActivatesTheEventsJournal(t *testing.T) {
@@ -244,6 +252,9 @@ func exemptionFor(key string) (exemption, reason string, ok bool) {
 type constructionSite struct {
 	constructors []string
 	activates    bool
+	// activatesVersionedHistory is the same question for the versioned-history
+	// guard, which reuses this scan (see versioned_history_construction_test.go).
+	activatesVersionedHistory bool
 }
 
 // scanStoreConstructionSites parses each scanned package and returns one entry
@@ -373,9 +384,15 @@ func inspectConstructionSite(node ast.Node, imports map[string]string) *construc
 			if qualifiedActivationCalls[path][fun.Sel.Name] {
 				site.activates = true
 			}
+			if qualifiedVersionedHistoryActivationCalls[path][fun.Sel.Name] {
+				site.activatesVersionedHistory = true
+			}
 		case *ast.Ident:
 			if activationCalls[fun.Name] {
 				site.activates = true
+			}
+			if versionedHistoryActivationCalls[fun.Name] {
+				site.activatesVersionedHistory = true
 			}
 		}
 		return true

@@ -20,36 +20,41 @@ The naming is inverted from the usual convention: `origin` is *upstream*, not
 the fork. A bare `git push` on an untracked branch targets upstream. Check
 `git status -sb` before pushing.
 
+## Retired 2026-10-28 (gascity #266)
+
+Gas City retired its `[beads] proxied` opt-in (gascity #266, merged and
+deployed; the live city runs `dolt_mode=server`), so the fork's proxied stack
+was dropped on `refactor/ga-s69mk.3-bd-drop-proxied-stack` (ga-s69mk.17). The
+evidence and commit lists are in the Phase 0 census,
+`gascity/worktrees/converge-20261014-artifacts/census-bd.md`, rows F1, F2 and F5.
+
+- **db-proxy connection pooling** (F1, plus F2 `BEADS_PROXY_IDLE_TIMEOUT`):
+  the session-pooling proxy (`pool.go`, `pooledconn.go`, `mysqlwire.go`),
+  `BEADS_PROXY_POOL_SIZE` and the `db-proxy-child --pool-*` flags are gone;
+  upstream never took #4303, and its `--proxied-server-idle-timeout` replaces
+  the env knob.
+- **proxied-server deploy path** (F5): the routed `DoltStorage`, the
+  `requireStore` nil-store guard, `storeForRawDoltSync`, the
+  `proxied_unsupported` guards, the vp-w7tc port-file fix and the
+  `open_backend.go` routing are gone; bd is back on upstream's proxied mode,
+  which routes through the UOW provider and refuses unsupported operations
+  itself. `ErrStoreIdentityMismatch` (census F6) is a separate row and stays.
+
+[CONNECTION_POOLING.md](CONNECTION_POOLING.md) and
+[CONNECTION_POOLING_DEPLOYMENT.md](CONNECTION_POOLING_DEPLOYMENT.md) are kept
+as history only.
+
 ## Permanent divergence — stays local
 
-Upstream has declined the db-proxy work. It is **not** a resync backlog item and
-should not be re-proposed; carry it indefinitely and merge upstream *around* it.
+### db-proxy log hygiene (census F3)
 
-### db-proxy connection pooling
-
-- `internal/storage/dbproxy/proxy/` — `pool.go`, `pooledconn.go`, `mysqlwire.go`,
-  `endpoint.go`, plus `server.go` / `stats.go` changes and their tests.
-- ~2,800 lines, 14 files.
-- Rationale: multi-agent orchestrators (gascity/gc) fork `bd` per agent
-  operation, so the in-process `*sql.DB` pool never survives the process and
-  there is zero cross-invocation reuse. See
-  [CONNECTION_POOLING.md](CONNECTION_POOLING.md) and
-  [CONNECTION_POOLING_DEPLOYMENT.md](CONNECTION_POOLING_DEPLOYMENT.md).
-- Upstream vehicle was `gastownhall/beads#4303` (authored by `cstar`), which
-  remains a **held-back draft**. Voxist never had its own upstream PR for this.
-
-### proxied-server deploy path
-
-- `open_backend.go`, `internal/storage/storage.go` (`ErrStoreIdentityMismatch`),
-  `internal/storage/uow/*_provider.go` routing, `bd init --proxied-server`,
-  the central nil-store guard, and `storeForRawDoltSync` (direct-endpoint escape
-  hatch for `dolt push` / `pull` / `commit` in proxied mode).
-- Depends on the pooling work above; shares its fate.
-- `gastownhall/beads#4313` (dolt-server.port clobber) was the one piece still
-  open upstream. It was **closed on 2026-08-31** as a draft, blocked behind
-  #4303 and never given the repro recipe maintainers asked for twice. #4303
-  itself is still an open draft. Branch:
-  `fix/proxied-routed-store-portfile-clobber`.
+Lumberjack rotation and gzip for `proxy.log`, the per-connection trace gate
+(`Debug` / `BEADS_PROXY_DEBUG`, `db-proxy-child --debug`), the rate-limited
+disconnect logger and the `.metadata_never_index` Spotlight marker survived the
+2026-10-28 retirement. The disconnect logger (`logSessionError`) has had no
+production caller since then: its only caller was the pooled session path. `TestDbProxyChildProxyOpts_CarriesForkDebug` pins the
+`Debug` field inside upstream's `dbProxyChildProxyOpts`, so a resync that takes
+upstream's one-line `NewProxyServer(dbProxyChildProxyOpts(srv))` keeps it.
 
 ### be-pen9 shared backend (unmerged, fork-only)
 
@@ -312,6 +317,159 @@ against the actual diff before working it.
 Ops-only, never upstreamable: `DEPLOY_BD` install guard, nix `vendorHash`
 recomputation, `prepared-dml-grandfather.txt`.
 
+**All fork CI runs on GitHub-hosted runners, never Blacksmith (Windows and
+macOS since 2026-10-27, Linux since 2026-10-28).** The Voxist org has no
+Blacksmith runners at all. A job on any `blacksmith-*` label gets no runner,
+sits queued until GitHub cancels it at 24 h, and turns its gate red.
+
+- **Windows/macOS.** Upstream #7355 (84390b03a) moved every Windows and macOS
+  job to `blacksmith-*-windows-2025` / `blacksmith-6vcpu-macos-26` for every
+  event (Blacksmith serves fork PRs in the gastownhall org). On
+  Voxist/beads#71 eight such jobs never ran. The fork swaps the labels for
+  `windows-latest` and `macos-latest` (what these jobs used through
+  Voxist/beads#69) in the eleven `runs-on` and matrix `runner` sites of
+  `main.yml` and `pr.yml`.
+- **Linux.** Upstream's "same-repo" expressions pick
+  `blacksmith-*-ubuntu-2404` for push, schedule, dispatch, merge-group and
+  same-repo PR events. A PR from the personal fork is not same-repo, so
+  #71/#73 ran on `ubuntu-latest`. But every push to `main` and every nightly
+  hung on Bazel's `execution mode` job (from 2026-10-06 until this patch). An
+  earlier version of this note wrongly said Voxist had Blacksmith Linux
+  runners. The fork swaps every `blacksmith-*-ubuntu-2404` for
+  `ubuntu-latest` in `bazel.yml`, `pr.yml`, `pr-risk.yml` and
+  `docs-mintlify.yml` (26 sites). The expressions keep their shape, so
+  several read `X && 'ubuntu-latest' || 'ubuntu-latest'`; each line then
+  differs from upstream only in the label, which keeps resync conflicts
+  mechanical.
+- **Tests.** The constants in `scripts/ci_blacksmith_runner_test.go`,
+  `ci_workflow_test.go` and `ci_f7c_advisory_test.go` take the same swap.
+  Four tests that required a Blacksmith runner are fork-adjusted:
+  `TestBazelCacheModeReachesTheRC`, `TestBlacksmithBazelRunnerSizes` (16
+  pytest workers follow mode, not label) and the two `ci_merge_queue_test.go`
+  merge-group checks (the fork has no merge queue). The Blacksmith secret-read
+  guards now find no Blacksmith jobs, which matches the fork having none.
+
+A new upstream job on a Blacksmith label needs the same swap.
+`scripts/fork_runner_policy_test.go` (`TestForkWorkflowsUseNoBlacksmithRunner`)
+fails on any `runs-on` or matrix `runner` line that can name a `blacksmith-*`
+label, so a resync that brings one in goes red in CI instead of hanging. The
+manual equivalent is
+`git grep -nE "^\s*(-\s+)?(runs-on|runner):.*blacksmith-" -- .github`, which
+must print nothing. Comments and job names keep upstream's Blacksmith wording;
+an unanchored grep for `blacksmith-` always matches those.
+
+**Auto-start decisions are workspace-scoped (fork #56/#57).** Production code
+calls `doltserver.IsAutoStartDisabledFor(beadsDir)`, never upstream's global
+`IsAutoStartDisabled()`, which misses a workspace's own
+`dolt.auto-start: false`. The 2026-10-27 resync brought four new global calls
+in through a conflict-free merge: `doltserver/endpoint.go` (`endpointFor`),
+`storage/dolt/store.go` (the port-0 refusal and its remedy text) and
+`cmd/bd/dolt.go` (`externallyManagedFreshStartRefusal`). All four now pass the
+workspace. `scripts/fork_autostart_scope_policy_test.go` (in
+`//scripts:go_sources_test`) fails on any production call to the global
+check, so the next resync cannot reintroduce one silently.
+
+**The fork's own CI runs the Linux Dolt tiers locally (since 2026-10-27).**
+Upstream #7821 (068cdd628) puts a fork repository's own CI in Bazel mode local,
+never rbe-cache: rbe-cache's daily request budget closed it on 2026-10-19,
+largely on fork CI runs. Upstream's mode local also sets `enabled=false`,
+which skips the embedded, integration, proxied, server-storage and cmd-dolt
+tiers, and CI Gate then fails every PR here with `BAZEL_REMOTE has unexpected
+result: not-run-remotely`. Voxist/beads#71 failed that way too, as well as on
+the cancelled Windows/macOS jobs. The fork patch keeps mode local, so nothing
+touches rbe, rbe-cache or the mint, but sets `enabled=true` when
+`FORK_REPO` is true (`bazel.yml`'s decide step). `bazel-gate.sh` accepts
+`local/true` and excuses no Dolt tier in it, so every tier must run and pass;
+each lane's `check_testcases.py` step fails a lane whose shards ran no tests.
+dolt-int, dolt-race and the rbe prewarm stay remote-only and do not run.
+The integration lane is a cold tagged race build without the cache, so fork
+CI is slower. Pinning tests updated: `TestBazelRBEJobDecidesOnce`,
+`TestBazelGateSimulation`, `TestBazelCacheModeReachesTheRC`, and new rows in
+`TestBazelGateDoltTiersCrossCheck`. Do not "fix" this by routing fork CI back
+to rbe-cache.
+
+**The embedded tier is a four-leg matrix (since 2026-10-28).** On one
+GitHub-hosted 4-vCPU runner it took 133 min against a 12.6 min critical path:
+CPU-bound, 488 CPU-min of test actions across ten targets (from the
+lane's CI analytics). That made it the whole PR run's critical path (about
+2 h 14 min). `bazel-embedded` now has four legs, `fail-fast: false`, split by
+target and balanced on those numbers:
+
+- `cmd-a`: `//cmd/bd:bd_embedded_test`
+- `cmd-b`: `//cmd/bd:bd_embedded_part2_test`
+- `storage`: `//internal/storage/embeddeddolt/...`
+- `rest`: `//...` minus the other three, so a new upstream target still runs
+
+Each leg runs `bazel test --config=embedded ... -- $TARGETS` and checks its
+own shard-coverage suites. `TestForkEmbeddedMatrixCoversEveryTarget` pins the
+partition, and the coverage pin checks that the legs' suites together equal
+upstream's list. The job's `result` output is the last leg's; CI Gate still
+fails on any failed leg through `BAZEL`, the whole call's result.
+
+A main-seeded Bazel disk cache (restore on PRs) was measured and set aside.
+The embedded tier's build alone fills a 5.5 GB disk cache (5.4 GB CAS, 10 MB
+action cache). The repo's Actions cache is 10 GB, with 4.5 GB already used.
+An action-cache-only cache does not help: a hit whose outputs are missing
+from the CAS is a miss. It becomes viable only if an org admin raises the
+repository's Actions cache limit.
+
+The legs check shard coverage per leg, and `cmd-a`/`cmd-b` each run half of
+one 100-shard block (`50@0/100`, `50@50/100`). So the upstream-owned
+`tools/bazel/check_shard_coverage.py` gains `--no-tiling` (default off), which
+those two legs pass. It skips only the static tiling check; the exceeds-total
+bound check and every per-shard check still run. That the legs together tile the block is pinned by
+`TestBazelRetiredLanesCheckListedTestsRan`, which compares the legs' suites
+(with `--no-tiling` removed) to upstream's list. Pins adapted for the split:
+`bazelForkEmbeddedTestRun` (the leg's command, used by
+`TestBazelEmbeddedJobRunsEmbeddedTier` and `TestBazelRetiredLanesArePinned`;
+`bazelEmbeddedTestRun` stays upstream's for the proxied and server-storage
+derivations), the anchors of two `TestNogoPolicyRejectsMutations` mutations,
+the per-leg analytics upload name, and a name exemption in
+`TestBazelArtifactNamesUniqueInCallerRuns` for `bazel-embedded-served-testxml`,
+which only the `rest` leg uploads.
+
+Running the tiers locally needed two more fork changes. First, the tier
+timeouts are sized for a GitHub-hosted runner (job/step): embedded 120/110 min
+per matrix leg (legs measured 36 to 44 min; the single-runner tier took 102 and
+127.5 min), cmd-dolt 150/140,
+proxied 135/110 (its capped steps sum to 129: namespaces 1, socat 13, test
+110, analytics 3 + 2), server-storage 120/110. Upstream's
+25-minute steps assume rbe's parallelism, and the first local run of
+server-storage hit that wall without a single test failure.
+`TestBazelDoltServerTiers` now allows up to 135. Second, the proxied lane
+installs `socat`, which the rbe workers carry and the proxied target
+requires (`BEADS_TEST_REQUIRE_SOCAT=1`). The install uses release.yml's
+bounded, retried apt shape and is registered in `aptStepBudgets`.
+The topology matrix's proxied `config show` row is back to upstream's
+WRONG_ANSWER pin since the routed store was retired on 2026-10-28.
+
+The proxied lane also needs two runner adjustments in mode local. First,
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`: Ubuntu
+24.04's AppArmor blocks the unprivileged `unshare --user --net` that
+`tools/bazel/go_test_offline.sh` uses, which failed every
+`bd_managed_local_test` shard in 0.2 s. The wrapper still proves the
+namespace has no outbound network. Second, `--local_test_jobs=2`
+(`BAZEL_LOCAL_TEST_JOBS`, empty in mode remote). Four race-instrumented
+shards at `-test.parallel=4` on one 4-vCPU runner starved `bd serve`'s
+claim retries into `503 busy`.
+`TestProxiedServerServeClaimNext/concurrent_claimants_never_win_the_same_row`
+lost 2 of 6 rows to 503s. No row was ever won twice. The test passes 3/3
+locally in about 1.7 s.
+`TestBazelRetiredLanesArePinned` and `TestBazelDoltServerTiers` carry the
+fork's extra line and steps. The server-storage lane gets the same
+`--local_test_jobs=2`: with four shards at once, a `dolt_server_full_test`
+shard went from about 450 s to its 900 s `-test.timeout`. Known flake in
+mode local: upstream's `TestStart_PortFilePortMovesOutsideSharedMode`
+releases a `freeLoopbackPort` port and reuses it, so another concurrent test
+can take it first (it passes 10/10 alone). Re-run that job rather than
+patching it.
+
+Because the fork sets `enabled=true` in mode local, the rbe job's worker-env
+preflight (the sparse checkout and `tools/rbe/worker-env-sync main`) would
+also run, and a gascity re-pin of `worker-env.txt` would turn every fork PR
+red, for a pin that mode local never uses. Both steps also require
+`mode != 'local'`.
+
 ## The wisps plane rule — resolved into an additive flag
 
 `va-k0e` / `vg-3kn` / `vg-8db`. Closed 2026-08-31. Kept here because the shape of
@@ -459,7 +617,27 @@ Recurring conflicts, roughly in descending pain:
    resync. `scripts/update-nix-vendorhash.sh` left this zone on 2026-09-03:
    #6096 landed the fork's own BSD-sed fix upstream, so the file is
    byte-identical again and only the hash line in `default.nix` conflicts.
-4. `cmd/bd/uow_factory.go`, `cmd/bd/main.go`, `Makefile`.
+4. `cmd/bd/main.go`, `Makefile`.
+5. **Migration gates** — `internal/storage/schema/schema.go` (`MigrateUp`),
+   `internal/storage/embeddeddolt/store.go`, and the override block in
+   `cmd/bd/main.go`. Since 2026-10-14 upstream has its own migration-consent
+   gate in the same spot as the fork's MIGRATION-FREEZE gate. Keep the order
+   freeze, then consent, then body: a frozen workspace must report the freeze,
+   not a "run bd migrate" hint. Upstream's `migrateUpConsented` (the
+   fresh-bootstrap heal path) skips consent but must still check the freeze.
+   In `main.go` the fork's copy of the `--force`/consent block sits *before*
+   the freeze lookup, so drop upstream's later copy and carry over any new
+   `schema.Set*` line it adds.
+6. **CI shard manifests** — `.github/scripts/{embedded-cmd,embedded-storage,
+   proxied-cmd}-test-shards.txt`. Upstream re-shards them wholesale, so never
+   hand-merge them. Take upstream's file, then re-place the fork-only tests
+   with `scripts/ci/gen_*_shard_manifest.py <N> --weights=duration --write`
+   (N is in the file header). There were 7 fork-only tests at the 2026-10-14
+   resync.
+
+Verify a resync's embedded zones with `BEADS_TEST_EMBEDDED_DOLT=1` and `-v`.
+Without that variable every `TestEmbedded*` test SKIPs, and `go test` still
+prints `ok`.
 
 ## Parked, deliberately not carried
 
@@ -532,6 +710,16 @@ None is a tree change you can prepare in advance; all are done per cycle.
    Verified working 2026-09-03 with no nix installed: the Docker fallback ran
    the real build, and #6096 having landed means no stray `default.nix''` is
    produced any more.
+
+   **Check `default.nix`'s `version` line too.** When an upstream release
+   bump lands, the version line can merge WITHOUT a conflict and take
+   upstream's version (the 2026-10-14 and 2026-10-27 resyncs both did:
+   1.3.0, then 1.3.2, on a 1.94.1 fork). `scripts/check-versions.sh` does not
+   cover `default.nix`, so it passes anyway. After the merge,
+   `grep -n '^  version' default.nix` must print the fork's version. If
+   Docker is unavailable for the vendorHash fallback, CI's `Test Nix Flake`
+   prints the right hash on failure ("got: sha256-..."); the go-modules hash
+   depends only on module content, not on the version line.
 
 3. **`make install` cannot succeed in this fork — use `install-force`.** The
    `check-up-to-date` target compares HEAD against `origin/main`, and here

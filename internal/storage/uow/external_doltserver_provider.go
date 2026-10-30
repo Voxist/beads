@@ -13,6 +13,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/server"
+	"github.com/steveyegge/beads/internal/storage/doltutil"
 )
 
 func NewExternalDoltServerUOWProvider(
@@ -63,22 +64,30 @@ func NewExternalDoltServerUOWProvider(
 		return nil, fmt.Errorf("uow: external TLS: %w", err)
 	}
 
+	resolved := applyProviderOptions(opts)
 	ep, err := proxy.GetCreateDatabaseProxyServerEndpoint(absServerRootDir, proxy.OpenOpts{
-		Backend:             proxy.BackendExternal,
-		LogFilePath:         serverLogFilePath,
-		External:            external,
-		IdleTimeout:         idleTimeout,
-		Port:                proxyPort,
-		PoolSize:            proxy.PoolSizeFromEnv(),
-		PoolConnMaxLifetime: proxy.PoolConnMaxLifetimeFromEnv(),
-		BackendUser:         rootUser,
-		Debug:               proxy.DebugFromEnv(false),
+		Backend:       proxy.BackendExternal,
+		LogFilePath:   serverLogFilePath,
+		RotateLogFile: resolved.rotateServerLog,
+		External:      external,
+		IdleTimeout:   idleTimeout,
+		Port:          proxyPort,
+		Debug:         proxy.DebugFromEnv(false),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("uow: get proxy endpoint: %w", err)
 	}
 
-	return openAndInitSchema(ctx, ep, database, rootUser, rootPassword, tlsConfigName, teamServer, expectedProjectID, applyProviderOptions(opts))
+	return openAndInitSchema(ctx, ep, externalBackendAddress(external), database, rootUser, rootPassword, tlsConfigName, teamServer, expectedProjectID, resolved)
+}
+
+// externalBackendAddress names the external server behind the proxy: its
+// socket, or its host and port.
+func externalBackendAddress(external configfile.ExternalDoltConfig) string {
+	if external.Socket != "" {
+		return external.Socket
+	}
+	return doltutil.ServerAddr(external.Host, external.Port)
 }
 
 func registerExternalTLSConfig(external configfile.ExternalDoltConfig) (string, error) {
