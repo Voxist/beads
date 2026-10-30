@@ -15,6 +15,8 @@ go_library(
         "suite_temp.go",
         "testdoltbranch.go",
         "testdoltcommon.go",
+        "testdoltport.go",
+        "testdoltport_windows.go",
         "testdoltreap.go",
         "testdoltserver.go",
         "testdoltserver_windows.go",
@@ -118,6 +120,8 @@ go_test(
         "localdoltserver_test.go",
         "suite_temp_test.go",
         "testdoltbranch_test.go",
+        "testdoltport_integration_test.go",
+        "testdoltport_test.go",
         "testdoltreap_test.go",
         "testdoltserver_env_test.go",
         "testdoltserver_unreachable_test.go",
@@ -126,7 +130,10 @@ go_test(
     data = glob(["testdata/**"]),
     embed = [":testutil"],
     deps = [
+        "//internal/configfile",
+        "//internal/storage/dolt",
         "//internal/storage/doltutil",
+        "//internal/types",
         "@com_github_go_sql_driver_mysql//:mysql",
     ] + select({
         "@rules_go//go/platform:aix": [
