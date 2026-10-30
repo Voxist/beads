@@ -3,7 +3,7 @@ title: Recovery Playbooks
 description: Step-by-step recovery for bd init and bd dolt push/pull refusals, including the primary-key fork playbook
 ---
 
-Last reviewed: 2026-09-27
+Last reviewed: 2026-10-01
 
 Freshness source: `cmd/bd/init.go`, `cmd/bd/init_safety.go`,
 `cmd/bd/init_safety_test.go`, `cmd/bd/init_safety_help.go`, and
@@ -25,6 +25,7 @@ See also: `bd help init-safety`, and
 - [init-force-refused — `bd init --force`/`--reinit-local` refused because origin has Dolt history](#init-force-refused)
 - [init-token-missing — a destructive re-init refused because `--destroy-token` is missing or wrong](#init-token-missing)
 - [init-local-exists — `bd init --reinit-local` refused because local data already exists](#init-local-exists)
+- [init-home-refused — `bd init` refused because the working directory is your home directory](#init-home-refused)
 - [init-missing-server-db — `bd init` refused because the configured server-side database is missing](#init-missing-server-db)
 - [pk-fork-refused — `bd dolt pull`/`push` refused because a table has different primary keys in its common ancestor](#pk-fork-refused)
 - [re-clone-gotchas — two gotchas hit during manual re-clone recovery: damaged stores left inside `data_dir`, and a fresh clone missing clone-local tables](#re-clone-gotchas)
@@ -46,9 +47,11 @@ bd init refuses: remote 'origin' already has Dolt history (refs/dolt/data).
 **Why this happens**
 
 `bd init --force` (or `--reinit-local`) tells `bd` to bypass the local
-data-safety guard. `bd init --from-jsonl` selects a local JSONL export as
-the source. But the remote already has project history. Proceeding would
-create an orphan local Dolt branch with no common ancestor on origin. The
+data-safety guard, and only that guard: neither flag bypasses this refusal
+or the [missing server-side database refusal](#init-missing-server-db).
+`bd init --from-jsonl` selects a local JSONL export as the source. But the
+remote already has project history. Proceeding would create an orphan local
+Dolt branch with no common ancestor on origin. The
 next `bd dolt push` would either fail (no common ancestor) or — worse, if
 force-pushed — destroy the team's data.
 
@@ -209,6 +212,107 @@ re-init won't fix.
 
 ---
 
+## init-home-refused
+
+**Exit code:** `15` (`ExitHomeDirRefused`)
+
+**Symptom**
+
+```
+bd init refuses: /Users/you is your home directory, and it is not itself a git repository.
+  Why: init sets up the directory it runs in as a project: it runs
+       'git init' there unless it finds a repository, and installs agent
+       files ...
+```
+
+**Why this happens**
+
+`bd init` sets up the directory it runs in as a project: it creates a git
+repository there unless it finds one, then writes agent scaffolding next to it:
+`CLAUDE.md`, `AGENTS.md`, `.gitignore`, `.claude/`, `.codex/`, `.cursor/`,
+`.agents/`. Run in your home directory, that turns everything you own into one
+git working tree, and most of those agent files are your agents' user-wide
+settings there: `~/.claude/settings.json` is the file Claude Code reads in every
+project, so bd's hooks would run everywhere. A project is virtually never the
+home directory itself, so `bd init` refuses rather than ask.
+
+The refusal is deliberately narrow. It fires only when **all** of these hold:
+
+- the working directory is exactly your home directory (a subdirectory of home
+  is an ordinary project and is never refused);
+- your home directory is not itself a git repository — if you deliberately
+  track your dotfiles in a repository at your home directory, nothing changes.
+  A home that only sits inside some enclosing repository, or a `GIT_DIR`
+  inherited from the environment, does not count, because init would still
+  write its files into your home;
+- you did not name a beads directory yourself by exporting `BEADS_DIR`. A
+  `BEADS_DIR` that bd reads from a `.beads/.env` it discovered does not count:
+  from your home directory that file is the legacy `~/.beads/.env`.
+
+`--force` and `--reinit-local` do **not** override it. They bypass the local
+data-safety guard, which is a different question from "is this the right
+directory".
+
+**Recovery paths**
+
+Pick the one that matches your intent.
+
+*You meant to initialize a project.* This is almost always the case — the
+working directory was simply not what you thought:
+
+```bash
+cd ~/some-project
+bd init
+```
+
+*You want a beads workspace in a directory you name, without setting up your
+home directory as a project.* Name the beads directory explicitly. Its parent
+directory has to exist first:
+
+```bash
+mkdir -p ~/workspaces/notes
+BEADS_DIR=~/workspaces/notes/.beads bd init
+```
+
+Note this is a **different** init, not the refused one with the guard lifted.
+An explicit `BEADS_DIR` skips the `git init`, and from your home directory
+`bd init` also skips the agent files and the `.gitignore` it would otherwise
+write there (it prints a note saying so). It also treats your home directory
+as outside every repository. If your home sits inside one, such as a dotfiles
+or monorepo checkout above it, init installs no hooks in it, records no
+`beads.role` there, takes no Dolt remote from its origin, and makes no
+bootstrap commit to it. Flags that ask for a change there still make it:
+`--stealth` and `--setup-exclude` add their patterns to that repository's
+`.git/info/exclude`, the interactive `--contributor` wizard records
+`beads.role` in it, and the interactive `--team` wizard can create a sync
+branch in it. Your home directory is not set up as
+a project; the workspace lives in `~/workspaces/notes`. That is the point, but
+it also means you get no agent integration. To install one for every project
+on purpose, use the global form of `bd setup`, for example
+`bd setup claude --global`.
+
+*You really do want your home directory tracked by git and scaffolded.* Make it
+a git repository first, deliberately, and the guard stands aside:
+
+```bash
+cd ~
+git init
+bd init
+```
+
+**How to detect this in a script**
+
+The refusal exits `15` and prints to stderr, so branch on the code rather than
+the text:
+
+```bash
+bd init || case $? in
+  15) echo "wrong directory — cd into the project first" ;;
+esac
+```
+
+---
+
 ## init-missing-server-db
 
 **Symptom**
@@ -224,14 +328,17 @@ issue data behind a new, empty database of the same name.
 
 **What happened**
 
-This workspace is in server mode and `.beads/metadata.json` carries a
-`project_id`, which is written only by a real prior `bd init`. So the project
-was definitely initialized at some point — but its configured database is not
-on the server, or the server could not be reached to confirm.
+This workspace is in server mode and shows evidence of a prior `bd init`:
+`.beads/metadata.json` carries a `project_id`, or (under `--reinit-local` or
+`--force`) a workspace that predates `project_id` still has a local Dolt data
+directory, in which case the message cites that instead of `metadata.json`.
+Yet its configured database is not on the server, or the server could not be
+reached to confirm.
 
-That is a **recovery** situation, not a fresh clone, and the two are otherwise
-indistinguishable from the local filesystem alone: in server mode there is
-normally no local database directory either way. `bd init` used to resolve the
+That is treated as a **recovery** situation, not a fresh clone, and the two are
+otherwise indistinguishable from the local filesystem alone: this project's own
+database directory is absent either way, because it was never created here or
+because it was lost with the local storage. `bd init` used to resolve the
 ambiguity by assuming "fresh clone" and creating the database. When the
 assumption was wrong, the result was a new, empty database sitting at the name
 the real one used to occupy — the 2026-08-11 fleet-wide data loss.
@@ -274,12 +381,34 @@ bd init --recreate-missing --prefix myproject
 by `--force`, `--reinit-local`, a config key, or an environment variable,
 because it authorizes the one thing this guard exists to prevent.
 
+The refusal names `--recreate-missing` but does not print this command: it also
+fires when the server merely could not be reached, so it sends you through
+steps 1 and 2 here instead of handing you a line to paste. See
+[ADR 0002 — Invariant 4](https://github.com/gastownhall/beads/blob/main/engdocs/adr/0002-init-safety-invariants.md).
+
 **Limits worth knowing**
 
-- The guard keys on `project_id`, which was introduced by GH#2372. A workspace
-  initialized before that has no `project_id` and is indistinguishable from a
-  fresh clone, so it **fails open** — `bd init` will still create the database.
-- The same `project_id` is inherited by a **fresh clone**, because
+Whether a workspace meets this refusal depends on two pieces of local
+evidence: whether this project's own database directory
+(`<dolt-data-dir>/<database>/.dolt`) exists, and whether `metadata.json`
+carries a `project_id` (introduced by GH#2372). With the configured database
+missing from the server, or the server unreachable:
+
+| Local Dolt storage | `project_id` | `bd init` | `bd init --reinit-local` / `--force` |
+|---|---|---|---|
+| This project's database directory present | Either | Refused as already initialized, not by this guard | Not this guard; the ordinary re-init path |
+| Data dir present, database directory absent | Present | This refusal | This refusal |
+| Data dir present, database directory absent | Absent | Refused as already initialized, not by this guard | This refusal |
+| No Dolt data dir | Present | This refusal | This refusal |
+| No Dolt data dir | Absent | Proceeds, as for a fresh clone | Proceeds, as for a fresh clone |
+
+Adding `--recreate-missing` lifts every refusal in the last four rows,
+including the third row's "already initialized". It changes nothing in the
+first row, where this project's database is still on local disk. In
+shared-server mode the data dir is machine-global (see below), so the last two
+rows rarely apply there.
+
+- `project_id` is also inherited by a **fresh clone**, because
   `.beads/metadata.json` is git-tracked by default. Cloning a beads-managed
   repo whose server-side database does not exist yet therefore meets this
   refusal rather than a plain first init. It fails in the safe direction —
@@ -290,11 +419,6 @@ because it authorizes the one thing this guard exists to prevent.
   cannot tell "never initialized here" from "initialized here, storage since
   lost"), and why `--recreate-missing` is the permanent resolution path rather
   than a stopgap.
-- The guard applies equally to `bd init`, `bd init --reinit-local` and
-  `bd init --force`. If your workspace predates `project_id` and its local
-  Dolt storage is gone, all three refuse until you pass `--recreate-missing`;
-  a workspace with no local Dolt storage at all is treated as a fresh clone by
-  all three.
 - Server mode only, and shared-server mode counts as server mode — the guard
   tests for *this project's* database directory under the resolved Dolt data
   dir, not for the data dir itself, which in shared mode is the machine-global
@@ -308,7 +432,14 @@ because it authorizes the one thing this guard exists to prevent.
   Keep it there. It was previously assigned next to the guard it gates, which
   is downstream of the proxied dispatch, and the flag was therefore inert on
   that one route while the refusal still told the operator to pass it.
-- `bd bootstrap` has its own separate mode-blind create path.
+- `bd bootstrap` has its own separate create path. When the workspace's own
+  `metadata.json` selects a Dolt server (the server-mode test workspace
+  discovery uses), its init and jsonl-import actions create the database on
+  that server (resolved as later commands resolve it) and write nothing to a
+  database the server already holds; its restore action refuses in server
+  mode before creating anything, and does not restore over a database the
+  server already holds. Elsewhere, including shared-server mode named only
+  by `dolt.shared-server` in a config.yaml, it uses the embedded store.
 
 ---
 
@@ -400,17 +531,20 @@ skipping straight to `bd list`) can hit either of two live gotchas — see
   binary is installed, `bd dolt push`/`bd dolt pull` are gated too, so this must
   happen first. The one exception is the *data-behind* stop — a clone level on
   schema but missing commits the remote has — where `bd dolt pull` **is** the
-  remedy and is allowed through; the gate says so when it fires, and
+  remedy and is allowed through (a proxied-server workspace refuses it, so
+  there the pull runs on the server host); the gate says so when it fires, and
   [Clone behind the remote](/getting-started/upgrading#clone-behind-the-remote)
   has the recipe. Plan for the rule, not the exception.
 - **One designated migrator**: upgrade one machine, let it migrate, then
   `bd dolt push`.
-- **Every other clone adopts, does not pull**: after the migrator pushes, each
-  other clone upgrades the binary and runs `bd bootstrap` to adopt the migrated
-  database. `bd dolt pull` is *refused* while the clone still has pending
-  migrations, so do not rely on it; the "sync before" step above is what
-  preserves these clones' work, because `bd bootstrap` replaces the local
-  database.
+- **Every other clone takes the migrated database, does not migrate**: after
+  the migrator pushes, each other clone runs `bd dolt pull` while still on the
+  *old* binary, then upgrades. Once the new binary is installed that pull is
+  *refused* while the clone has pending migrations, and `bd bootstrap` never
+  replaces an existing database — on its own it reports `Nothing to do.` — so
+  a clone that upgraded first must move its local database aside before
+  `bd bootstrap` can re-clone. The recipe is in
+  [Remote-backed databases and multiple clones](/getting-started/upgrading#remote-backed-databases-and-multiple-clones).
 
 ---
 

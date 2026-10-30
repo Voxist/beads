@@ -9,9 +9,6 @@ go_library(
         "endpoint_unix.go",
         "endpoint_windows.go",
         "force_stop.go",
-        "mysqlwire.go",
-        "pool.go",
-        "pooledconn.go",
         "process_executable_darwin.go",
         "process_executable_linux.go",
         "process_executable_windows.go",
@@ -24,6 +21,7 @@ go_library(
         "unverified_process_linux.go",
         "unverified_process_unsupported.go",
         "unverified_process_windows.go",
+        "upstream_error.go",
     ],
     importpath = "github.com/steveyegge/beads/internal/storage/dbproxy/proxy",
     visibility = ["//:__subpackages__"],
@@ -31,6 +29,7 @@ go_library(
         "//internal/atomicfile",
         "//internal/configfile",
         "//internal/debug",
+        "//internal/doltserver",
         "//internal/fdhygiene",
         "//internal/lockfile",
         "//internal/procid",
@@ -39,6 +38,7 @@ go_library(
         "//internal/storage/dbproxy/server",
         "//internal/storage/dbproxy/util",
         "@com_github_cenkalti_backoff_v4//:backoff",
+        "@com_github_go_sql_driver_mysql//:mysql",
         "@in_gopkg_natefinch_lumberjack_v2//:lumberjack_v2",
         "@org_golang_x_sync//errgroup",
         "@org_golang_x_time//rate",
@@ -74,18 +74,15 @@ go_test(
         "endpoint_spawn_stop_unix_test.go",
         "external_transport_lifecycle_internal_test.go",
         "force_stop_linux_test.go",
-        "multidb_isolation_test.go",
-        "mysqlwire_spike_test.go",
-        "mysqlwire_test.go",
-        "pool_test.go",
-        "proxy_pool_integration_test.go",
         "server_epoch_internal_test.go",
         "server_test.go",
+        "upstream_error_test.go",
         "wedge_guards_test.go",
     ],
     embed = [":proxy"],
     deps = [
         "//internal/configfile",
+        "//internal/doltserver",
         "//internal/procid",
         "//internal/storage/dbproxy/identity",
         "//internal/storage/dbproxy/pidfile",
@@ -118,3 +115,64 @@ filegroup(
 )
 
 # --- end go_srcs ---
+
+# --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
+
+filegroup(
+    name = "repo_doc_files",
+    srcs = glob(
+        [
+            "**/*.md",
+            "**/*.mdx",
+        ],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        allow_empty = True,
+        exclude = [
+            "**/*_test.go",
+            "**/node_modules/**",
+        ],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_go_test_srcs",
+    srcs = glob(
+        ["**/*_test.go"],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_other_files",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "**/*.db",
+            "**/*.exe",
+            "**/*.go",
+            "**/*.md",
+            "**/*.mdx",
+            "**/*.out",
+            "**/*.prof",
+            "**/*.pyc",
+            "**/*.test",
+            "**/__pycache__/**",
+            "**/node_modules/**",
+        ],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+# --- end repo_files ---

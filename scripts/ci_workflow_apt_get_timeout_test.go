@@ -49,17 +49,6 @@ func (b aptStepBudget) loopHeader() string {
 func aptStepBudgets() []aptStepBudget {
 	return []aptStepBudget{
 		{
-			workflow:       "migration-test.yml",
-			job:            "historical-upgrades",
-			step:           "Install test dependencies",
-			updateAttempts: 3,
-			updateTimeout:  120,
-			backoff:        10,
-			installTimeout: 180,
-			installPkgs:    "jq libicu74",
-			capMinutes:     11,
-		},
-		{
 			workflow:       "release.yml",
 			job:            "goreleaser",
 			step:           "Install cross-compilation toolchains and signing tools",
@@ -70,7 +59,32 @@ func aptStepBudgets() []aptStepBudget {
 			installPkgs:    "gcc-mingw-w64-x86-64 gcc-aarch64-linux-gnu osslsigncode",
 			capMinutes:     13,
 		},
+		// FORK (Voxist/beads): the proxied tier's socat install in mode local.
+		{
+			workflow:       "bazel.yml",
+			job:            "bazel-proxied",
+			step:           "Install socat (fork, mode local)",
+			updateAttempts: 3,
+			updateTimeout:  120,
+			backoff:        10,
+			installTimeout: 300,
+			installPkgs:    "socat",
+			capMinutes:     13,
+		},
 	}
+}
+
+// aptStepBudgeted reports whether the step named step in workflowJob ("<workflow> <job>",
+// as TestBazelWorkflowActionsArePinned names it) is a registered, bounded
+// apt-get step (FORK, Voxist/beads). Job and step both match, so a
+// same-named unbounded step in another job is still caught.
+func aptStepBudgeted(workflowJob, step string) bool {
+	for _, b := range aptStepBudgets() {
+		if b.workflow+" "+b.job == workflowJob && b.step == step {
+			return true
+		}
+	}
+	return false
 }
 
 // TestAptGetStepsAreBoundedAndRetried pins the bounded/retried invocations, so

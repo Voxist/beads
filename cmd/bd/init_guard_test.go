@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -435,6 +436,21 @@ func TestInitGuardServerMessage_IncludesTargetIdentity(t *testing.T) {
 			t.Errorf("message must include target identity %q, got:\n%s", want, msg)
 		}
 	}
+
+	// An IPv6 host, configured bare or bracketed, is named as [host]:port, the
+	// address bd dials, not ::1:3309 or [[::1]]:3309.
+	for _, host := range []string{"::1", "[::1]"} {
+		for name, msg := range map[string]string{
+			"initGuardServerMessage":          initGuardServerMessage("custom_db", host, 3309, "custom", "").Error(),
+			"initGuardMissingServerDBMessage": initGuardMissingServerDBMessage("custom_db", host, 3309, "", true).Error(),
+			"bootstrapMissingServerDBRefusal": bootstrapMissingServerDBRefusal("custom_db", bootstrapServerProbeConfig{host: host, port: 3309}.serverLocation(), nil).Error(),
+			"bootstrapMissingServerDBSummary": bootstrapMissingServerDBSummary("custom_db", serverDBProbe{Host: host, Port: 3309}.serverLocation(), errors.New("probe failed")),
+		} {
+			if !strings.Contains(msg, "[::1]:3309") || strings.Contains(msg, "[[::1]]") || strings.Contains(msg, " ::1:3309") {
+				t.Errorf("%s(host %q) must name the server as [::1]:3309, got:\n%s", name, host, msg)
+			}
+		}
+	}
 }
 
 // GH#1111: Regression — safe recovery paths must be suggested before destructive ones.
@@ -458,16 +474,50 @@ func TestInitGuardServerMessage_DiagnosticsBeforeForce(t *testing.T) {
 	}
 }
 
-// be-5up5: 2026-08-11 fleet-wide data loss. In server mode there is NEVER a
-// local dolt/ directory, whether this is a genuine fresh clone or an existing
-// project whose server-side database was lost — doltDirExists==false alone
-// (GH#2433's signal) cannot tell them apart. metadata.json's project_id is
-// only written by a real prior init, so a non-empty project_id here is proof
-// this is an existing project recovering from a missing database, not
-// GH#2433's fresh-clone case (whose fixture carries no project_id — see
-// TestInitGuard_FreshCloneWithMetadataJSON above). init must refuse and
-// point at bd bootstrap, not silently recreate an empty database on the
-// server (the missing-database state that reproduced the 2026-08-11 loss).
+// TestInitGuardMissingServerDBMessage_RefusalTextNoEcho extends ADR 0002
+// Invariant 4 (error-text-no-echo) to the missing-database refusal, which the
+// TestCheckRemoteSafety_*NoEcho family does not reach. The refusal must name
+// --recreate-missing, since that opt-in is the documented way out, but must not
+// spell out a runnable invocation of it: it also fires when the server merely
+// could not be reached, and a one-liner copied from the error skips the
+// diagnosis the message asks for. Both evidence arms are covered, with an empty
+// prefix too, because the guard runs before --prefix is resolved and so sees
+// the raw flag value, which may be "".
+func TestInitGuardMissingServerDBMessage_RefusalTextNoEcho(t *testing.T) {
+	for _, haveProjectID := range []bool{true, false} {
+		for _, prefix := range []string{"myproject", ""} {
+			msg := initGuardMissingServerDBMessage("myproject", "127.0.0.1", 3307, prefix, haveProjectID).Error()
+			for _, line := range strings.Split(msg, "\n") {
+				if strings.Contains(line, "--recreate-missing") &&
+					(strings.Contains(line, "bd init") || strings.Contains(line, "--prefix")) {
+					t.Errorf("haveProjectID=%v prefix=%q: refusal spells out a runnable --recreate-missing invocation %q:\n%s",
+						haveProjectID, prefix, line, msg)
+				}
+			}
+			if !strings.Contains(msg, "--recreate-missing") {
+				t.Errorf("haveProjectID=%v prefix=%q: refusal must still name the --recreate-missing opt-in:\n%s",
+					haveProjectID, prefix, msg)
+			}
+			if !strings.Contains(msg, "bd help init-safety") {
+				t.Errorf("haveProjectID=%v prefix=%q: refusal does not point to 'bd help init-safety':\n%s",
+					haveProjectID, prefix, msg)
+			}
+		}
+	}
+}
+
+// be-5up5: 2026-08-11 fleet-wide data loss. With no local Dolt storage for
+// this project, the filesystem cannot tell a genuine fresh clone from an
+// existing project whose server-side database was lost — doltDirExists==false
+// (GH#2433's signal) is true of both. A non-empty project_id in metadata.json
+// is taken as evidence of a prior init, so this is treated as an existing
+// project recovering from a missing database, not GH#2433's fresh-clone case
+// (whose fixture carries no project_id — see
+// TestInitGuard_FreshCloneWithMetadataJSON above; ADR 0004 records why that
+// signal is kept despite clones inheriting it). init must refuse and name a
+// restore path rather than bd bootstrap, and must not silently recreate an
+// empty database on the server (the state that reproduced the 2026-08-11
+// loss).
 func TestInitGuard_ExistingProjectMissingServerDB_Refuses(t *testing.T) {
 	testutil.RequireDoltBinary(t)
 
@@ -568,7 +618,7 @@ func TestInitGuard_ExistingProjectMissingServerDB_RecreateMissingAllows(t *testi
 		return data
 	}
 
-	t.Run("server_reachable_db_missing (init.go:2566)", func(t *testing.T) {
+	t.Run("server_reachable_db_missing", func(t *testing.T) {
 		testutil.RequireDoltBinary(t)
 
 		oldServerMode := serverMode
@@ -613,7 +663,7 @@ func TestInitGuard_ExistingProjectMissingServerDB_RecreateMissingAllows(t *testi
 		}
 	})
 
-	t.Run("server_unreachable (init.go:2578)", func(t *testing.T) {
+	t.Run("server_unreachable", func(t *testing.T) {
 		oldServerMode := serverMode
 		serverMode = true
 		defer func() { serverMode = oldServerMode }()
@@ -1088,11 +1138,14 @@ func TestInitGuard_ExistingProjectMissingServerDB_DataDirPresent_Refuses(t *test
 // TestInitGuard_RecreateMissing_ReachesOptIn_DataDirPresent is the blocker
 // itself: four surfaces (the --recreate-missing flag help, `bd help
 // init-safety`, docs/recovery/init-safety.md and the guard's own refusal text)
-// tell the operator to run `bd init --recreate-missing --prefix <p>`. With the
+// told the operator to run `bd init --recreate-missing --prefix <p>`. With the
 // data directory present, that command could not reach its own opt-in and
 // exited 1 with the false "already initialized" message — so the documented
 // recovery was a dead end, and the only thing that worked (--reinit-local
-// --recreate-missing) is named nowhere.
+// --recreate-missing) was named nowhere. The refusal text has since stopped
+// spelling the command out (it names the flag and routes to `bd help
+// init-safety`; see TestInitGuardMissingServerDBMessage_RefusalTextNoEcho),
+// but the other three surfaces still document it.
 func TestInitGuard_RecreateMissing_ReachesOptIn_DataDirPresent(t *testing.T) {
 	oldServerMode := serverMode
 	serverMode = true

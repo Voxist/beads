@@ -43,12 +43,15 @@ func ValidateCountGroup(group issueops.CountGroup) (string, error) {
 // pinned by a golden-style test comparing this builder's output against
 // BuildListFilter's for the same request (count_test.go, GH#4387).
 //
-// cfg supplies the workspace's infra vocabulary. It is read on EVERY request
-// that names a type, not only under IncludeInfra — naming an infra type decides
-// the plane and the ephemeral narrowing below, exactly as it does in
-// BuildListFilter. A zero ListConfig falls back to the DEFAULT infra set, which
-// is wrong for any workspace that configured types.infra, so both counters must
-// load it whenever IssueType is set (storecounter.filter, uow.countFilter).
+// cfg supplies the workspace's infra vocabulary and its custom status names.
+// It is read on EVERY request that names a type, not only under IncludeInfra —
+// naming an infra type decides the plane and the ephemeral narrowing below,
+// exactly as it does in BuildListFilter — and whenever ExcludeStatus is
+// non-empty, since the exclusion is validated against the workspace's
+// statuses. A zero ListConfig falls back to the DEFAULT infra set and the
+// built-in statuses only, which is wrong for any workspace that configured
+// either, so both counters must load it in all three cases
+// (storecounter.filter, uow.countFilter).
 func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilter, error) {
 	filter := types.IssueFilter{
 		TitleSearch:         in.TitleSearch,
@@ -125,10 +128,59 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 	// in the wisps table with Ephemeral=false, and a nil Ephemeral merges both
 	// tables. Without this, `--include-infra` — which does set it — would make
 	// the count go DOWN, which is not a thing an "include" flag may do.
-	if in.IssueType != "" && cfg.IsInfra(in.IssueType) {
+	//
+	// IncludeEphemeral lifts the narrowing, as it does in BuildListFilter: it
+	// promises the durable answer PLUS the plane, never the plane instead, so
+	// the durable rows of an infra type (a promoted wisp, a retyped issue) are
+	// counted along with its wisps.
+	if in.IssueType != "" && cfg.IsInfra(in.IssueType) && !in.IncludeEphemeral {
 		ephemeral := true
 		filter.Ephemeral = &ephemeral
 	}
+
+	// ParentID and NoParent are refused together, matching `bd list`'s CLI
+	// refusal of the same combination (cmd/bd/list_input.go) with the same
+	// wording — the role raises it as ErrValidation so a caller reaching this
+	// builder from any front door (HTTP, proxied CLI, a future client) gets
+	// the same refusal the primary CLI's flag parser gives, rather than the
+	// role silently answering the empty intersection.
+	if in.ParentID != "" && in.NoParent {
+		return types.IssueFilter{}, fmt.Errorf("--parent and --no-parent are mutually exclusive%.0w", issueops.ErrValidation)
+	}
+	if in.ParentID != "" {
+		parentID := in.ParentID
+		filter.ParentID = &parentID
+	}
+	if in.NoParent {
+		filter.NoParent = true
+	}
+
+	// ExcludeTypes is appended to, not assigned: applyCountIncludeInfra (below)
+	// contributes its own "gate" exclusion, and the two sets must compose
+	// rather than one silently discarding the other, exactly as
+	// BuildListFilter's ExcludeTypes and applyTypeSuppressions compose.
+	for _, raw := range in.ExcludeTypes {
+		for _, t := range strings.Split(raw, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				filter.ExcludeTypes = append(filter.ExcludeTypes, types.IssueType(utils.NormalizeIssueType(t)))
+			}
+		}
+	}
+
+	// ExcludeStatus takes names as written but — unlike Status and IssueType
+	// above — IS validated against the workspace vocabulary (built-in statuses
+	// plus cfg's custom ones, the same set ApplyStatusFilter checks in
+	// list.go). An exclusion list is built by hand from a status name, so a
+	// misspelled entry here would silently exclude nothing and OVERCOUNT
+	// rather than undercount, which is a worse failure mode than the
+	// match-nothing treatment Status and IssueType accept above — so a typo
+	// is ErrValidation instead.
+	excluded, err := ParseExcludeStatus(in.ExcludeStatus, cfg.CustomStatusNames())
+	if err != nil {
+		return types.IssueFilter{}, err
+	}
+	filter.ExcludeStatus = append(filter.ExcludeStatus, excluded...)
 
 	if in.IncludeInfra {
 		applyCountIncludeInfra(&filter, in.IssueType)
@@ -150,7 +202,8 @@ func BuildCountFilter(in issueops.CountRequest, cfg ListConfig) (types.IssueFilt
 //   - gate beads are excluded unless requested via --type gate.
 //
 // Routing a named infra type to the ephemeral tier is not this function's: it
-// happens in BuildCountFilter for every count, with or without IncludeInfra.
+// happens in BuildCountFilter for every count, with or without IncludeInfra,
+// and IncludeEphemeral lifts it there on both paths.
 //
 // A count without IncludeInfra never calls this. It keeps its historical
 // durable-only semantics unless IncludeEphemeral admits the wisps tier, or
@@ -169,4 +222,29 @@ func applyCountIncludeInfra(filter *types.IssueFilter, issueType string) {
 	// into BuildCountFilter, because the default path needs it too. Setting it
 	// again here would be a no-op with the same value; leaving it out keeps one
 	// writer for the field.
+}
+
+// ParseExcludeStatus reads a caller's status exclusion list — the count's and
+// the listing's ExcludeStatus, one rule for both — into the statuses it names.
+// Entries may be comma-separated and are trimmed; blanks are skipped. Each
+// name IS validated against the workspace vocabulary (built-in statuses plus
+// customStatusNames): a misspelled exclusion would silently exclude nothing
+// and answer a WIDER set, so a typo is ErrValidation instead.
+func ParseExcludeStatus(raw []string, customStatusNames []string) ([]types.Status, error) {
+	var out []types.Status
+	for _, entry := range raw {
+		for _, s := range strings.Split(entry, ",") {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			status := types.Status(s)
+			if !status.IsValidWithCustom(customStatusNames) {
+				return nil, fmt.Errorf("invalid exclude-status %q (valid: %s)%.0w",
+					s, ValidStatusList(customStatusNames), issueops.ErrValidation)
+			}
+			out = append(out, status)
+		}
+	}
+	return out, nil
 }

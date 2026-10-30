@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-09-16.
+Accepted — 2026-10-01, landed with #5791 (proposed 2026-09-16).
 
 Extends [ADR 0002](0002-init-safety-invariants.md), which established the
 `bd init` safety invariants and the scope-bound `--force` / `--reinit-local`
@@ -63,8 +63,9 @@ observation either way. There is no purely-local, low-friction fix.
 
 The only code that creates a local `<dolt-data-dir>/<database>/.dolt` is
 `doltserver.Start()` (via `ensureDoltInit`), called exclusively from
-local-server-management sites. None reaches a remote host. So where
-`isRemoteServerHost(host)` is true (`internal/doltserver/physical_root.go`),
+local-server-management sites. None reaches a server bd does not run. So where
+`configfile.BdRunsServerAt(host)` is false (`internal/configfile/dolt_host.go`,
+applied in `internal/doltserver/physical_root.go`),
 the fine-grained probe is **permanently** silent — not only at fresh-clone
 time but for the life of that workspace. The probe is a sound partial answer,
 not a complete replacement.
@@ -133,7 +134,10 @@ would need new mechanism for no safety gain.
   pre-GH#2372 workspace whose local database was lost was protected under
   plain `bd init` but waved through under `--reinit-local` / `--force` — the
   flags an operator reaches for in a panic were the weaker path.
-- `checkExistingBeadsDataAt` does not change.
+- `checkExistingBeadsDataAt` needs no further change for this decision. The
+  probe fix described under Context, which landed in the same PR (#5791),
+  already gave it the Tier 1 probe ahead of `project_id` and the
+  coarse-directory permit condition.
 - The fresh-clone false positive (GH#2433) remains by design for the cells
   where it is unavoidable.
 - Both guards cite this ADR, so the question stops being re-litigated each
@@ -167,6 +171,7 @@ would need new mechanism for no safety gain.
   `guardMissingServerDatabaseAt`.
 - Guard matrix: `cmd/bd/init_guard_test.go`.
 - Operator-facing limits: `docs/recovery/init-safety.md`.
-- Host locality predicate: `isRemoteServerHost`,
+- Host ownership predicate: `configfile.BdRunsServerAt`,
+  `internal/configfile/dolt_host.go`, applied in
   `internal/doltserver/physical_root.go`.
 - Prior init-safety decisions: [ADR 0002](0002-init-safety-invariants.md).

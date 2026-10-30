@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"github.com/steveyegge/beads/internal/gitenv"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/remotecache"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/tracker"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/issueops"
@@ -284,11 +286,21 @@ var configSetCmd = &cobra.Command{
 		if err != nil {
 			return HandleError("%v", err)
 		}
+		// Per-key validation that needs the store rather than the key alone: turning
+		// versioned history on refuses, writing nothing, while any issue that
+		// participates in history, or any template, holds a value a version could not
+		// record. The store is open here, on whichever route this is.
+		if err := guardVersionedHistorySwitch(rootCtx, key, value); err != nil {
+			return HandleError("%v", err)
+		}
 		result, err := settings.SetSetting(rootCtx, issueops.SetSettingRequest{Key: key, Value: value})
 		if err != nil {
 			return HandleError("setting config: %v", err)
 		}
 		noteDirectConfigWrite()
+		if err := commitConfigWrite(rootCtx, store, "config set"); err != nil {
+			return HandleError("%v", err)
+		}
 
 		if jsonOutput {
 			if err := outputJSON(map[string]string{
@@ -332,6 +344,22 @@ type secretRowCleanup struct {
 	present bool // a row was there when we read it
 	removed bool
 	err     error
+	// commitErr is a failed Dolt commit of a delete that did land. It is a
+	// fourth thing to tell the user, not a failed removal: the row is gone from
+	// the working set, but HEAD, which is what `bd dolt push` publishes, still
+	// carries it until something commits the delete (GH#4078). After
+	// storage.ErrCommitIndeterminate the commit may have landed after all, so
+	// the report says the removal may not be committed rather than that it is
+	// not (see commitIndeterminate).
+	commitErr error
+}
+
+// commitIndeterminate reports whether commitErr leaves the delete's commit
+// unknown rather than failed: the store marks an error whose outcome may be
+// unknown, such as a connection lost during DOLT_COMMIT, with
+// storage.ErrCommitIndeterminate. `bd dolt commit` is the remedy either way.
+func (c secretRowCleanup) commitIndeterminate() bool {
+	return errors.Is(c.commitErr, storage.ErrCommitIndeterminate)
 }
 
 // describe writes the database half of the report. It says nothing at all for
@@ -342,6 +370,12 @@ func (c secretRowCleanup) describe(key, location string) {
 	case c.removed:
 		fmt.Printf("Also removed a stored %s row from the database, left by a bd that predates the key moving to %s.\n", key, location)
 		fmt.Printf("⚠ Rotate this credential: the row was replicated to every Dolt remote this workspace pushed to, and deleting it here does not unpublish it.\n")
+		switch {
+		case c.commitIndeterminate():
+			fmt.Fprintf(os.Stderr, "⚠ The removal may not be committed (%v): if it is not, HEAD still carries the row and `bd dolt push` keeps publishing it. Run `bd dolt commit` to be sure.\n", c.commitErr)
+		case c.commitErr != nil:
+			fmt.Fprintf(os.Stderr, "⚠ The removal is not committed (%v): HEAD still carries the row and `bd dolt push` keeps publishing it until `bd dolt commit` records the delete.\n", c.commitErr)
+		}
 	case c.err != nil && c.present:
 		// The one case that is not a maybe: the read found the row and the
 		// delete failed, so bd knows a live credential is still in the table.
@@ -355,8 +389,18 @@ func (c secretRowCleanup) describe(key, location string) {
 // jsonFields carries the same three-way distinction to machine consumers.
 // database_row_removed is always present for a secret key so a script can tell
 // "nothing leaked" from "the field is missing because bd is older".
+// database_commit_indeterminate qualifies database_commit_failed rather than
+// replacing it, so a script that checks only database_commit_failed never takes
+// a delete that may be uncommitted, and a credential HEAD may still publish,
+// for a committed one.
 func (c secretRowCleanup) jsonFields(payload map[string]interface{}) {
 	payload["database_row_removed"] = c.removed
+	if c.commitErr != nil {
+		payload["database_commit_failed"] = c.commitErr.Error()
+		if c.commitIndeterminate() {
+			payload["database_commit_indeterminate"] = true
+		}
+	}
 	switch {
 	case c.err != nil && c.present:
 		payload["database_row_present"] = true
@@ -371,6 +415,10 @@ func (c secretRowCleanup) jsonFields(payload map[string]interface{}) {
 // goes on stderr with that error rather than to stdout, which `--json` owns.
 func (c secretRowCleanup) rowNote(key string) string {
 	switch {
+	case c.removed && c.commitIndeterminate():
+		return fmt.Sprintf("\nA stored %s row WAS removed from the database, but the removal may not be committed (%v); run `bd dolt commit` to be sure, and rotate that credential — it was replicated to every Dolt remote this workspace pushed to.", key, c.commitErr)
+	case c.removed && c.commitErr != nil:
+		return fmt.Sprintf("\nA stored %s row WAS removed from the database, but the removal is not committed (%v); run `bd dolt commit`, and rotate that credential — it was replicated to every Dolt remote this workspace pushed to.", key, c.commitErr)
 	case c.removed:
 		return fmt.Sprintf("\nA stored %s row WAS removed from the database; rotate that credential — it was replicated to every Dolt remote this workspace pushed to.", key)
 	case c.err != nil && c.present:
@@ -467,10 +515,16 @@ func unsetLeakedSecretRow(key string) secretRowCleanup {
 		return secretRowCleanup{err: err}
 	}
 	present, removed, err := removeStoredSecretRow(rootCtx, settings, key)
+	cleanup := secretRowCleanup{present: present, removed: removed, err: err}
 	if removed {
 		noteDirectConfigWrite()
+		// Commit the delete like any other config write (GH#4078): until it is
+		// committed, HEAD still holds the credential and every `bd dolt push`
+		// keeps publishing it. A failure is reported, not returned — the delete
+		// itself landed, and the YAML unset is the command's contract.
+		cleanup.commitErr = commitConfigWrite(rootCtx, store, "config unset")
 	}
-	return secretRowCleanup{present: present, removed: removed, err: err}
+	return cleanup
 }
 
 // removeStoredSecretRow deletes key's row, reporting whether one was there and
@@ -831,9 +885,10 @@ func runConfigUnsetYamlOnly(key string) error {
 	var trackedValue string
 	var clearedTracked, clearedLocal bool
 	if config.IsUserGlobalKey(key) {
-		unsetErr = config.UnsetUserYamlConfig(key)
+		// The user-global file is the only one, so "changed" is the whole
+		// answer; it is reported as clearedLocal to share the branches below.
+		clearedLocal, unsetErr = config.UnsetUserYamlConfig(key)
 		location = config.UserConfigYamlDisplayPath()
-		clearedLocal = true // user-global has one file; nothing to disambiguate
 	} else {
 		// A machine-local key can live in BOTH the sidecar and the tracked
 		// config.yaml, so the fork uses the reporting variant to learn which
@@ -851,7 +906,9 @@ func runConfigUnsetYamlOnly(key string) error {
 	// happen: a key inside a YAML flow mapping is out of the line-based
 	// remover's reach, and a key that was never set has nothing to remove.
 	// Both used to print success plus a config_side_effects consequence.
+	notSetIn := location
 	if config.IsMachineLocalKey(key) {
+		notSetIn = config.LocalConfigFileName + " or config.yaml"
 		switch {
 		case clearedLocal && clearedTracked:
 			location = config.LocalConfigFileName + " and config.yaml"
@@ -863,15 +920,24 @@ func runConfigUnsetYamlOnly(key string) error {
 	}
 
 	if !clearedLocal && !clearedTracked {
+		// The secret-row cleanup ran regardless of the YAML outcome, so its
+		// result is reported on this branch too.
 		if jsonOutput {
-			return outputJSON(map[string]interface{}{
-				"key":     key,
-				"removed": false,
-				"reason":  "not set in config.local.yaml or config.yaml, or defined inside a YAML flow mapping that must be edited by hand",
-			})
+			payload := map[string]interface{}{
+				"key":      key,
+				"location": "",
+				"removed":  false,
+				"changed":  false,
+				"reason":   "not set in " + notSetIn + ", or defined inside a YAML flow mapping that must be edited by hand",
+			}
+			if config.IsSecretKey(key) {
+				cleanup.jsonFields(payload)
+			}
+			return outputJSON(payload)
 		}
-		fmt.Printf("%s was not removed: it is not set in %s or config.yaml.\n", key, config.LocalConfigFileName)
+		fmt.Printf("%s was not removed: it is not set in %s.\n", key, notSetIn)
 		fmt.Printf("  (a key written inside a flow mapping, e.g. `dolt: {mode: server}`, must be edited by hand)\n")
+		cleanup.describe(key, notSetIn)
 		return nil
 	}
 
@@ -880,6 +946,7 @@ func runConfigUnsetYamlOnly(key string) error {
 			"key":      key,
 			"location": location,
 			"removed":  true,
+			"changed":  true,
 		}
 		// A machine-local unset can touch BOTH files. Reporting only the
 		// sidecar told a scripted caller -- this repo's own tooling among them
@@ -901,6 +968,11 @@ func runConfigUnsetYamlOnly(key string) error {
 		}
 		cleanup.describe(key, location)
 	}
+	// Reached only after a real write: the no-op branch returned above. Every
+	// hint in checkConfigUnsetSideEffects is phrased in the completed past
+	// tense ("Backup config removed...") and most hand the operator a
+	// follow-up command, so printing them on a no-op contradicted the line
+	// just printed. The hint goes to stderr, so --json does not suppress it.
 	printConfigSideEffects(checkConfigUnsetSideEffects(key))
 	return nil
 }
@@ -958,15 +1030,48 @@ var configUnsetCmd = &cobra.Command{
 			return HandleError("deleting config: %v", err)
 		}
 		noteDirectConfigWrite()
+		if err := commitConfigWrite(rootCtx, store, "config unset"); err != nil {
+			return HandleError("%v", err)
+		}
+
+		// Clear the config.yaml layer unconditionally and report what the
+		// write actually did. Pre-checking with GetYamlConfig would read
+		// viper's *merged* value - SetDefault values and AutomaticEnv
+		// included - so a key with a non-empty default (no-hooks, json,
+		// events-journal-retain-days, ...) looked present in config.yaml even
+		// in a workspace with no config.yaml at all. That produced a more
+		// specific false claim than the message this fix removed, and, with no
+		// project config.yaml, failed the command after the database row was
+		// already gone.
+		//
+		// A config.yaml the unset refuses to edit (a flow-style mapping, a
+		// block value) is reported as exactly that: any database row is
+		// already gone, but the key is still effective from the file, so this
+		// still fails. "Any": UnsetSettingResult cannot say whether a row
+		// existed, since the storage seam discards the affected-row count.
+		location := "database"
+		yamlCleared, err := config.UnsetYamlConfig(result.Key)
+		// A workspace with no project config.yaml has no YAML layer to clear, so
+		// the database write above is the whole unset and this succeeds - that is
+		// the case that used to fail the command after the row was already gone.
+		// A config.yaml that exists and refused the edit is the opposite: the key
+		// is still effective from the file, so that still fails.
+		if err != nil && !errors.Is(err, config.ErrNoProjectConfigYaml) {
+			return HandleError("%s is still set in config.yaml (any database row was removed): %v", result.Key, err)
+		}
+		if yamlCleared {
+			location = "database, config.yaml"
+		}
 
 		if jsonOutput {
 			if err := outputJSON(map[string]string{
-				"key": result.Key,
+				"key":      result.Key,
+				"location": location,
 			}); err != nil {
 				return err
 			}
 		} else {
-			fmt.Printf("Unset %s\n", result.Key)
+			fmt.Printf("Unset %s (in %s)\n", result.Key, location)
 		}
 		printConfigSideEffects(checkConfigUnsetSideEffects(result.Key))
 		return nil
@@ -1191,6 +1296,15 @@ Examples:
 					return HandleError("%v", err)
 				}
 			}
+			// The pre-enable check `bd config set` makes: turning versioned history
+			// on refuses while any issue that participates in history, or any
+			// template, holds a value a version could not record.
+			// This verb writes the same setting through a loop of its own, so it
+			// makes the check itself, here and before any pair is written: a refusal
+			// stores nothing from the batch.
+			if err := guardVersionedHistorySwitch(rootCtx, p.key, p.value); err != nil {
+				return HandleError("%v", err)
+			}
 		}
 
 		var yamlPairs, gitPairs, dbPairs []kvPair
@@ -1270,6 +1384,10 @@ Examples:
 					}
 				}
 				commandDidWrite.Store(true)
+				// One scoped commit for the whole batch, not one per key.
+				if err := commitConfigWrite(rootCtx, store, "config set-many"); err != nil {
+					return HandleError("%v", err)
+				}
 			}
 		}
 
@@ -1337,7 +1455,7 @@ var recognizedConfigPrefixes = []string{
 	"status.", "types.", "doctor.suppress.", "routing.", "sync.", "git.",
 	"directory.", "repos.", "external_projects.", "validation.",
 	"lint.", "hierarchy.", "ai.", "backup.", "federation.", "metrics.",
-	"agent.", "claim.", "storage-class.",
+	"agent.", "claim.", "storage-class.", "versioned-history.",
 }
 
 // validateStorageClassConfig validates a storage-class.<type> per-type
@@ -1394,6 +1512,11 @@ var recognizedConfigKeys = map[string]bool{
 	"auto_compact_enabled": true, "schema_version": true,
 	"output.title-length": true,
 	"prime.max-memories":  true, "prime.max-memory-chars": true,
+	"prime.disabled": true,
+	// Opt-in ceiling on the persistent-memory corpus, enforced by `bd
+	// remember` (0 = off). Yaml-only for the same reason the prime caps are:
+	// it is read through viper, so a DB-backed write would never be seen.
+	"memories.budget-chars": true,
 	// The events-journal family. All four are startup settings that land in
 	// config.yaml (config.YamlOnlyKeys), and every one of them is documented as
 	// a `bd config set` invocation — including the auto-prune opt-out, where an

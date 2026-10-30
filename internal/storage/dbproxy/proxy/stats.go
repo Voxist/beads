@@ -1,67 +1,29 @@
 package proxy
 
-import (
-	"sync"
-	"sync/atomic"
-)
+import "sync"
 
 type Counters struct {
-	ListenAndServeCalls  int64
-	BackendStartCalls    int64
-	BackendStopCalls     int64
-	IdleTimeouts         int64
-	SignalsReceived      int64
-	AcceptCalls          int64
-	AcceptErrors         int64
-	BackendDialAttempts  int64
-	BackendDialSuccess   int64
-	BackendDialErrors    int64
-	HandledConns         int64
-	BytesClientToBackend int64
-	BytesBackendToClient int64
-
-	// Pool counters (session-pooling proxy). PoolHit: a borrow served by a
-	// warm idle connection. PoolMiss: a borrow that had to dial+authenticate
-	// a new backend. PoolDial​Errors: failed dial/handshake. PoolResets /
-	// PoolResetErrors: COM_RESET_CONNECTION outcomes on return. PoolDead:
-	// idle connection failed its liveness check and was discarded.
-	// PoolRetires: connection closed due to lifetime/idle-cap/transient.
-	PoolHits        int64
-	PoolMisses      int64
-	PoolDialErrors  int64
-	PoolResets      int64
-	PoolResetErrors int64
-	PoolDead        int64
-	PoolRetires     int64
-
-	// BackendDialConcurrentPeak (S3f) is the high-water mark of simultaneous
-	// in-flight backend dials. It is the direct indicator of the wedge this
-	// change set defends against: under the bound (S3a SetLimit=poolSize) it
-	// should never exceed poolSize. An operator watching this gauge climb
-	// toward @@max_connections has early warning before saturation.
-	BackendDialConcurrentPeak int64
+	ListenAndServeCalls int64
+	BackendStartCalls   int64
+	BackendStopCalls    int64
+	IdleTimeouts        int64
+	SignalsReceived     int64
+	AcceptCalls         int64
+	AcceptErrors        int64
+	BackendDialAttempts int64
+	BackendDialSuccess  int64
+	BackendDialErrors   int64
+	// UpstreamErrorsReported counts connections answered with the
+	// upstream-outage ERR packet instead of a bare close.
+	UpstreamErrorsReported int64
+	HandledConns           int64
+	BytesClientToBackend   int64
+	BytesBackendToClient   int64
 }
 
 type Stats struct {
-	mu           sync.Mutex
-	counters     Counters
-	dialInFlight atomic.Int64 // current simultaneous backend dials (S3f)
-}
-
-// DialBegin records the start of a backend dial, updates the concurrent-dial
-// peak gauge, and returns a function that must be called (defer) when the dial
-// completes. Safe on a nil *Stats.
-func (s *Stats) DialBegin() func() {
-	if s == nil {
-		return func() {}
-	}
-	cur := s.dialInFlight.Add(1)
-	s.update(func(c *Counters) {
-		if cur > c.BackendDialConcurrentPeak {
-			c.BackendDialConcurrentPeak = cur
-		}
-	})
-	return func() { s.dialInFlight.Add(-1) }
+	mu       sync.Mutex
+	counters Counters
 }
 
 func (s *Stats) Snapshot() Counters {
@@ -92,17 +54,13 @@ func (s *Stats) IncAcceptError()        { s.update(func(c *Counters) { c.AcceptE
 func (s *Stats) IncBackendDialAttempt() { s.update(func(c *Counters) { c.BackendDialAttempts++ }) }
 func (s *Stats) IncBackendDialSuccess() { s.update(func(c *Counters) { c.BackendDialSuccess++ }) }
 func (s *Stats) IncBackendDialError()   { s.update(func(c *Counters) { c.BackendDialErrors++ }) }
-func (s *Stats) IncHandledConn()        { s.update(func(c *Counters) { c.HandledConns++ }) }
+func (s *Stats) IncUpstreamErrorReported() {
+	s.update(func(c *Counters) { c.UpstreamErrorsReported++ })
+}
+func (s *Stats) IncHandledConn() { s.update(func(c *Counters) { c.HandledConns++ }) }
 func (s *Stats) AddBytesClientToBackend(n int64) {
 	s.update(func(c *Counters) { c.BytesClientToBackend += n })
 }
 func (s *Stats) AddBytesBackendToClient(n int64) {
 	s.update(func(c *Counters) { c.BytesBackendToClient += n })
 }
-func (s *Stats) IncPoolHit()        { s.update(func(c *Counters) { c.PoolHits++ }) }
-func (s *Stats) IncPoolMiss()       { s.update(func(c *Counters) { c.PoolMisses++ }) }
-func (s *Stats) IncPoolDialError()  { s.update(func(c *Counters) { c.PoolDialErrors++ }) }
-func (s *Stats) IncPoolReset()      { s.update(func(c *Counters) { c.PoolResets++ }) }
-func (s *Stats) IncPoolResetError() { s.update(func(c *Counters) { c.PoolResetErrors++ }) }
-func (s *Stats) IncPoolDead()       { s.update(func(c *Counters) { c.PoolDead++ }) }
-func (s *Stats) IncPoolRetire()     { s.update(func(c *Counters) { c.PoolRetires++ }) }

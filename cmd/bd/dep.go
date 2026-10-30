@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/remedy"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -37,7 +39,7 @@ func addDependencyEdgesDirect(ctx context.Context, st storage.DoltStorage, edges
 		return err
 	}
 	_, err = editor.AddDependencies(ctx, issueops.AddDependenciesRequest{
-		Actor:                 actor,
+		Actor:                 currentActor(),
 		Edges:                 edges,
 		SkipPerEdgeCycleCheck: skipPerEdgeCycleCheck,
 	})
@@ -168,8 +170,17 @@ func refuseMalformedDepTarget(sourceID, dependsOnArg string) error {
 	if types.DependencyType(depType) == types.DepBlocks {
 		first, second = target, sourceID
 	}
-	return fmt.Errorf("invalid dependency target %q: that is `bd create --deps` <type>:<id> syntax, not a target ID; use: bd dep add %s %s --type %s",
-		dependsOnArg, first, second, depType)
+	// On the direct route the source is the store's ID a partial argument
+	// resolved to, so each ID goes into the bd dep add command as one shell
+	// word, or as a placeholder named escaped after it (remedy.CommandArg).
+	firstArg, firstNote := remedy.CommandArg(runtime.GOOS, first, "<issue-id>")
+	secondArg, secondNote := remedy.CommandArg(runtime.GOOS, second, "<target-id>")
+	// depType passed validateDependencyType, so it is a well-known type
+	// spelling and prints bare; it goes through the same printer so the
+	// command holds no word that does not.
+	typeArg, typeNote := remedy.CommandArg(runtime.GOOS, depType, "<type>")
+	return fmt.Errorf("invalid dependency target %q: that is `bd create --deps` <type>:<id> syntax, not a target ID; use: bd dep add %s %s --type %s%s%s%s",
+		dependsOnArg, firstArg, secondArg, typeArg, firstNote, secondNote, typeNote)
 }
 
 // resolveUnresolvedDepTarget decides what to do when a dep add target could
@@ -211,41 +222,6 @@ func resolveUnresolvedDepTarget(sourceID, dependsOnArg string, resolveErr error)
 	}
 
 	return "", fmt.Errorf("resolving dependency ID %s: %v", dependsOnArg, resolveErr)
-}
-
-// isChildOf returns true if childID is a hierarchical child of parentID.
-// For example, "bd-abc.1" is a child of "bd-abc", and "bd-abc.1.2" is a child of "bd-abc.1".
-func isChildOf(childID, parentID string) bool {
-	_, isAncestor := hierarchicalParentRelation(childID, parentID)
-	return isAncestor
-}
-
-func hierarchicalParentRelation(childID, targetID string) (immediateParent string, isAncestor bool) {
-	// A child ID has the format "parentID.N" or "parentID.N.M" etc.
-	// Use ParseHierarchicalID to get the actual parent
-	_, actualParentID, depth := types.ParseHierarchicalID(childID)
-	if depth == 0 {
-		return "", false // Not a hierarchical ID
-	}
-	// Check if the immediate parent matches
-	if actualParentID == targetID {
-		return actualParentID, true
-	}
-	// Also check if targetID is an ancestor (e.g., "bd-abc" is an ancestor of "bd-abc.1.2")
-	return actualParentID, strings.HasPrefix(childID, targetID+".")
-}
-
-// isDisallowedHierarchicalDependency reports whether an explicit dependency
-// conflicts with hierarchy encoded in a dotted issue ID. The one allowed match
-// is a parent-child edge to the immediate dotted-ID parent; blocking and other
-// edge types to any parent/ancestor, plus parent-child edges to higher ancestors,
-// remain rejected.
-func isDisallowedHierarchicalDependency(fromID, toID string, depType types.DependencyType) bool {
-	immediateParent, isAncestor := hierarchicalParentRelation(fromID, toID)
-	if !isAncestor {
-		return false
-	}
-	return depType != types.DepParentChild || toID != immediateParent
 }
 
 var depCmd = &cobra.Command{
@@ -312,10 +288,6 @@ Examples:
 			}
 			defer toCleanup()
 
-			if isDisallowedHierarchicalDependency(fromID, toID, types.DepBlocks) {
-				return HandleErrorRespectJSON("cannot add dependency: %s is already a child of %s. Children inherit dependency on parent completion via hierarchy. Adding an explicit dependency would create a deadlock", fromID, toID)
-			}
-
 			opsCtx, err := issueOpsContext(ctx)
 			if err != nil {
 				return HandleErrorRespectJSON("%v", err)
@@ -330,7 +302,7 @@ Examples:
 				warnIfCyclesExist(fromStore)
 			}
 
-			if err := commitPendingIfEmbedded(ctx, fromStore, actor, doltAutoCommitParams{
+			if err := commitPendingIfEmbedded(ctx, fromStore, currentActor(), doltAutoCommitParams{
 				Command:  "dep add",
 				IssueIDs: []string{fromID, toID},
 			}); err != nil {
@@ -498,9 +470,8 @@ Examples:
 		}
 
 		dt := canonicalDependencyType(types.DependencyType(depType))
-		if isDisallowedHierarchicalDependency(fromID, toID, dt) {
-			return HandleErrorRespectJSON("cannot add dependency: %s is already a child of %s. Children inherit dependency on parent completion via hierarchy. Adding an explicit dependency would create a deadlock", fromID, toID)
-		}
+		// The dotted-id hierarchy refusal is the role's
+		// (issueops.CheckDottedChildDependency), raised by AddDependencies below.
 
 		if err := validateDependencyType(dt); err != nil {
 			return HandleErrorRespectJSON("%v", err)
@@ -509,6 +480,15 @@ Examples:
 		opsCtx, err := issueOpsContext(ctx)
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
+		}
+		// The confirmation line names both issues by title. Adding an edge
+		// changes neither title, so read them now, while the resolution's
+		// reads above are still fresh: over http those two lookups are then
+		// answered without a round trip, where after the write they would be
+		// two more (bts-xpw.3.14.6).
+		var fromTitle, toTitle string
+		if !jsonOutput {
+			fromTitle, toTitle = lookupTitle(fromID), lookupTitle(toID)
 		}
 		edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
 		if err := addDependencyEdgesDirect(opsCtx, fromStore, []issueops.DependencyEdge{edge}, false); err != nil {
@@ -520,7 +500,7 @@ Examples:
 			warnIfCyclesExist(fromStore)
 		}
 
-		if err := commitPendingIfEmbedded(ctx, fromStore, actor, doltAutoCommitParams{
+		if err := commitPendingIfEmbedded(ctx, fromStore, currentActor(), doltAutoCommitParams{
 			Command:  "dep add",
 			IssueIDs: []string{fromID, toID},
 		}); err != nil {
@@ -540,7 +520,7 @@ Examples:
 		}
 
 		fmt.Printf("%s Added dependency: %s %s %s (%s)\n",
-			ui.RenderPass("✓"), formatFeedbackIDParen(fromID, lookupTitle(fromID)), depRelationFor(dt).phrase, formatFeedbackIDParen(toID, lookupTitle(toID)), dt)
+			ui.RenderPass("✓"), formatFeedbackIDParen(fromID, fromTitle), depRelationFor(dt).phrase, formatFeedbackIDParen(toID, toTitle), dt)
 		return nil
 	},
 }
@@ -827,7 +807,9 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 			current.DependsOnID = toID
 		}
 
-		if isDisallowedHierarchicalDependency(current.IssueID, current.DependsOnID, current.Type) {
+		// The role refuses this edge too; asking the library rule here only lets
+		// the bulk report name every offending line before anything is written.
+		if issueops.IsDottedChildDependency(current.IssueID, current.DependsOnID, current.Type) {
 			errs = append(errs, fmt.Sprintf("line %d: cannot add dependency: %s is already a child of %s", edge.Line, current.IssueID, current.DependsOnID))
 			resolved = append(resolved, current)
 			continue
@@ -993,11 +975,17 @@ func warnDroppedDepEdges(ctx context.Context, reader issueops.EdgeReader, anchor
 	if len(dropped) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "warning: %s has %d additional dependency edge(s) whose target has no row in this database (cross-repo/external) and are not shown above:\n", anchorID, len(dropped))
+	// anchorID is the store's (a partial-id argument resolves to it), and the
+	// edges are the store's rows: each is named as printedIssueID spells it,
+	// so none can redraw the bd dep list command below, which takes anchorID
+	// as one shell word, or as a placeholder named escaped after it
+	// (remedy.CommandArg).
+	fmt.Fprintf(os.Stderr, "warning: %s has %d additional dependency edge(s) whose target has no row in this database (cross-repo/external) and are not shown above:\n", printedIssueID(anchorID), len(dropped))
 	for _, dep := range dropped {
-		fmt.Fprintf(os.Stderr, "  %s via %s\n", dep.DependsOnID, dep.Type)
+		fmt.Fprintf(os.Stderr, "  %s via %s\n", printedIssueID(dep.DependsOnID), remedy.PrintedValue(string(dep.Type)))
 	}
-	fmt.Fprintf(os.Stderr, "For raw edge records, run: bd dep list %s %s\n", anchorID, anchorID)
+	arg, note := remedy.CommandArg(runtime.GOOS, anchorID, "<issue-id>")
+	fmt.Fprintf(os.Stderr, "For raw edge records, run: bd dep list %s %s%s\n", arg, arg, note)
 }
 
 var depListCmd = &cobra.Command{
@@ -1047,7 +1035,7 @@ Examples:
 			routedResult, err := resolveAndGetIssueWithRouting(ctx, store, arg)
 			if err != nil {
 				if batchMode {
-					fmt.Fprintf(os.Stderr, "warning: resolving %s: %v (skipped)\n", arg, err)
+					fmt.Fprintf(os.Stderr, "warning: resolving %s: %s (skipped)\n", arg, remedy.PrintedMessage(err))
 					continue
 				}
 				return HandleErrorRespectJSON("resolving %s: %v", arg, err)
@@ -1270,7 +1258,7 @@ var depRemoveCmd = &cobra.Command{
 			return HandleErrorRespectJSON("%v", err)
 		}
 		result, err := editor.RemoveDependency(opsCtx, issueops.RemoveDependencyRequest{
-			Actor:       actor,
+			Actor:       currentActor(),
 			IssueID:     fullFromID,
 			DependsOnID: fullToID,
 		})
@@ -1278,7 +1266,7 @@ var depRemoveCmd = &cobra.Command{
 			return HandleErrorRespectJSON("%v", err)
 		}
 
-		if err := commitPendingIfEmbedded(ctx, fromStore, actor, doltAutoCommitParams{
+		if err := commitPendingIfEmbedded(ctx, fromStore, currentActor(), doltAutoCommitParams{
 			Command:  "dep remove",
 			IssueIDs: []string{fullFromID, fullToID},
 		}); err != nil {

@@ -75,19 +75,21 @@ func (c *storeCounter) CountByGroup(ctx context.Context, req issueops.CountByGro
 // filter builds the storage filter, loading the workspace configuration only
 // when the request can read it.
 //
-// TWO THINGS ARE DELIBERATE. The load is SKIPPED only when the request can
-// neither name an infra type nor ask for one — IncludeInfra reads the infra
-// vocabulary, and so does a named IssueType, which decides the plane and the
-// ephemeral narrowing in BuildCountFilter. Loading under IncludeInfra alone
-// left `bd count --type <workspace-configured infra type>` answering 0 while
+// TWO THINGS ARE DELIBERATE. The load is SKIPPED only when nothing in the
+// request reaches the configuration. IncludeInfra reads the infra vocabulary,
+// and so does a named IssueType, which decides the plane and the ephemeral
+// narrowing in BuildCountFilter: loading under IncludeInfra alone left
+// `bd count --type <workspace-configured infra type>` answering 0 while
 // `bd list` returned rows, because a zero ListConfig silently falls back to the
-// DEFAULT infra set. And when it does run it runs PER CALL rather than once at
-// construction: the infra vocabulary is workspace state a caller can change
-// between two counts, and a counter that cached it would answer for the older
-// workspace.
+// DEFAULT infra set. ExcludeStatus needs the workspace's custom status names so
+// BuildCountFilter's validation does not refuse a status the workspace itself
+// defines. And when it does run it runs PER CALL rather than once at
+// construction: the infra vocabulary and custom statuses are workspace state a
+// caller can change between two counts, and a counter that cached it would
+// answer for the older workspace.
 func (c *storeCounter) filter(ctx context.Context, req issueops.CountRequest) (types.IssueFilter, error) {
 	var cfg workapi.ListConfig
-	if req.IncludeInfra || req.IssueType != "" {
+	if req.IncludeInfra || req.IssueType != "" || len(req.ExcludeStatus) > 0 {
 		loaded, err := workapi.LoadStoreListConfig(ctx, c.store)
 		if err != nil {
 			return types.IssueFilter{}, err

@@ -1,5 +1,9 @@
 # db-proxy connection pooling
 
+> **Retired 2026-10-28 (gascity #266, ga-s69mk.17).** The fork's db-proxy
+> pooling and proxied deploy path were removed; this page is kept as history.
+> See [FORK_DIVERGENCE.md](FORK_DIVERGENCE.md#retired-2026-10-28-gascity-266).
+
 ## Problem
 
 Multi-agent orchestrators (e.g. gascity/gc) run beads against a persistent

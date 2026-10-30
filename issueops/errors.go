@@ -63,6 +63,32 @@ type ErrUnsupported = beadserrors.ErrUnsupported
 // UpdateRequest.ExpectedAssignee.
 var ErrAssigneeMismatch = errors.New("assignee mismatch")
 
+// ErrNotesOverwrite is returned when an update's Patch.Notes would replace
+// existing non-empty notes with different non-empty content (see
+// NotesReplacement) and UpdateRequest.ForceNotesOverwrite is false. It is
+// independent of the assignee fence —
+// unlike ErrAlreadyClaimed it applies regardless of ExpectedAssignee — because
+// there is no compare-and-set that authorizes a notes overwrite the way a
+// matching ExpectedAssignee authorizes an assignee transfer. Bypass with
+// ForceNotesOverwrite (`bd update --force`); preserve history instead with
+// --append-notes.
+var ErrNotesOverwrite = errors.New("update would replace existing notes")
+
+// NotesReplacement reports whether proposed would replace existing non-empty
+// notes with different non-empty content — the one condition the
+// notes-overwrite fence refuses without ForceNotesOverwrite. An explicit
+// clear (proposed "") is not a replacement: every sibling text field clears
+// the same way, the blind-clobber pattern the fence exists to stop is an
+// agent writing its own non-empty content over someone else's, and the
+// refusal's advice (force, or append) is meaningless for a clear. The clear
+// itself is guarded separately at the CLI flag layer (`--notes ""` is
+// refused; `bd update --clear-notes` is the deliberate verb, GH#6021), where
+// an accidental empty — a dead command substitution — cannot be told from a
+// deliberate one by its bytes; that guard is not this predicate's concern.
+func NotesReplacement(existing, proposed string) bool {
+	return existing != "" && proposed != "" && proposed != existing
+}
+
 // ErrNotOwner is returned when an actor tries to release a claim that a
 // different actor holds. Releasing another actor's claim requires the force
 // escape hatch (ReleaseRequest.Force, `bd unclaim --force`), reserved for
@@ -216,6 +242,51 @@ func (e *CloseOpenChildrenError) Unwrap() error {
 	return ErrCloseOpenChildren
 }
 
+// ErrPinned is returned when an unforced close names a pinned issue — pinned by
+// either of the two spellings bd uses, the Pinned column or the pinned status.
+// Force (CloseRequest.Force, CloseBatchRequest.Force, CloseItem.Force) bypasses
+// it.
+var ErrPinned = errors.New("issue is pinned")
+
+// PinnedError reports the pinned issue an unforced close was refused for. Its
+// message is the sentence `bd close` has always printed for the refusal.
+type PinnedError struct {
+	// IssueID names the pinned issue.
+	IssueID string
+}
+
+func (e *PinnedError) Error() string {
+	return fmt.Sprintf("cannot modify pinned issue %s (use --force to override)", e.IssueID)
+}
+
+// Unwrap makes PinnedError match ErrPinned.
+func (e *PinnedError) Unwrap() error { return ErrPinned }
+
+// CloseNotAssigneeError reports an unforced close refused because the issue is
+// assigned to someone other than the closing actor (be-035): storage would
+// accept the id-only close, so without the guard actor A silently closes the
+// bead actor B holds. Authority is identity-by-string under the same
+// separator-insensitive comparison every assignee guard uses; an unassigned
+// issue is closable by anyone. Force bypasses it.
+//
+// It matches ErrNotOwner — the ownership refusal a release earns for the same
+// situation — and its message is the sentence `bd close` has always printed.
+type CloseNotAssigneeError struct {
+	// IssueID names the issue that refused the close.
+	IssueID string
+	// Assignee is the holder observed inside the refusing transaction.
+	Assignee string
+	// Actor is the closing actor the request named.
+	Actor string
+}
+
+func (e *CloseNotAssigneeError) Error() string {
+	return fmt.Sprintf("cannot close %s: assignee is %q, actor is %q; reclaim or use --force to override", e.IssueID, e.Assignee, e.Actor)
+}
+
+// Unwrap makes CloseNotAssigneeError match ErrNotOwner.
+func (e *CloseNotAssigneeError) Unwrap() error { return ErrNotOwner }
+
 // ErrAlreadyExists is returned when a create operation is given an ID that is
 // already occupied. The issue and wisp tables share one ID space.
 var ErrAlreadyExists = errors.New("issue already exists")
@@ -263,6 +334,32 @@ func (e *AlreadyIdentifiedError) Unwrap() error { return ErrAlreadyIdentified }
 // concurrency failure. Callers errors.Is it to distinguish a lost-update
 // precondition from other errors.
 var ErrVersionMismatch = errors.New("version mismatch")
+
+// VersionMismatchError reports the expected and current row versions that
+// refused a guarded write, read inside the same transaction the guard
+// checked. It wraps ErrVersionMismatch rather than replacing it — the
+// ClaimConflictError arrangement — so errors.Is(err, ErrVersionMismatch)
+// still matches and the message stays byte-identical to the historical
+// "version mismatch: expected %d, got %d", while a caller that reports the
+// refusal elsewhere (a command's --json envelope, the HTTP surface) reads the
+// typed pair instead of parsing that prose.
+//
+// Both fields are the opaque row_lock token: compared for equality only,
+// carrying no order.
+type VersionMismatchError struct {
+	// Expected is the version the caller required.
+	Expected int64
+	// Current is the version the guard found instead, read inside the same
+	// transaction as the check — never a post-rollback re-read.
+	Current int64
+}
+
+func (e *VersionMismatchError) Error() string {
+	return fmt.Sprintf("%v: expected %d, got %d", ErrVersionMismatch, e.Expected, e.Current)
+}
+
+// Unwrap makes VersionMismatchError match ErrVersionMismatch.
+func (e *VersionMismatchError) Unwrap() error { return ErrVersionMismatch }
 
 // ErrStatusMismatch is returned by UpdateIssueChecked given an ExpectedStatus
 // that no longer matches the issue's current status. The caller's view of the
@@ -347,19 +444,29 @@ func (e *DependencyEndpointNotFoundError) Error() string {
 func (e *DependencyEndpointNotFoundError) Unwrap() error { return e.Err }
 
 // DependencyHierarchyConflictError is returned when a blocking dependency
-// would gate an issue on one of its own ancestors or descendants. Either shape
-// can never clear under the parent-child close/blocking semantics.
+// would gate an issue on one of its own ancestors or descendants. Neither
+// shape is how the hierarchy expresses "wait for what is under me".
 type DependencyHierarchyConflictError struct {
 	IssueID           string
 	BlockerID         string
 	BlockerIsAncestor bool
 }
 
+// Error states the DESCENDANT refusal as a modeling refusal, not a
+// consequence of the cascade.
+//
+// It used to read "blocked status cascades to descendants, so <blocker> would
+// inherit the block and never close". That was true until
+// gastownhall/beads#6506: a parent-child edge now propagates only the parent's
+// EXOGENOUS blockedness, so a parent that blocks on something in its own
+// subtree no longer darkens it, and the sentence described a deadlock that no
+// longer happens. The refusal itself stands — a blocks edge is not the way to
+// say "I close after my children" — so the reason has to say what is.
 func (e *DependencyHierarchyConflictError) Error() string {
 	if e.BlockerIsAncestor {
 		return fmt.Sprintf("%s cannot be blocked by its ancestor %s: %s cannot close until its descendants finish, so the gate would never clear",
 			e.IssueID, e.BlockerID, e.BlockerID)
 	}
-	return fmt.Sprintf("%s cannot be blocked by its descendant %s: blocked status cascades to descendants, so %s would inherit the block and never close",
-		e.IssueID, e.BlockerID, e.BlockerID)
+	return fmt.Sprintf("%s cannot be blocked by its descendant %s: waiting on your own subtree is a close gate, not a blocks edge — use a waits-for gate over the children (bd gate)",
+		e.IssueID, e.BlockerID)
 }

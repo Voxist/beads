@@ -88,7 +88,7 @@ func TestUpdateForwardsEveryDocumentedMember(t *testing.T) {
 		t.Errorf("the role received actor %q id %q", req.Actor, req.IssueID)
 	}
 	// Every precondition and force flag stays zero: unpublished on this surface.
-	if req.Claim || req.ForceAssigneeTransfer || req.ForceClosePolicy ||
+	if req.Claim || req.ForceAssigneeTransfer || req.ForceClosePolicy || req.ForceNotesOverwrite ||
 		req.ExpectedVersion != nil || req.ExpectedAssignee != nil || req.ExpectedStatus != nil {
 		t.Errorf("the handler published a precondition or force flag: %+v", req)
 	}
@@ -305,7 +305,12 @@ func TestUpdateRejectsTheShapesTheDocumentRefuses(t *testing.T) {
 		{"patch is not an object", `{"actor":"alice","patch":["title"]}`, "patch"},
 		{"empty patch", `{"actor":"alice","patch":{}}`, "patch"},
 		{"unknown request member", `{"actor":"alice","patch":{"title":"t"},"force":true}`, "force"},
-		{"unknown patch member", `{"actor":"alice","patch":{"title":"t","persistence":"ephemeral"}}`, "patch.persistence"},
+		{"unknown patch member", `{"actor":"alice","patch":{"title":"t","owner":"bob"}}`, "patch.owner"},
+		// persistence is published (issues.update.persistence), but only as
+		// one of the three modes the role knows.
+		{"unknown persistence mode", `{"actor":"alice","patch":{"persistence":"durable"}}`, "patch.persistence"},
+		{"blank persistence mode", `{"actor":"alice","patch":{"persistence":""}}`, "patch.persistence"},
+		{"persistence is not a string", `{"actor":"alice","patch":{"persistence":true}}`, "patch"},
 		// The refusals the three policy members brought with them, all decided
 		// at the edge because none of them needs to read a row.
 		{"self parent", `{"actor":"alice","patch":{"parent_id":"bd-1"}}`, "patch.parent_id"},
@@ -320,6 +325,7 @@ func TestUpdateRejectsTheShapesTheDocumentRefuses(t *testing.T) {
 		{"unknown metadata member", `{"actor":"alice","patch":{"metadata":{"clear":true}}}`, "patch.metadata.clear"},
 		{"force_assignee_transfer without an assignee edit", `{"actor":"alice","patch":{"title":"t"},"force_assignee_transfer":true}`, "force_assignee_transfer"},
 		{"force_assignee_transfer beside expected_assignee", `{"actor":"alice","patch":{"assignee":"bob"},"force_assignee_transfer":true,"expected_assignee":"carol"}`, "force_assignee_transfer"},
+		{"force_notes_overwrite without a notes edit", `{"actor":"alice","patch":{"title":"t"},"force_notes_overwrite":true}`, "force_notes_overwrite"},
 		// The guard is a decimal STRING; a bare number is the spelling this
 		// contract deliberately does not also accept, since a double-based
 		// client would have rounded it before it ever arrived.
@@ -929,6 +935,15 @@ func TestUpdateAnswersThePolicyRefusalsItsMembersEarned(t *testing.T) {
 			},
 		},
 		{
+			name:       "notes overwrite refused",
+			body:       `{"actor":"alice","patch":{"notes":"replacement"}}`,
+			err:        fmt.Errorf("update: %w: issue bd-1", storage.ErrNotesOverwrite),
+			wantStatus: http.StatusConflict,
+			wantCode:   CodeNotesOverwrite,
+			wantParam:  "patch.notes",
+			check:      func(*testing.T, map[string]any) {},
+		},
+		{
 			// THE DEFENSIVE ARM, driven directly because no reparent can reach
 			// it: CheckBlockingHierarchyInTx probes `blocks` and
 			// `conditional-blocks` only, and patch.parent_id writes
@@ -1369,6 +1384,36 @@ func TestUpdateAnswersARefusedClaimAsTheClaimDoes(t *testing.T) {
 			}
 			if detail, _ := body["detail"].(string); strings.Contains(detail, "force_assignee_transfer") || strings.Contains(detail, "by bob") {
 				t.Errorf("detail = %q; a refused claim must neither steer to the fence's force nor quote the role", detail)
+			}
+		})
+	}
+}
+
+// TestUpdateForwardsThePersistenceMember is the plane move `bd promote` sends
+// (issueops.Promote): patch.persistence reaches the role's
+// IssuePatch.Persistence verbatim, for each of the three modes, and nothing
+// else is set beside it.
+func TestUpdateForwardsThePersistenceMember(t *testing.T) {
+	for _, mode := range []issueops.PersistenceMode{
+		issueops.PersistenceModePersistent, issueops.PersistenceModeEphemeral, issueops.PersistenceModeNoHistory,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			lifecycle := &roleLifecycle{updateResult: issueops.UpdateResult{Issue: updatedIssue("bd-1"), Changed: true}}
+			ts := newUpdateServer(t, lifecycle)
+			resp := ts.updateIssue(t, updatePath, `{"actor":"alice","patch":{"persistence":"`+string(mode)+`"}}`)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+			}
+			got := lifecycle.updateRequests()
+			if len(got) != 1 {
+				t.Fatalf("the role was called %d times, want 1", len(got))
+			}
+			p := got[0].Patch
+			if !p.Persistence.Set || p.Persistence.Value != mode {
+				t.Errorf("persistence = %+v, want a set %q", p.Persistence, mode)
+			}
+			if p.Title.Set || p.Status.Set || p.Assignee.Set || p.ParentID.Set {
+				t.Errorf("the handler set a member the body did not carry: %+v", p)
 			}
 		})
 	}

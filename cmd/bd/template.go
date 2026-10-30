@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
+	publicops "github.com/steveyegge/beads/issueops"
 )
 
 // configReader is the minimal slice of storage.Storage that config-reading
@@ -26,8 +28,10 @@ type configReader interface {
 	GetConfig(ctx context.Context, key string) (string, error)
 }
 
-// BeadsTemplateLabel is the label used to identify Beads-based templates
-const BeadsTemplateLabel = "template"
+// BeadsTemplateLabel is the label used to identify Beads-based templates. It
+// is the label molecule membership and auto-close read
+// (issueops.MoleculeTemplateLabel), so the two cannot drift apart.
+const BeadsTemplateLabel = publicops.MoleculeTemplateLabel
 
 // variablePattern matches {{variable}} placeholders
 var variablePattern = regexp.MustCompile(`\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}`)
@@ -41,6 +45,44 @@ type TemplateSubgraph struct {
 	VarDefs      map[string]formula.VarDef // Variable definitions from formula (for defaults)
 	Phase        string                    // Recommended phase: "liquid" (pour) or "vapor" (wisp)
 	Pour         bool                      // If true, steps should be materialized as sub-issues (from formula pour=true)
+
+	// FormulaVarRefs names the variables referenced by the formula this
+	// subgraph was cooked from that may leave no trace in the subgraph itself,
+	// because they are consumed or erased BEFORE the cook:
+	//
+	//   - a step condition is consumed by formula.FilterStepsByCondition and is
+	//     never copied to an issue field, and nothing requires a condition var
+	//     to be declared in [vars], so it would appear in neither the issues
+	//     nor VarDefs;
+	//   - the substitutable text of a step the filter DROPPED disappears along
+	//     with the step;
+	//   - a {name} placeholder in a standalone expansion formula's template is
+	//     replaced by its --var value while formula.MaterializeExpansion builds
+	//     the steps, so the name is gone before the cook sees them.
+	//
+	// All three are recorded ahead of the filter so the set of variables a
+	// proto can consume stays a property of the formula rather than of one
+	// pour's --var values: a var that changes which steps get poured, or that
+	// is referenced only inside a step the user just switched off, must not be
+	// reported as one the proto cannot consume.
+	//
+	// Empty for a persisted proto loaded from the database, which has no
+	// formula behind it - its conditions were already resolved at cook time.
+	FormulaVarRefs []string
+
+	// DeclaredVarsKnown reports whether VarDefs is the formula's complete
+	// declared-variable set. Only the cook can know that, so only the cook
+	// sets it (cookFormulaToSubgraphWithVars); a subgraph built any other way
+	// - loadTemplateSubgraph for a persisted or --attach proto, or a test
+	// fixture - leaves it false.
+	//
+	// It is NOT the same question as `VarDefs != nil`: a cooked formula that
+	// declares no [vars] at all also has a nil VarDefs, and that proto really
+	// does take no variables. Persistence, by contrast, drops the declarations
+	// entirely, so a var the formula declared but never wrote into a
+	// substituted field becomes indistinguishable from a typo - which is why
+	// checkUnknownVars stands down rather than guessing when this is false.
+	DeclaredVarsKnown bool
 }
 
 // InstantiateResult holds the result of template instantiation
@@ -174,8 +216,17 @@ func loadDescendants(ctx context.Context, s molReader, subgraph *TemplateSubgrap
 	// Hierarchical IDs follow the pattern: parentID.N (e.g., "gt-abc.1", "gt-abc.2")
 	hierarchicalChildren, err := findHierarchicalChildren(ctx, s, parentID)
 	if err != nil {
-		// Non-fatal: continue with what we have
-		return nil
+		// The parent-child edges read above are the molecule's membership;
+		// this id-pattern scan only heals children whose edge is missing. A
+		// backend that cannot express an id-prefix search (a remote backend)
+		// therefore loads the edge-linked subgraph without the heal. Any other
+		// failure is a failed read and is returned, not treated as "no
+		// children".
+		var unsupported *storage.ErrUnsupported
+		if errors.As(err, &unsupported) {
+			return nil
+		}
+		return fmt.Errorf("failed to find hierarchical children of %s: %w", parentID, err)
 	}
 
 	for _, child := range hierarchicalChildren {
@@ -365,6 +416,55 @@ func extractAllVariables(subgraph *TemplateSubgraph) []string {
 		write(metadataVarStrings(issue.Metadata)...)
 	}
 	return extractVariables(sb.String())
+}
+
+// substitutedIssueFields returns every string on a proto issue that
+// cloneSubgraphInto substitutes variables into when the proto is poured: the
+// prose, the assignee, a gate's AwaitID, each label, and every string value in
+// the metadata (GH#5110, GH#5754).
+//
+// KEEP IN SYNC with cloneSubgraphInto's newIssue literal: it is the write side
+// of this read. Any field that gains a substituteVariables call there has to be
+// added here in the same commit, or knownVarsAcross under-approximates what a
+// pour consumes and checkUnknownVars refuses a --var the clone would have used.
+// extractAllVariables reads the same fields for the variables a pour DEMANDS,
+// so the two must agree as well: a name demanded there but missing here can
+// never be poured, because supplying it is refused. Conversely, anything the
+// clone copies verbatim must stay out - naming it would advertise a
+// substitution that never happens: AwaitType and IssueType, and every metadata
+// object KEY (substituteMetadataVars rewrites string values only, which is all
+// metadataVarStrings returns).
+func substitutedIssueFields(issue *types.Issue) []string {
+	if issue == nil {
+		return nil
+	}
+	fields := []string{
+		issue.Title,
+		issue.Description,
+		issue.Design,
+		issue.AcceptanceCriteria,
+		issue.Notes,
+		issue.Assignee,
+		issue.AwaitID,
+	}
+	fields = append(fields, issue.Labels...)
+	return append(fields, metadataVarStrings(issue.Metadata)...)
+}
+
+// extractConsumableVariables finds every variable name the subgraph's issues
+// can consume at clone time - every field substitutedIssueFields names, not
+// just the prose.
+func extractConsumableVariables(subgraph *TemplateSubgraph) []string {
+	if subgraph == nil {
+		return nil
+	}
+	allText := ""
+	for _, issue := range subgraph.Issues {
+		for _, field := range substitutedIssueFields(issue) {
+			allText += field + " "
+		}
+	}
+	return extractVariables(allText)
 }
 
 // extractRequiredVariables returns only variables that don't have defaults.
@@ -802,6 +902,10 @@ func cloneSubgraphInto(ctx context.Context, w molWriter, subgraph *TemplateSubgr
 			issueAssignee = opts.Assignee
 		}
 
+		// Every field substituted below - and issueAssignee above - is one a
+		// --var can reach, so substitutedIssueFields must name it too - that
+		// read side is what checkUnknownVars uses to decide a supplied name is
+		// usable.
 		newIssue := &types.Issue{
 			// ID will be set below based on bonding options
 			Title:              substituteVariables(oldIssue.Title, opts.Vars),

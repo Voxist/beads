@@ -7,7 +7,7 @@
 }:
 buildGoModule {
   pname = "beads";
-  version = "1.93.0";
+  version = "1.95.0";
 
   src = self;
 
@@ -19,7 +19,7 @@ buildGoModule {
   # proxyVendor avoids vendor/modules.txt consistency checks when the vendored
   # tree lags go.mod/go.sum.
   proxyVendor = true;
-  vendorHash = "sha256-UvrAF7JNITgrfpqUoEszh0YfNCjQl5K1NvziOIcrkkk=";
+  vendorHash = "sha256-rrxR8C/S2o9O/1gVGAegeB5tpQzj5/wWIVOL1A86g18=";
 
   # Match go.mod to the selected Nix Go toolchain. buildGoModule also builds
   # vendored dependencies in the Nix sandbox, where toolchain downloads are not

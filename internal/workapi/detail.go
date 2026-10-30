@@ -145,6 +145,16 @@ func BuildIssueDetails(ctx context.Context, src DetailSource, issue *types.Issue
 	deps, depsErr := src.Dependencies(ctx, id, isWisp)
 	details.Dependencies = deps
 
+	// The gates blocking this issue are the gate-typed subset of the
+	// dependencies JUST read (types.GatesHolding, the one predicate the
+	// readiness query's is_blocked column encodes — subject clause included,
+	// so a closed or pinned issue publishes no gated_by), which costs no extra
+	// query. The order is load-bearing twice over: computed AFTER the
+	// Dependencies read above (an earlier slot sees the nil slice and
+	// publishes no gate at all) and BEFORE the BriefDeps trim below, which
+	// rewrites the slice.
+	details.GatedBy = types.GateRefs(types.GatesHolding(issue, details.Dependencies))
+
 	// The count counts edge ROWS; the slice carries the issues on the far
 	// end, and drops any whose id has no row in this database. The two
 	// therefore disagree by exactly the cross-repo and `external:` edges,
@@ -213,14 +223,20 @@ func BuildIssueDetails(ctx context.Context, src DetailSource, issue *types.Issue
 
 // shallowDep keeps the identity-and-shape fields callers consume and drops the
 // free-form text, which is the shape collectDependents settled on in be-4d36f2.
+// CloseReason rides along despite being "text": it is short (a sentence, not
+// a hub-scale blob like Description/Design/Notes), and applyEpicProgress
+// needs it on every epic dependent to classify a completing vs. a
+// duplicate/wontfix/superseded close (GH#5138 review) — dropping it here
+// would silently starve that classifier on the very rows it runs against.
 func shallowDep(item *types.IssueWithDependencyMetadata) *types.IssueWithDependencyMetadata {
 	return &types.IssueWithDependencyMetadata{
 		Issue: types.Issue{
-			ID:        item.Issue.ID,
-			Status:    item.Issue.Status,
-			IssueType: item.Issue.IssueType,
-			Priority:  item.Issue.Priority,
-			Title:     item.Issue.Title,
+			ID:          item.Issue.ID,
+			Status:      item.Issue.Status,
+			IssueType:   item.Issue.IssueType,
+			Priority:    item.Issue.Priority,
+			Title:       item.Issue.Title,
+			CloseReason: item.Issue.CloseReason,
 		},
 		DependencyType: item.DependencyType,
 	}
@@ -290,7 +306,7 @@ func applyEpicProgress(details *types.IssueDetails, dependents []*types.IssueWit
 	if details.IssueType != types.TypeEpic || len(dependents) == 0 {
 		return
 	}
-	total, closed := 0, 0
+	total, closed, completingClosed := 0, 0, 0
 	for _, dep := range dependents {
 		if dep.DependencyType != types.DepParentChild {
 			continue
@@ -298,12 +314,20 @@ func applyEpicProgress(details *types.IssueDetails, dependents []*types.IssueWit
 		total++
 		if dep.Status == types.StatusClosed {
 			closed++
+			// A duplicate/wontfix/superseded close redirects or abandons the
+			// child rather than finishing it, so it must not make the epic
+			// closeable (GH#5138 review) — this mirrors the classifier
+			// GetEpicsEligibleForClosureInTx already applies; the two must
+			// not disagree on the same close_reason.
+			if !types.IsNonCompletingClose(dep.CloseReason) {
+				completingClosed++
+			}
 		}
 	}
 	if total == 0 {
 		return
 	}
-	closeable := total == closed
+	closeable := total == completingClosed
 	details.EpicTotalChildren = &total
 	details.EpicClosedChildren = &closed
 	details.EpicCloseable = &closeable

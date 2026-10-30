@@ -39,13 +39,15 @@ const (
 var (
 	updateRequestMembers = []string{
 		"actor", updateClaimMember, "expected_assignee", "expected_status", "expected_version",
-		"force_assignee_transfer", "force_close_policy", updatePatchMember,
+		"force_assignee_transfer", "force_close_policy", "force_notes_overwrite", "allow_template",
+		updatePatchMember,
 	}
 	issuePatchMembers = []string{
 		"title", "description", "design", "acceptance_criteria",
 		"notes", "append_notes", "priority", "issue_type", "status",
 		"assignee", "parent_id", "labels", "add_labels", "remove_labels", "metadata",
-		"estimated_minutes", "external_ref", "due_at", "defer_until",
+		"estimated_minutes", "external_ref", "due_at", "defer_until", "persistence",
+		"await_id", "waiters",
 	}
 	// nullablePatchMembers is the closed set on which explicit `null` CLEARS
 	// rather than refuses. They are exactly the members the role models as
@@ -177,6 +179,21 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request, id string
 	if !ok {
 		return issueops.UpdateRequest{}, false
 	}
+	forceNotesOverwrite, ok := s.booleanMember(w, r, members, "force_notes_overwrite")
+	if !ok {
+		return issueops.UpdateRequest{}, false
+	}
+	// allow_template is passed through: the role owns the template guard and
+	// what standing it down means.
+	allowTemplate, ok := s.booleanMember(w, r, members, "allow_template")
+	if !ok {
+		return issueops.UpdateRequest{}, false
+	}
+	if forceNotesOverwrite && !patch.Notes.Set {
+		s.fail(w, r, InvalidArgument("force_notes_overwrite", ReasonInvalidValue,
+			"`force_notes_overwrite` bypasses the fence on a NOTES REPLACEMENT; send `patch.notes` with it"))
+		return issueops.UpdateRequest{}, false
+	}
 	// The role refuses a claim beside the assignee and status guards, and a
 	// claim beside the forced transfer (ValidateUpdateRequest): the claim is
 	// its own compare-and-set, with claim-pool eligibility the guards do not
@@ -234,6 +251,8 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request, id string
 		ExpectedAssignee:      expectedAssignee,
 		ForceClosePolicy:      forceClosePolicy,
 		ForceAssigneeTransfer: forceAssigneeTransfer,
+		ForceNotesOverwrite:   forceNotesOverwrite,
+		AllowTemplate:         allowTemplate,
 		Provenance:            updateProvenance,
 	}, true
 }
@@ -408,6 +427,18 @@ func (s *Server) issuePatch(w http.ResponseWriter, r *http.Request, id string, m
 		}
 		patch.ParentID = issueops.Field[string]{Set: true, Value: *wire.ParentId}
 	}
+	if set("persistence") {
+		// The plane move (CapIssuesUpdatePersistence). The handler checks only
+		// that the value is one of the role's three modes, so an unknown one is
+		// a 400 naming the member rather than a translated storage error; the
+		// move itself, and every refusal it earns, is the role's.
+		mode := issueops.PersistenceMode(*wire.Persistence)
+		if !mode.IsValid() {
+			return refuse("persistence", fmt.Sprintf("`persistence` is %q; send %q, %q or %q",
+				*wire.Persistence, issueops.PersistenceModePersistent, issueops.PersistenceModeEphemeral, issueops.PersistenceModeNoHistory))
+		}
+		patch.Persistence = issueops.Field[issueops.PersistenceMode]{Set: true, Value: mode}
+	}
 	if set("metadata") {
 		// applyMetadataPatch, unchanged and not respelled: the replace/merge/
 		// set/unset algebra is one definition, and a second copy here would be a
@@ -462,6 +493,7 @@ func (s *Server) issuePatch(w http.ResponseWriter, r *http.Request, id string, m
 		member.apply(values)
 	}
 	patch.Labels = labelEdit
+	patchGateMembers(&patch, set, wire.AwaitId, wire.Waiters)
 
 	// The four nullable members. Set is true whenever the member is present;
 	// the VALUE is a nil pointer for an explicit null, which is how a clear
@@ -483,6 +515,23 @@ func (s *Server) issuePatch(w http.ResponseWriter, r *http.Request, id string, m
 		patch.DeferUntil = issueops.Field[*time.Time]{Set: true, Value: wire.DeferUntil}
 	}
 	return patch, true
+}
+
+// patchGateMembers projects the two gate members a patch publishes
+// (CapIssuesUpdateGates) onto the role's IssuePatch, for updateIssue and for
+// issues:batchApply's update item alike. Neither is nullable — the caller has
+// already refused a `null` — so a present member always carries a value: the
+// empty string clears await_id, and `[]` clears waiters, which is a WHOLE-VALUE
+// replacement. It checks nothing: the bounds are the role's
+// (issueops.GateFieldError), so the wire refuses what a local update refuses
+// and no more.
+func patchGateMembers(patch *issueops.IssuePatch, set func(string) bool, awaitID *string, waiters *[]string) {
+	if set("await_id") && awaitID != nil {
+		patch.AwaitID = issueops.Field[string]{Set: true, Value: *awaitID}
+	}
+	if set("waiters") && waiters != nil {
+		patch.Waiters = issueops.Field[[]string]{Set: true, Value: append([]string{}, *waiters...)}
+	}
 }
 
 // isJSONNull reports whether a raw member is the literal `null`.
@@ -507,15 +556,15 @@ func patchParam(member string) string {
 // EVERY 409 BRANCH READS TYPED FIELDS, never prose, and every one of them is
 // matched BEFORE the ErrValidation and ErrNotFound arms. That order is the
 // whole correctness of this function, and the hazard it avoids is worse than a
-// disagreement between backends: NEITHER LEG WRAPS THESE FIVE FAMILIES IN
+// disagreement between backends: NEITHER LEG WRAPS THESE SIX FAMILIES IN
 // ErrValidation. The store legs return ExecuteUpdate's error through
 // runIssueOperationTx unchanged (internal/storage/dolt/issue_operations.go) and
 // the unit of work returns ApplyUpdate's unchanged
 // (internal/storage/uow/issue_operations.go), so a precondition miss, a close-
-// policy refusal, the assignee fence and both graph refusals reach here as bare
-// sentinels. Below the ErrValidation arm they would all fall into `!Is(...)`
-// and be swallowed into failErr — a generic 500, on BOTH legs, for five
-// conditions this document names by code.
+// policy refusal, the assignee fence, the notes-overwrite fence and both graph
+// refusals reach here as bare sentinels. Below the ErrValidation arm they
+// would all fall into `!Is(...)` and be swallowed into failErr — a generic
+// 500, on BOTH legs, for six conditions this document names by code.
 //
 // NEITHER BRANCH QUOTES THE ROLE'S MESSAGE. A refusal from the workspace's
 // configured vocabulary arrives as prose about statuses and types, and a
@@ -594,6 +643,11 @@ func (s *Server) failUpdate(w http.ResponseWriter, r *http.Request, request issu
 		}
 		s.fail(w, r, res)
 
+	case errors.Is(err, storage.ErrNotesOverwrite):
+		s.fail(w, r, named(newResult(CodeNotesOverwrite,
+			"`patch.notes` would replace existing non-empty notes; send `force_notes_overwrite`, or use `patch.append_notes` to preserve history"),
+			patchParam("notes")))
+
 	case errors.As(err, &typeConflict):
 		s.fail(w, r, named(newResult(CodeDependencyExists,
 			"this pair already carries an edge of a different type; remove it before reparenting").
@@ -642,6 +696,13 @@ func (s *Server) failUpdate(w http.ResponseWriter, r *http.Request, request issu
 
 	case !errors.Is(err, storage.ErrValidation):
 		s.failErr(w, r, err)
+
+	// A gate member past the role's bound (CapIssuesUpdateGates), named. Its
+	// detail is the caller's own input only (gateFieldParam), so it is quoted.
+	case isGateFieldError(err):
+		field, detail, _ := gateFieldParam(err)
+		refused()
+		s.fail(w, r, InvalidArgument(patchParam(field), ReasonInvalidValue, detail+"; nothing was written"))
 
 	default:
 		refused()
