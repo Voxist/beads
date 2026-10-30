@@ -258,19 +258,22 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 	// in-process callers. The fork's lumberjack writer then keeps rotating
 	// while a long-lived proxy runs, which a start-only rotation cannot.
 	doltserver.MaybeRotateLogFile(logPath)
-	// lumberjack opens its file on the first write, but proxy.log has always
-	// existed from startup (upstream opens it O_CREATE here, after the
-	// rotation above). Create it now so the directory's contents do not
-	// depend on whether anything has logged
-	// yet: TestProxy_BackendDialFailureHasStableDiagnosticAndNoFallbackFiles
-	// snapshots the directory after startup and flaked ~8% of runs without
-	// this.
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil { // #nosec G304 -- logPath is derived from operator-supplied config, not untrusted request input
+	// proxy.log exists before proxy.pid is published, as upstream's O_CREATE
+	// open here guarantees. lumberjack would otherwise create it on its
+	// first write, so the directory's contents would depend on whether
+	// anything had logged yet. Create it after the rotation above, or the
+	// rotation would rename it away.
+	f, createErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- logPath is derived from operator-supplied config, not untrusted request input
+	if createErr == nil {
 		_ = f.Close()
 	}
 	lj := newProxyLogWriter(logPath)
 	p.logger = log.New(lj, "[proxy] ", log.LstdFlags|log.Lmicroseconds)
 	defer func() { _ = lj.Close() }()
+	if createErr != nil {
+		// Not fatal: lumberjack can still replace a file it cannot open.
+		p.logger.Printf("pre-create %s: %v", logPath, createErr)
+	}
 
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()

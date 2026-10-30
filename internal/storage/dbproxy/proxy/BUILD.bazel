@@ -75,6 +75,7 @@ go_test(
         "external_transport_lifecycle_internal_test.go",
         "force_stop_linux_test.go",
         "server_epoch_internal_test.go",
+        "server_log_internal_test.go",
         "server_test.go",
         "upstream_error_test.go",
         "wedge_guards_test.go",
