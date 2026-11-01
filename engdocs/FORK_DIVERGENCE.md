@@ -155,13 +155,14 @@ beside it on that command and advertises cardinality matching.
 Filed from `bourgois/beads-fork` with `maintainer_can_modify`. None is fork
 carry — each fixes an upstream bug the fork happened to hit.
 
-**Open upstream as of 2026-09-03 evening:**
+**Filed upstream, status as of 2026-10-30:**
 
 | PR | From fork | What |
 | --- | --- | --- |
-| [#6125](https://github.com/gastownhall/beads/pull/6125) | #35 | machine-local config keys routed to the `config.local.yaml` sidecar (#6124 was its closed first attempt). 121 green, awaiting review. |
-| [#6240](https://github.com/gastownhall/beads/pull/6240) | #32 | `--include-ephemeral` on `bd count` — the other half of the pair #6098 landed. One red is the 20m `Differential Regression` budget, noted for maintainers. |
-| [#6251](https://github.com/gastownhall/beads/pull/6251) | #39 | `MIGRATION-FREEZE` findable in `.beads/` outside Gas Town. |
+| [#6125](https://github.com/gastownhall/beads/pull/6125) | #35 | machine-local config keys routed to the `config.local.yaml` sidecar (#6124 was its closed first attempt). Open; red on the embedded Dolt tier, no review since 2026-10-14. |
+| [#6240](https://github.com/gastownhall/beads/pull/6240) | #32 | `--include-ephemeral` on `bd count` — the other half of the pair #6098 landed. Merged 2026-09-29. |
+| [#6251](https://github.com/gastownhall/beads/pull/6251) | #39 | `MIGRATION-FREEZE` findable in `.beads/` outside Gas Town. Closed 2026-09-18 as superseded by #6043, which keys the gate on the marker itself. |
+| [#7565](https://github.com/gastownhall/beads/pull/7565) | branch `fix/verify-project-identity-read-error-fc` on `mine` (no fork-side PR; filed 2026-10-15) | `verifyProjectIdentity` fails closed on a metadata READ error — the `err != nil || dbID == ""` conflation silently granted the connection in the restart window where the port frees and reads fail together. Empty `_project_id` still skips; the refusal fires on what survives `withReadTx`'s bounded retry. Shaped to #2446 (refusal, not recovery) and #6118 (prove ownership). CHANGES_REQUESTED 2026-10-15: the new test file is missing from `internal/storage/dolt/BUILD.bazel` (Bazel ran none of it), and the refusal should carry remedy advice. Fork `main` still has the conflation, as does `verifyGlobalProjectIdentity`. |
 
 **Queued, in order, each behind the one it needs** (GitHub cannot stack a PR on
 a branch in a different fork — learned on #6240 — so these wait for a merge
@@ -169,8 +170,8 @@ rather than being filed as supersets):
 
 | Waits for | Branch on `mine` | From fork | What |
 | --- | --- | --- | --- |
-| #6251 | `feat/migration-freeze-gates-store-open` | #43 | the store-open gate: a read under a freeze no longer migrates. Already cherry-picked onto #6251's branch, all 14 freeze tests green there. |
-| #6240 | (rebuild from `main`) | #37 + #38 | `bd count --type <infra type>` reads the plane its rows live in. Must be rebuilt from BOTH squashes — the branch that carried #37 alone was deleted from `mine` on 2026-09-03 because #38 fixed two defects in it. |
+| #6251, closed 2026-09-18; re-offer against #6043's design | `feat/migration-freeze-gates-store-open` | #43 | the store-open gate: a read under a freeze no longer migrates. Already cherry-picked onto #6251's branch, all 14 freeze tests green there. |
+| #6240, merged 2026-09-29, so unblocked | (rebuild from `main`) | #37 + #38 | `bd count --type <infra type>` reads the plane its rows live in. Must be rebuilt from BOTH squashes — the branch that carried #37 alone was deleted from `mine` on 2026-09-03 because #38 fixed two defects in it. |
 | #44 merging here | `fix/metrics-reap-test-waits-for-the-reap` | #44 | upstream's `TestStartDetachedReapsExitedChild` fails on the first zombie sighting instead of at its deadline. |
 
 The three below MERGED on 2026-09-03 — see *Landed upstream* above. The table is
