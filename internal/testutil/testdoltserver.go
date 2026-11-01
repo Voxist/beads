@@ -373,7 +373,9 @@ func (c *IsolatedDoltContainer) Start(ctx context.Context) error {
 }
 
 // CurrentPort returns the container's currently mapped SQL port. Container
-// runtimes may assign a new host port after Stop/Start.
+// runtimes may assign a new host port after Stop/Start. Only the port the
+// container started on is declared (vp-hlfzn): a guarded test that points the
+// environment at a new one must DeclareTestServerPort it.
 func (c *IsolatedDoltContainer) CurrentPort(ctx context.Context) (string, error) {
 	if c != nil && c.local != nil {
 		return strconv.Itoa(c.local.Port()), nil

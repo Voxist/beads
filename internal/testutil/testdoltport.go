@@ -52,6 +52,12 @@ const EnvSharedDoltServer = "BEADS_TEST_SHARED_DOLT_SERVER"
 // checks each one on its own.
 var serverPortEnvs = []string{"BEADS_DOLT_SERVER_PORT", "BEADS_DOLT_PORT"}
 
+// serverSocketEnv names a unix socket bd dials in preference to any TCP port
+// whenever it is connectable (ResolveSocketTransport), so a declared port
+// beside it does not decide where the store lands. No testutil helper serves
+// a socket, so a non-empty value is never a declared server.
+const serverSocketEnv = "BEADS_DOLT_SERVER_SOCKET"
+
 // declaredPorts counts the live declarations of each port: a port the shared
 // container holds can also be declared by a test that dials it.
 var declaredPorts = struct {
@@ -95,20 +101,29 @@ func testServerPortDeclared(p int) bool {
 // DeclareTestServerPort declares port, the port of a Dolt server the test
 // started itself (a `dolt sql-server` under t.TempDir(), say), for the rest
 // of the test. The testutil provisioning helpers declare their own ports; a
-// test needs this only for a server it spawned some other way.
+// test needs this only for a server it spawned some other way. Never pass a
+// port read from the environment: that declares the inherited server the
+// guard exists to refuse.
 func DeclareTestServerPort(t testing.TB, port int) {
 	t.Helper()
+	if port <= 0 {
+		t.Fatalf("DeclareTestServerPort(%d): not a port a server listens on", port)
+	}
 	s := strconv.Itoa(port)
 	declareTestServerPort(s)
 	t.Cleanup(func() { undeclareTestServerPort(s) })
 }
 
-// undeclaredServerPortEnv returns the first variable in serverPortEnvs that
-// holds a port bd would dial (a positive integer) which this process neither
-// declared nor had vouched for by EnvSharedDoltServer, or "" when there is
-// none. A value bd ignores ("", "0", non-numeric) leads nowhere and is not
-// refused.
-func undeclaredServerPortEnv() string {
+// undeclaredServerEnv returns the first variable that names a Dolt server
+// this process did not declare, or "" when there is none: a non-empty
+// serverSocketEnv, or a variable in serverPortEnvs holding a port bd would
+// dial (a positive integer) which this process neither declared nor had
+// vouched for by EnvSharedDoltServer. A port value bd ignores ("", "0",
+// non-numeric) leads nowhere and is not refused.
+func undeclaredServerEnv() string {
+	if os.Getenv(serverSocketEnv) != "" {
+		return serverSocketEnv
+	}
 	for _, name := range serverPortEnvs {
 		p, err := strconv.Atoi(os.Getenv(name))
 		if err != nil || p <= 0 {
@@ -123,16 +138,17 @@ func undeclaredServerPortEnv() string {
 }
 
 // RequireDeclaredTestServer fails fast when a store-creating test could
-// resolve its Dolt server port from an environment variable naming a server
-// this process did not declare. Call it BEFORE any store creation, next to
+// resolve its Dolt server from an environment variable naming a server this
+// process did not declare. Call it BEFORE any store creation, next to
 // RequireDoltBinary.
 //
-// It never fires when the environment carries no usable server port, nor for
-// a port the testutil provisioning helpers or DeclareTestServerPort declared,
-// nor for the harness port EnvSharedDoltServer vouches for.
+// It never fires when the environment carries no socket and no usable server
+// port, nor for a port the testutil provisioning helpers or
+// DeclareTestServerPort declared, nor for the harness port
+// EnvSharedDoltServer vouches for.
 func RequireDeclaredTestServer(t testing.TB) {
 	t.Helper()
-	if name := undeclaredServerPortEnv(); name != "" {
+	if name := undeclaredServerEnv(); name != "" {
 		t.Fatal(refusalMessage(name))
 	}
 }
@@ -140,14 +156,16 @@ func RequireDeclaredTestServer(t testing.TB) {
 // portVouchedByHarness reports whether the server port named by `name` is the
 // harness-provisioned port vouched for by EnvSharedDoltServer. It honors
 // exactly the per-variable value equality neutralizeUnvouchedDoltPorts
-// honors, so the guard and the neutralizer can never disagree about which
-// ports are ambient (the Docker-less scripts/test.sh flow).
+// honors, so outside Windows the guard and the neutralizer cannot disagree
+// about which ports are ambient (the Docker-less scripts/test.sh flow). The
+// Windows neutralizer honors no vouch and clears both variables, so after its
+// TestMain the guard sees no port at all.
 func portVouchedByHarness(name string) bool {
 	vouched := os.Getenv(EnvSharedDoltServer)
 	return vouched != "" && os.Getenv(name) == vouched
 }
 
-// refusalMessage builds the refusal for an undeclared server-port variable.
+// refusalMessage builds the refusal for a variable naming an undeclared server.
 // Split from the t.Fatal so tests can assert the operator guidance cannot
 // silently lose a component.
 func refusalMessage(name string) string {
@@ -157,9 +175,10 @@ func refusalMessage(name string) string {
 		"and bd resolves env > port file > config, so proceeding would create " +
 		"test databases on the live root (the vp-kmgu incident). Either point " +
 		"the test at a server the testutil helpers provisioned (they declare " +
-		"their own ports), call testutil.DeclareTestServerPort for a server " +
-		"the test started itself, or clear the variable with t.Setenv(\"" +
-		name + "\", \"\") if the test needs no server. BEADS_TEST_SERVER=1 " +
+		"their own ports), call testutil.DeclareTestServerPort for a TCP " +
+		"server the test started itself, or clear the variable with " +
+		"t.Setenv(\"" + name + "\", \"\") if the test does not need it. A " +
+		"socket is never declared. BEADS_TEST_SERVER=1 " +
 		"does not declare a port. A harness-provisioned port vouched for by " +
 		EnvSharedDoltServer + " is honored automatically."
 }

@@ -26,8 +26,10 @@ func TestDoltContainerStartSites_SetBeadsServerPortEnv(t *testing.T) {
 		t.Skipf("skipping test: %s", state)
 	}
 
+	var isolatedPort string
 	t.Run("StartIsolatedDoltContainer", func(t *testing.T) {
 		portStr := StartIsolatedDoltContainer(t)
+		isolatedPort = portStr
 
 		got := os.Getenv("BEADS_DOLT_SERVER_PORT")
 		if got != portStr {
@@ -37,6 +39,12 @@ func TestDoltContainerStartSites_SetBeadsServerPortEnv(t *testing.T) {
 			t.Errorf("port %s not declared: a successful provisioned start must declare its port (vp-hlfzn), or RequireDeclaredTestServer refuses the tests this helper powers", portStr)
 		}
 	})
+
+	// The declaration ends with the test that owned the server, or a dead
+	// server's port stays declared.
+	if p, _ := strconv.Atoi(isolatedPort); p != 0 && testServerPortDeclared(p) {
+		t.Errorf("isolated port %s still declared after its test ended", isolatedPort)
+	}
 
 	t.Run("EnsureDoltContainerForTestMain", func(t *testing.T) {
 		if err := EnsureDoltContainerForTestMain(); err != nil {
@@ -51,6 +59,24 @@ func TestDoltContainerStartSites_SetBeadsServerPortEnv(t *testing.T) {
 		}
 		if !testServerPortDeclared(DoltContainerPortInt()) {
 			t.Errorf("port %s not declared: a successful provisioned start must declare its port (vp-hlfzn)", want)
+		}
+
+		// A restart moves the declaration to the replacement's port, and
+		// terminating the shared server ends it.
+		old := DoltContainerPortInt()
+		port, err := RestartSharedDoltContainer()
+		if err != nil {
+			t.Fatalf("RestartSharedDoltContainer: %v", err)
+		}
+		if !testServerPortDeclared(port) {
+			t.Errorf("restarted port %d not declared", port)
+		}
+		if port != old && testServerPortDeclared(old) {
+			t.Errorf("replaced port %d still declared after the restart", old)
+		}
+		TerminateDoltContainer()
+		if testServerPortDeclared(port) {
+			t.Errorf("port %d still declared after TerminateDoltContainer", port)
 		}
 	})
 }

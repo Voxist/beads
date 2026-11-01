@@ -10,19 +10,19 @@ import (
 
 // Unit tests for the vp-hlfzn test-server declaration guard: an environment
 // port bd would dial must refuse a store-creating test unless this process
-// declared that port or the harness vouched for it. BEADS_TEST_SERVER=1 is
-// not a declaration.
+// declared that port or the harness vouched for it, and an environment socket
+// always refuses. BEADS_TEST_SERVER=1 is not a declaration.
 
 // clearGuardEnv empties every variable the guard reads, so a test states the
 // whole environment it runs under.
 func clearGuardEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range append([]string{"BEADS_TEST_SERVER", EnvSharedDoltServer}, serverPortEnvs...) {
+	for _, name := range append([]string{"BEADS_TEST_SERVER", EnvSharedDoltServer, serverSocketEnv}, serverPortEnvs...) {
 		t.Setenv(name, "")
 	}
 }
 
-func TestUndeclaredServerPortEnv(t *testing.T) {
+func TestUndeclaredServerEnv(t *testing.T) {
 	cases := []struct {
 		name    string
 		env     map[string]string
@@ -50,6 +50,14 @@ func TestUndeclaredServerPortEnv(t *testing.T) {
 		},
 		{name: "vouched harness port", env: map[string]string{"BEADS_DOLT_SERVER_PORT": "45111", EnvSharedDoltServer: "45111"}, want: ""},
 		{name: "zero is not a port", env: map[string]string{"BEADS_DOLT_SERVER_PORT": "0"}, want: ""},
+		{name: "inherited socket", env: map[string]string{serverSocketEnv: "/tmp/city/dolt.sock"}, want: serverSocketEnv},
+		{
+			// bd dials a connectable socket ahead of any TCP port.
+			name:    "inherited socket beside a declared port",
+			env:     map[string]string{serverSocketEnv: "/tmp/city/dolt.sock", "BEADS_DOLT_SERVER_PORT": "48770"},
+			declare: 48770,
+			want:    serverSocketEnv,
+		},
 		{name: "non-numeric is not a port", env: map[string]string{"BEADS_DOLT_SERVER_PORT": "abc"}, want: ""},
 	}
 	for _, tc := range cases {
@@ -61,8 +69,8 @@ func TestUndeclaredServerPortEnv(t *testing.T) {
 			if tc.declare != 0 {
 				DeclareTestServerPort(t, tc.declare)
 			}
-			if got := undeclaredServerPortEnv(); got != tc.want {
-				t.Errorf("undeclaredServerPortEnv() = %q, want %q", got, tc.want)
+			if got := undeclaredServerEnv(); got != tc.want {
+				t.Errorf("undeclaredServerEnv() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -78,6 +86,33 @@ func TestDeclareTestServerPortEndsWithTheTest(t *testing.T) {
 	if testServerPortDeclared(48771) {
 		t.Fatal("port still declared after the declaring test ended")
 	}
+}
+
+func TestDeclareTestServerPortRejectsNonPorts(t *testing.T) {
+	// A server that failed to report its port must not turn into a silent
+	// no-op declaration and a confusing refusal later.
+	for _, port := range []int{0, -1} {
+		ft := &fatalRecorder{TB: t}
+		func() {
+			defer func() { _ = recover() }()
+			DeclareTestServerPort(ft, port)
+		}()
+		if !ft.fataled {
+			t.Errorf("DeclareTestServerPort(%d) did not fail the test", port)
+		}
+	}
+}
+
+// fatalRecorder records a Fatalf instead of ending the test. Fatalf panics so
+// the caller stops where a real FailNow would have.
+type fatalRecorder struct {
+	testing.TB
+	fataled bool
+}
+
+func (f *fatalRecorder) Fatalf(string, ...any) {
+	f.fataled = true
+	panic("fatal")
 }
 
 func TestUndeclareKeepsOtherDeclarations(t *testing.T) {
@@ -184,6 +219,7 @@ func TestRequireDeclaredTestServerRefuses(t *testing.T) {
 		{name: "inherited port", env: []string{"BEADS_DOLT_SERVER_PORT=48770"}, refuse: true},
 		{name: "inherited port under BEADS_TEST_SERVER=1", env: []string{"BEADS_DOLT_SERVER_PORT=48770", "BEADS_TEST_SERVER=1"}, refuse: true},
 		{name: "inherited legacy port", env: []string{"BEADS_DOLT_PORT=48770"}, refuse: true},
+		{name: "inherited socket", env: []string{serverSocketEnv + "=/tmp/city/dolt.sock"}, refuse: true},
 		{name: "no port", refuse: false},
 		{name: "vouched harness port", env: []string{"BEADS_DOLT_SERVER_PORT=45111", EnvSharedDoltServer + "=45111"}, refuse: false},
 	}

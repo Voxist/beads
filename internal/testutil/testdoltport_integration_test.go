@@ -28,9 +28,9 @@ import (
 // The throwaway server is a real `dolt sql-server` spawned under t.TempDir()
 // on an ephemeral port, never the live city server on :48770. The test points
 // BEADS_DOLT_SERVER_PORT at the ephemeral port, which is exactly the
-// inherited-env shape the guard polices, and the guard is called once before
-// the declaration (it must refuse, in a re-exec in testdoltport_test.go) and
-// once after it.
+// inherited-env shape the guard polices, so the pass here can only come from
+// the declaration. TestRequireDeclaredTestServerRefuses (testdoltport_test.go)
+// shows the same shape refused without one.
 func TestDeclaredOptInRunsStoreCreatingTestOnEphemeralServer(t *testing.T) {
 	testutil.RequireDoltBinary(t)
 	testutil.RequireDoltCLIOnly(t)
