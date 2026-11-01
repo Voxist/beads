@@ -181,6 +181,23 @@ func TestRefusalMessageCarriesTheDoctrine(t *testing.T) {
 			t.Errorf("refusal message missing %q:\n%s", want, full)
 		}
 	}
+
+	// A socket can only be cleared, so its refusal offers nothing else.
+	t.Setenv(serverSocketEnv, "/tmp/city/dolt.sock")
+	sock := refusalMessage(serverSocketEnv)
+	for _, want := range []string{
+		`BEADS_DOLT_SERVER_SOCKET="/tmp/city/dolt.sock"`,
+		"vp-kmgu",
+		"A socket is never declared",
+		`t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")`,
+	} {
+		if !strings.Contains(sock, want) {
+			t.Errorf("socket refusal missing %q:\n%s", want, sock)
+		}
+	}
+	if strings.Contains(sock, "DeclareTestServerPort") {
+		t.Errorf("socket refusal offers DeclareTestServerPort, which cannot declare a socket:\n%s", sock)
+	}
 }
 
 // guardChildEnv marks the re-executed test binary as the guard's child.

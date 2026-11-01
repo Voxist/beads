@@ -169,16 +169,22 @@ func portVouchedByHarness(name string) bool {
 // Split from the t.Fatal so tests can assert the operator guidance cannot
 // silently lose a component.
 func refusalMessage(name string) string {
-	return "refusing store-creating test: " + name + "=\"" + os.Getenv(name) +
+	head := "refusing store-creating test: " + name + "=\"" + os.Getenv(name) +
 		"\" names a Dolt server this test process did not provision. Under a " +
 		"gc-managed city that variable points at the LIVE multi-DB server, " +
 		"and bd resolves env > port file > config, so proceeding would create " +
-		"test databases on the live root (the vp-kmgu incident). Either point " +
-		"the test at a server the testutil helpers provisioned (they declare " +
-		"their own ports), call testutil.DeclareTestServerPort for a TCP " +
-		"server the test started itself, or clear the variable with " +
-		"t.Setenv(\"" + name + "\", \"\") if the test does not need it. A " +
-		"socket is never declared. BEADS_TEST_SERVER=1 " +
-		"does not declare a port. A harness-provisioned port vouched for by " +
-		EnvSharedDoltServer + " is honored automatically."
+		"test databases on the live root (the vp-kmgu incident). "
+	clearCall := "t.Setenv(\"" + name + "\", \"\")"
+	if name == serverSocketEnv {
+		return head + "A socket is never declared, and bd dials a live socket " +
+			"ahead of any port: clear the variable with " + clearCall + " or unset " +
+			"it in the shell."
+	}
+	return head + "Either point the test at a server the testutil helpers " +
+		"provisioned (they declare their own ports), call " +
+		"testutil.DeclareTestServerPort for a TCP server the test started " +
+		"itself, or clear the variable with " + clearCall + " if the test does " +
+		"not need it. BEADS_TEST_SERVER=1 does not declare a port. A " +
+		"harness-provisioned port vouched for by " + EnvSharedDoltServer +
+		" is honored automatically."
 }
