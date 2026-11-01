@@ -389,6 +389,16 @@ only for a variable holding exactly the port it names: that variable survives
 the clearing above, and any other port variable is still cleared. A container
 still wins where one can be started; the shared server is the Docker-less path.
 
+A store-creating test that might run outside such a TestMain also calls
+`testutil.RequireDeclaredTestServer(t)` before it opens a store. It fails the
+test when `BEADS_DOLT_SERVER_PORT` or `BEADS_DOLT_PORT` holds a port this
+test process did not declare, or when `BEADS_DOLT_SERVER_SOCKET` is set at
+all. The testutil helpers that start a server declare its port themselves;
+a test that starts its own `dolt sql-server` declares the port with
+`testutil.DeclareTestServerPort(t, port)`. `BEADS_TEST_SERVER=1` does not
+declare a port: it is the opt-in for the `dolt.New` database-name check, and
+TestMains set it before they start anything.
+
 Clearing the environment variables closes the channel the ambient port
 travelled on; it does not make a port unresolvable in general. Resolution
 continues into the file chain (`.beads/dolt-server.port`, `config.yaml`,

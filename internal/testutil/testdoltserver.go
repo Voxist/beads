@@ -278,6 +278,9 @@ func terminateSharedContainer() {
 // holds doltServerMu. It does not consume doltTerminateOnce, so a later
 // replacement can still be removed by TerminateDoltContainer.
 func stopSharedContainerLocked() {
+	if doltSingletonSrv != nil {
+		undeclareTestServerPort(doltTestPort)
+	}
 	if doltSingletonSrv != nil && doltSingletonSrv.local != nil {
 		doltSingletonSrv.local.terminate()
 		doltSingletonSrv.local = nil
@@ -306,6 +309,7 @@ func RestartSharedDoltContainer() (int, error) {
 		doltServerErr = err
 		return 0, err
 	}
+	declareTestServerPort(doltTestPort)
 	if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
 		doltServerErr = fmt.Errorf("set BEADS_DOLT_PORT: %w", err)
 		return 0, doltServerErr
@@ -369,7 +373,9 @@ func (c *IsolatedDoltContainer) Start(ctx context.Context) error {
 }
 
 // CurrentPort returns the container's currently mapped SQL port. Container
-// runtimes may assign a new host port after Stop/Start.
+// runtimes may assign a new host port after Stop/Start. Only the port the
+// container started on is declared (vp-hlfzn): a guarded test that points the
+// environment at a new one must DeclareTestServerPort it.
 func (c *IsolatedDoltContainer) CurrentPort(ctx context.Context) (string, error) {
 	if c != nil && c.local != nil {
 		return strconv.Itoa(c.local.Port()), nil
@@ -427,7 +433,10 @@ func startIsolatedLocalDoltServer(t *testing.T) *IsolatedDoltContainer {
 		t.Fatalf("starting local Dolt server: %v", err)
 	}
 	t.Cleanup(s.terminate)
-	return &IsolatedDoltContainer{Port: strconv.Itoa(s.Port()), local: s}
+	port := strconv.Itoa(s.Port())
+	declareTestServerPort(port)
+	t.Cleanup(func() { undeclareTestServerPort(port) })
+	return &IsolatedDoltContainer{Port: port, local: s}
 }
 
 // startIsolatedDoltContainer is StartIsolatedDoltContainerHandle for the
@@ -455,6 +464,8 @@ func startIsolatedDoltContainer(t *testing.T) *IsolatedDoltContainer {
 	if err != nil {
 		t.Fatalf("getting mapped port: %v", err)
 	}
+	declareTestServerPort(port.Port())
+	t.Cleanup(func() { undeclareTestServerPort(port.Port()) })
 
 	return &IsolatedDoltContainer{Port: port.Port(), ctr: ctr}
 }
@@ -471,13 +482,16 @@ func StartIsolatedDoltContainer(t *testing.T) string {
 }
 
 // ensureSharedContainer starts the singleton container and sets
-// BEADS_DOLT_PORT and BEADS_DOLT_SERVER_PORT.
+// BEADS_DOLT_PORT and BEADS_DOLT_SERVER_PORT. Only a container that started
+// declares its port (vp-hlfzn), so a failed start leaves an inherited port
+// undeclared and RequireDeclaredTestServer refuses it.
 func ensureSharedContainer() {
 	doltServerOnce.Do(func() {
 		doltServerMu.Lock()
 		defer doltServerMu.Unlock()
 		doltServerErr = startDoltContainer()
 		if doltServerErr == nil && doltTestPort != "" {
+			declareTestServerPort(doltTestPort)
 			if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
 				doltServerErr = fmt.Errorf("set BEADS_DOLT_PORT: %w", err)
 			} else if err := os.Setenv("BEADS_DOLT_SERVER_PORT", doltTestPort); err != nil {
@@ -503,21 +517,6 @@ var checkDoltFn = checkDolt
 // against a singleton that has already failed. Production code never
 // reassigns it.
 var startSharedContainerFn = startSharedContainer
-
-// EnvSharedDoltServer names the one Dolt port that a test harness started a
-// server on for this process tree, as opposed to a port inherited from the
-// surrounding environment. Its value is that port number: scripts/test.sh sets
-// it to the same value as the BEADS_DOLT_PORT it exports for the dockerless
-// `dolt sql-server` of its BEADS_TEST_SHARED_SERVER=1 flow. It vouches for that
-// value only, never for the process: a port variable holding anything else is
-// still ambient, however it got there.
-//
-// It is deliberately a distinct name from BEADS_TEST_SHARED_SERVER. That flag
-// is also read by cmd/bd's shared-server integration test for an unrelated
-// purpose, and it only says a shared server was asked for, not that one was
-// started: the flow starts none when a port variable is already set, so the
-// flag beside a port cannot tell the script's own port from an inherited one.
-const EnvSharedDoltServer = "BEADS_TEST_SHARED_DOLT_SERVER"
 
 // sharedContainerErr reads the shared-container error under doltServerMu.
 // Every write to doltServerErr takes that mutex (ensureSharedContainer,
