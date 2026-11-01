@@ -19,8 +19,8 @@ import (
 // testcontainer's port.
 //
 // The vp-hlfzn declaration guard adds a second invariant to the same two
-// sites: a successful start must also DECLARE the server (BEADS_TEST_SERVER=1)
-// so RequireDeclaredTestServer accepts the tests these helpers power.
+// sites: a successful start must also declare the port it exported, so
+// RequireDeclaredTestServer accepts the tests these helpers power.
 func TestDoltContainerStartSites_SetBeadsServerPortEnv(t *testing.T) {
 	if state := checkDolt(); state != doltReady {
 		t.Skipf("skipping test: %s", state)
@@ -33,8 +33,8 @@ func TestDoltContainerStartSites_SetBeadsServerPortEnv(t *testing.T) {
 		if got != portStr {
 			t.Errorf("BEADS_DOLT_SERVER_PORT = %q, want %q (the isolated container's port) — testdoltserver.go:212 must also set BEADS_DOLT_SERVER_PORT, not just BEADS_DOLT_PORT", got, portStr)
 		}
-		if os.Getenv("BEADS_TEST_SERVER") != "1" {
-			t.Errorf("BEADS_TEST_SERVER = %q, want \"1\" — a successful provisioned start must declare the server (vp-hlfzn), or RequireDeclaredTestServer refuses the tests this helper powers", os.Getenv("BEADS_TEST_SERVER"))
+		if p, _ := strconv.Atoi(portStr); !testServerPortDeclared(p) {
+			t.Errorf("port %s not declared: a successful provisioned start must declare its port (vp-hlfzn), or RequireDeclaredTestServer refuses the tests this helper powers", portStr)
 		}
 	})
 
@@ -49,8 +49,8 @@ func TestDoltContainerStartSites_SetBeadsServerPortEnv(t *testing.T) {
 		if got != want {
 			t.Errorf("BEADS_DOLT_SERVER_PORT = %q, want %q (the shared container's port) — testdoltserver.go:221 must also set BEADS_DOLT_SERVER_PORT, not just BEADS_DOLT_PORT", got, want)
 		}
-		if os.Getenv("BEADS_TEST_SERVER") != "1" {
-			t.Errorf("BEADS_TEST_SERVER = %q, want \"1\" — a successful provisioned start must declare the server (vp-hlfzn)", os.Getenv("BEADS_TEST_SERVER"))
+		if !testServerPortDeclared(DoltContainerPortInt()) {
+			t.Errorf("port %s not declared: a successful provisioned start must declare its port (vp-hlfzn)", want)
 		}
 	})
 }

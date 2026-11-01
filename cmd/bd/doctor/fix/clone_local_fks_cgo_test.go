@@ -25,9 +25,9 @@ import (
 // way production hits it (reset across a commit that touched issues) and
 // verifies scan → heal → enforcement restored.
 func TestRelinkSeveredCloneLocalFKs_AfterHardReset(t *testing.T) {
-	// vp-hlfzn: same guard every requireFixDoltContainer caller gets — this
-	// test checks the port directly, so without it an env-inherited
-	// BEADS_DOLT_SERVER_PORT could carry the store onto the live city server.
+	// vp-hlfzn: the guard requireFixDoltContainer callers get. This test
+	// passes an explicit ServerPort, which outranks the env, so here the
+	// guard is defence in depth against that changing.
 	testutil.RequireDeclaredTestServer(t)
 	port := fixTestServerPort()
 	if port == 0 {

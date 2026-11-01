@@ -278,6 +278,9 @@ func terminateSharedContainer() {
 // holds doltServerMu. It does not consume doltTerminateOnce, so a later
 // replacement can still be removed by TerminateDoltContainer.
 func stopSharedContainerLocked() {
+	if doltSingletonSrv != nil {
+		undeclareTestServerPort(doltTestPort)
+	}
 	if doltSingletonSrv != nil && doltSingletonSrv.local != nil {
 		doltSingletonSrv.local.terminate()
 		doltSingletonSrv.local = nil
@@ -306,13 +309,7 @@ func RestartSharedDoltContainer() (int, error) {
 		doltServerErr = err
 		return 0, err
 	}
-	// Provisioning declares (vp-hlfzn) — same rule as ensureSharedContainer:
-	// this call replaced the shared test server, so the port it exports is a
-	// declared test server, not an ambient one.
-	if err := os.Setenv("BEADS_TEST_SERVER", "1"); err != nil {
-		doltServerErr = fmt.Errorf("set BEADS_TEST_SERVER: %w", err)
-		return 0, doltServerErr
-	}
+	declareTestServerPort(doltTestPort)
 	if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
 		doltServerErr = fmt.Errorf("set BEADS_DOLT_PORT: %w", err)
 		return 0, doltServerErr
@@ -434,7 +431,10 @@ func startIsolatedLocalDoltServer(t *testing.T) *IsolatedDoltContainer {
 		t.Fatalf("starting local Dolt server: %v", err)
 	}
 	t.Cleanup(s.terminate)
-	return &IsolatedDoltContainer{Port: strconv.Itoa(s.Port()), local: s}
+	port := strconv.Itoa(s.Port())
+	declareTestServerPort(port)
+	t.Cleanup(func() { undeclareTestServerPort(port) })
+	return &IsolatedDoltContainer{Port: port, local: s}
 }
 
 // startIsolatedDoltContainer is StartIsolatedDoltContainerHandle for the
@@ -462,6 +462,8 @@ func startIsolatedDoltContainer(t *testing.T) *IsolatedDoltContainer {
 	if err != nil {
 		t.Fatalf("getting mapped port: %v", err)
 	}
+	declareTestServerPort(port.Port())
+	t.Cleanup(func() { undeclareTestServerPort(port.Port()) })
 
 	return &IsolatedDoltContainer{Port: port.Port(), ctr: ctr}
 }
@@ -469,38 +471,26 @@ func startIsolatedDoltContainer(t *testing.T) *IsolatedDoltContainer {
 // StartIsolatedDoltContainer starts a per-test Dolt container and returns the
 // mapped host port, additionally pointing BEADS_DOLT_PORT and
 // BEADS_DOLT_SERVER_PORT at it for the duration of the test.
-//
-// It also declares BEADS_TEST_SERVER=1 (vp-hlfzn): this call provisioned a
-// real test server, so the port it just wrote into the environment is a
-// declared test server, not an ambient one. Without the declaration,
-// RequireDeclaredTestServer would refuse the very tests this helper powers.
 func StartIsolatedDoltContainer(t *testing.T) string {
 	t.Helper()
 	c := StartIsolatedDoltContainerHandle(t)
-	t.Setenv("BEADS_TEST_SERVER", "1")
 	t.Setenv("BEADS_DOLT_PORT", c.Port)
 	t.Setenv("BEADS_DOLT_SERVER_PORT", c.Port)
 	return c.Port
 }
 
 // ensureSharedContainer starts the singleton container and sets
-// BEADS_DOLT_PORT and BEADS_DOLT_SERVER_PORT.
-//
-// Declaration is tied to SUCCESSFUL provisioning (vp-hlfzn): only when the
-// container actually started is BEADS_TEST_SERVER set to 1. A failed
-// provisioning must leave the process undeclared, so RequireDeclaredTestServer
-// refuses store-creating tests that would otherwise fall through to an
-// env-inherited port — the live city server under a gc-managed agent shell
-// (the vp-kmgu incident shape).
+// BEADS_DOLT_PORT and BEADS_DOLT_SERVER_PORT. Only a container that started
+// declares its port (vp-hlfzn), so a failed start leaves an inherited port
+// undeclared and RequireDeclaredTestServer refuses it.
 func ensureSharedContainer() {
 	doltServerOnce.Do(func() {
 		doltServerMu.Lock()
 		defer doltServerMu.Unlock()
 		doltServerErr = startDoltContainer()
 		if doltServerErr == nil && doltTestPort != "" {
-			if err := os.Setenv("BEADS_TEST_SERVER", "1"); err != nil {
-				doltServerErr = fmt.Errorf("set BEADS_TEST_SERVER: %w", err)
-			} else if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
+			declareTestServerPort(doltTestPort)
+			if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
 				doltServerErr = fmt.Errorf("set BEADS_DOLT_PORT: %w", err)
 			} else if err := os.Setenv("BEADS_DOLT_SERVER_PORT", doltTestPort); err != nil {
 				doltServerErr = fmt.Errorf("set BEADS_DOLT_SERVER_PORT: %w", err)
@@ -525,21 +515,6 @@ var checkDoltFn = checkDolt
 // against a singleton that has already failed. Production code never
 // reassigns it.
 var startSharedContainerFn = startSharedContainer
-
-// EnvSharedDoltServer names the one Dolt port that a test harness started a
-// server on for this process tree, as opposed to a port inherited from the
-// surrounding environment. Its value is that port number: scripts/test.sh sets
-// it to the same value as the BEADS_DOLT_PORT it exports for the dockerless
-// `dolt sql-server` of its BEADS_TEST_SHARED_SERVER=1 flow. It vouches for that
-// value only, never for the process: a port variable holding anything else is
-// still ambient, however it got there.
-//
-// It is deliberately a distinct name from BEADS_TEST_SHARED_SERVER. That flag
-// is also read by cmd/bd's shared-server integration test for an unrelated
-// purpose, and it only says a shared server was asked for, not that one was
-// started: the flow starts none when a port variable is already set, so the
-// flag beside a port cannot tell the script's own port from an inherited one.
-const EnvSharedDoltServer = "BEADS_TEST_SHARED_DOLT_SERVER"
 
 // sharedContainerErr reads the shared-container error under doltServerMu.
 // Every write to doltServerErr takes that mutex (ensureSharedContainer,

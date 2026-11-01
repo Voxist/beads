@@ -21,15 +21,16 @@ import (
 
 // TestDeclaredOptInRunsStoreCreatingTestOnEphemeralServer is the AC2 negative
 // control and AC3 demonstration for the vp-hlfzn declaration guard (vp-167w
-// part b): with BEADS_TEST_SERVER=1 explicitly set, a store-creating test
-// runs NORMALLY against a throwaway server — a guard that blocks everything
-// is as useless as one that blocks nothing.
+// part b): once the test declares the port of a server it started, a
+// store-creating test runs NORMALLY against it. A guard that blocks
+// everything is as useless as one that blocks nothing.
 //
 // The throwaway server is a real `dolt sql-server` spawned under t.TempDir()
-// on an ephemeral port, never the live city server on :48770 — the test
-// points BEADS_DOLT_SERVER_PORT at the ephemeral port, which is exactly the
-// inherited-env shape the guard polices, so the pass here can only come from
-// the declaration.
+// on an ephemeral port, never the live city server on :48770. The test points
+// BEADS_DOLT_SERVER_PORT at the ephemeral port, which is exactly the
+// inherited-env shape the guard polices, and the guard is called once before
+// the declaration (it must refuse, in a re-exec in testdoltport_test.go) and
+// once after it.
 func TestDeclaredOptInRunsStoreCreatingTestOnEphemeralServer(t *testing.T) {
 	testutil.RequireDoltBinary(t)
 	testutil.RequireDoltCLIOnly(t)
@@ -66,9 +67,11 @@ func TestDeclaredOptInRunsStoreCreatingTestOnEphemeralServer(t *testing.T) {
 	}
 
 	// The exact shape the guard polices: an env-resolved server port. Only
-	// the explicit BEADS_TEST_SERVER=1 declaration makes this a test server.
+	// the declaration makes this a test server. BEADS_TEST_SERVER=1 is the
+	// dolt.New firewall's opt-in for the testdb_ name below, not the guard's.
 	t.Setenv("BEADS_DOLT_SERVER_PORT", strconv.Itoa(port))
 	t.Setenv("BEADS_TEST_SERVER", "1")
+	testutil.DeclareTestServerPort(t, port)
 	testutil.RequireDeclaredTestServer(t)
 
 	dir := t.TempDir()

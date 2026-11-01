@@ -37,15 +37,13 @@ func fixTestServerPort() int {
 // must be t.Fatal, never t.Skip.
 func requireFixDoltContainer(t *testing.T) {
 	t.Helper()
-	// vp-hlfzn: refuse an env-inherited Dolt server port BEFORE the skip
-	// below. When this package's TestMain provisioned no container it
-	// neutralizes the ambient port vars, so the guard normally passes and
-	// the skip fires; the guard exists for the case where neither happened
-	// (a test run that never went through provisioning — e.g. the nocgo
-	// TestMain, or future drift) and an agent shell's inherited
-	// BEADS_DOLT_SERVER_PORT would otherwise carry the store onto the live
-	// city server (the vp-kmgu fixdepkeys_* incident). A refusal must not
-	// be masked by the skip.
+	// vp-hlfzn: refuse an undeclared Dolt server port BEFORE the skip
+	// below. TestMain either provisions a container, which declares its
+	// port, or clears the ambient port vars, so the guard normally passes;
+	// it is there for the run where neither happened (a TestMain that
+	// drifts) and an agent shell's inherited BEADS_DOLT_SERVER_PORT would
+	// otherwise carry the store onto the live city server (the vp-kmgu
+	// fixdepkeys_* incident). A refusal must not be masked by the skip.
 	testutil.RequireDeclaredTestServer(t)
 	if fixTestServerPort() != 0 {
 		return
