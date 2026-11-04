@@ -562,15 +562,19 @@ func refreshServerAfterReset(st storage.DoltStorage, remote string) *resetDataSe
 // (doltserver.ManagesLiveServerOnPort, #6123), so bd restarts it only when
 // no setting declares it managed outside bd, the settings that also keep bd
 // from killing a server (killStaleServersForDir): auto-start is off
-// (doltserver.IsAutoStartDisabled), or the workspace's server mode is not
+// (doltserver.IsAutoStartDisabledFor), or the workspace's server mode is not
 // owned (doltserver.ResolveServerModeIgnoringPortEnv, given serverDir, which
 // is the workspace's .beads directory outside shared-server mode). An
 // ambient port variable declares nothing (GH#6169). Shared-server mode,
 // which ResolveServerModeIgnoringPortEnv also reports as not owned, is no
 // declaration either: bd starts the shared server itself (bd init, bd dolt
 // start), so only auto-start off leaves it to the operator.
+//
+// FORK (Voxist/beads): IsAutoStartDisabledFor(serverDir), not upstream's
+// global IsAutoStartDisabled(), so the directory's own dolt.auto-start
+// counts, as it does in killStaleServersForDir (fork #56/#57).
 func externalServerDeclaration(serverDir string) string {
-	if doltserver.IsAutoStartDisabled() {
+	if doltserver.IsAutoStartDisabledFor(serverDir) {
 		return "auto-start is off (dolt.auto-start or BEADS_DOLT_AUTO_START)"
 	}
 	if !doltserver.IsSharedServerMode() && doltserver.ResolveServerModeIgnoringPortEnv(serverDir) != doltserver.ServerModeOwned {

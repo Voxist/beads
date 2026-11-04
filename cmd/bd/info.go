@@ -228,16 +228,6 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
-		Version: "1.95.0",
-		Date:    "2026-10-28",
-		Changes: []string{
-			"FORK RELEASE: Voxist/beads main after the 2026-10-27 resync with upstream 43f41374a (Voxist/beads#73) and the retirement of the fork's own proxied stack (Voxist/beads#76).",
-			"SCHEMA: 0069 -> 0072 (ignored plane 0027 -> 0028): 0070 participation_generation, 0071 removed_restriction, 0072 epoch_minted_addresses. NOT a binary swap: migrate each database with 'bd migrate schema' in a window. A 1.94.x bd refuses a 0072 database (schema skew), so roll back by restoring the pre-migration snapshot, not by copying the old binary back.",
-			"DOLT: bd refuses a Dolt server older than 2.6.0 outside embedded mode, reads included (upstream #7836). Upgrade the server first.",
-			"PROXIED: the fork's db-proxy connection pooling, BEADS_PROXY_IDLE_TIMEOUT and proxied deploy path are gone; proxied-server mode is upstream's again. Fork log hygiene (rotation, BEADS_PROXY_DEBUG) and MIGRATION-FREEZE remain.",
-		},
-	},
-	{
 		Version: "1.3.3",
 		Date:    "2026-11-03",
 		Changes: []string{
@@ -266,6 +256,16 @@ var versionChanges = []VersionChange{
 			"CHANGE: 'bd github' makes one extra API request per command (GET /repos/{owner}/{repo}) plus one per other same-host repository a local bead's link names, to recognize a renamed or transferred repository's former names. Beads linked under a name that lookup does not tie to the repository (the request failed, or the old name now belongs to another repository) count as another repository's: relink them with 'bd update <id> --external-ref <new-url>', or the next pull imports their issues again as new beads (#8068).",
 			"UPGRADE: after a Dolt port move, the Dolt child runs with --config <root>/proxy-child.runtime-config.yaml and <root>/proxy-child.pid (field 'port'; <root> is .beads/dolt by default) and the proxy DSN carry the effective port; tools that find bd's Dolt by a --config ending in config.yaml, or read its port from config.yaml, should also accept the runtime config and read the port from proxy-child.pid, not proxy.pid (#7184).",
 			"UPGRADE: known issues not fixed in 1.3.3, with workarounds. (0) Credentials (tracker tokens, AI key, BEADS_DOLT_PASSWORD) go to whatever endpoint the workspace configures, including committed .beads/config.yaml, metadata.json, a BD_* key in .beads/.env, or the replicated config table (#7886); in a clone you do not trust, check its endpoints before running bd with credentials set, or unset them. Read the Dolt host from the files first, since in server mode any bd command that opens the database ('bd config list' included) sends BEADS_DOLT_PASSWORD to it: dolt_server_host in metadata.json, dolt.host in config.yaml/config.local.yaml, BD_DOLT_HOST in .beads/.env. Then check ai.base_url (BD_AI_BASE_URL in .beads/.env) and github.url, gitlab.url, ado.url, jira.url, linear.api_endpoint in 'bd config list'. Fixed on main by #7887. (1) Server mode where the Dolt server bd connects to does not serve .beads/dolt but .beads/dolt/<db> still holds a database: push/pull use that copy, and 'bd dolt push --force' or reset-data can replace the remote with it; move the copy out of .beads/dolt first. (2) 'bd dolt remote reset-data' through a sql-server can leave the remote empty: restart the Dolt server right before running it; if a reset already emptied the remote, restart and re-run 'bd dolt remote reset-data <name> --yes'; never delete refs/dolt/data by hand. (3) Clones that adopted migration 0062 by pull or bootstrap, or were cloned after it, start with an empty events table (#7039); the restore (#8047) is on main and NOT in 1.3.3, so do not run 'bd compact' or 'bd flatten' on such a clone until you run a release that includes #8047.",
+		},
+	},
+	{
+		Version: "1.95.0",
+		Date:    "2026-10-28",
+		Changes: []string{
+			"FORK RELEASE: Voxist/beads main after the 2026-10-27 resync with upstream 43f41374a (Voxist/beads#73) and the retirement of the fork's own proxied stack (Voxist/beads#76).",
+			"SCHEMA: 0069 -> 0072 (ignored plane 0027 -> 0028): 0070 participation_generation, 0071 removed_restriction, 0072 epoch_minted_addresses. NOT a binary swap: migrate each database with 'bd migrate schema' in a window. A 1.94.x bd refuses a 0072 database (schema skew), so roll back by restoring the pre-migration snapshot, not by copying the old binary back.",
+			"DOLT: bd refuses a Dolt server older than 2.6.0 outside embedded mode, reads included (upstream #7836). Upgrade the server first.",
+			"PROXIED: the fork's db-proxy connection pooling, BEADS_PROXY_IDLE_TIMEOUT and proxied deploy path are gone; proxied-server mode is upstream's again. Fork log hygiene (rotation, BEADS_PROXY_DEBUG) and MIGRATION-FREEZE remain.",
 		},
 	},
 	{
