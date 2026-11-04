@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/schema"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
@@ -218,6 +219,21 @@ func lenientGateWarning(intent openIntent, gateErr *schema.RemoteMigrateGateErro
 				"  Writes are blocked until the schema is reconciled.\n",
 			body, gateErr.CurrentVersion)
 	}
+}
+
+// requireReadableSchema bounds a read-only command's read-through. Having
+// tolerated a migration refusal, the open goes on at the current schema, which
+// this binary's issue reads can query only while it has every column the
+// shared projection selects (schema.CheckReadableDrift). One that lacks any is
+// refused here, as server mode's read-only open refuses it
+// (dolt.Config.RequireReadableSchema), instead of opening and then failing
+// every read on an unknown column. The other intents read no issues through
+// this open and are left alone.
+func (s *EmbeddedDoltStore) requireReadableSchema(ctx context.Context, conn *sql.Conn) error {
+	if s.intent != openReadOnlyCommand {
+		return nil
+	}
+	return schema.CheckReadableDrift(ctx, conn, "issues", sqlbuild.ColumnNames(sqlbuild.IssueBaseColumns))
 }
 
 // toleratesGateRefusal reports whether this open's intent may warn and
@@ -678,6 +694,9 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 			// migrate-or-adopt guidance.
 			// lenientGateWarning owns the rendering (and the rationale for
 			// preferring gateErr's shaped body over the blunt bullets).
+			if err := s.requireReadableSchema(ctx, conn); err != nil {
+				return err
+			}
 			fmt.Fprint(os.Stderr, lenientGateWarning(s.intent, gateErr))
 			return nil
 		}
@@ -725,6 +744,9 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 			// read-only command must not be bricked by dirty tables either,
 			// so both non-strict intents warn and continue on the current
 			// schema instead of failing the open.
+			if err := s.requireReadableSchema(ctx, conn); err != nil {
+				return err
+			}
 			switch s.intent {
 			case openWorkingSetReconcile:
 				fmt.Fprintf(os.Stderr,
@@ -1042,7 +1064,11 @@ func (s *EmbeddedDoltStore) ListTags(ctx context.Context) ([]string, error) {
 
 // ImportJSONLData atomically checks if the database is empty and, if so,
 // imports parsed issues and config key/value pairs in a single transaction.
-// Returns the count of issues imported, or 0 if the database was not empty.
+// Returns the count of issues imported and, deduplicated in file order, the
+// ids it skipped because a retaining retention sweep retired them (an import
+// never resurrects a swept row, and they are not counted as imported), or 0
+// and nil if the database was not empty. A database holding only tombstones
+// has no issue rows, so it counts as empty.
 // Does NOT issue DOLT_COMMIT — the caller is responsible for committing
 // (e.g. via the PersistentPostRun auto-commit hook).
 func (s *EmbeddedDoltStore) ImportJSONLData(
@@ -1050,8 +1076,9 @@ func (s *EmbeddedDoltStore) ImportJSONLData(
 	issues []*types.Issue,
 	configEntries map[string]string,
 	actor string,
-) (int, error) {
+) (int, []string, error) {
 	var imported int
+	var retiredIDs []string
 	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
 		// Atomically check: is the database empty?
 		stats := &types.Statistics{}
@@ -1084,6 +1111,7 @@ func (s *EmbeddedDoltStore) ImportJSONLData(
 		}
 
 		// Create all issues in the same transaction
+		retired := make(map[string]bool)
 		if err := issueops.CreateIssuesInTx(ctx, tx, issues, actor, storage.BatchCreateOptions{
 			SkipPrefixValidation: true,
 			// Defense-in-depth (GH#3955): the embedded fast-path is the primary
@@ -1092,14 +1120,26 @@ func (s *EmbeddedDoltStore) ImportJSONLData(
 			// that check cannot clobber live rows — matching the server-mode
 			// fallback's conflict-skip behavior.
 			ConflictSkip: true,
+			// A row whose id a retaining sweep retired is skipped, never
+			// written; the callback names it so the count below leaves it out.
+			OnRetiredID: func(issueID string) { retired[issueID] = true },
 		}); err != nil {
 			return err
 		}
 
-		imported = len(issues)
+		imported, retiredIDs = 0, nil
+		listed := make(map[string]bool, len(retired))
+		for _, issue := range issues {
+			if !retired[issue.ID] {
+				imported++
+			} else if !listed[issue.ID] {
+				listed[issue.ID] = true
+				retiredIDs = append(retiredIDs, issue.ID)
+			}
+		}
 		return nil
 	})
-	return imported, err
+	return imported, retiredIDs, err
 }
 
 // Flatten squashes all Dolt commit history into a single commit.
@@ -1120,7 +1160,7 @@ func (s *EmbeddedDoltStore) Flatten(ctx context.Context) error {
 
 // Compact squashes old Dolt commits while preserving recent ones.
 // Pins a single *sql.Conn for session-scoped stored procedures.
-func (s *EmbeddedDoltStore) Compact(ctx context.Context, initialHash, boundaryHash string, oldCommits int, recentHashes []string) error {
+func (s *EmbeddedDoltStore) Compact(ctx context.Context, initialHash, boundaryHash, headHash string, oldCommits int, recentHashes []string) error {
 	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		// withDBConn returns *sql.DB; pin a single connection for
 		// session-scoped operations (checkout, reset, cherry-pick).
@@ -1130,9 +1170,9 @@ func (s *EmbeddedDoltStore) Compact(ctx context.Context, initialHash, boundaryHa
 				return err
 			}
 			defer conn.Close()
-			return versioncontrolops.Compact(ctx, conn, initialHash, boundaryHash, oldCommits, recentHashes)
+			return versioncontrolops.Compact(ctx, conn, initialHash, boundaryHash, headHash, oldCommits, recentHashes)
 		}
-		return versioncontrolops.Compact(ctx, db, initialHash, boundaryHash, oldCommits, recentHashes)
+		return versioncontrolops.Compact(ctx, db, initialHash, boundaryHash, headHash, oldCommits, recentHashes)
 	})
 }
 
