@@ -155,14 +155,18 @@ beside it on that command and advertises cardinality matching.
 Filed from `bourgois/beads-fork` with `maintainer_can_modify`. None is fork
 carry — each fixes an upstream bug the fork happened to hit.
 
-**Filed upstream, status as of 2026-10-30:**
+**Filed upstream, status as of 2026-11-04** (checked with `gh` at the
+2026-11-04 resync):
 
 | PR | From fork | What |
 | --- | --- | --- |
-| [#6125](https://github.com/gastownhall/beads/pull/6125) | #35 | machine-local config keys routed to the `config.local.yaml` sidecar (#6124 was its closed first attempt). Open; red on the embedded Dolt tier, no review since 2026-10-14. |
+| [#6125](https://github.com/gastownhall/beads/pull/6125) | #35 | machine-local config keys routed to the `config.local.yaml` sidecar (#6124 was its closed first attempt). Open, in review round 3: CHANGES_REQUESTED on 2026-11-02, after the 2026-09-29 approvals and the 2026-10-14 change request. |
 | [#6240](https://github.com/gastownhall/beads/pull/6240) | #32 | `--include-ephemeral` on `bd count` — the other half of the pair #6098 landed. Merged 2026-09-29. |
 | [#6251](https://github.com/gastownhall/beads/pull/6251) | #39 | `MIGRATION-FREEZE` findable in `.beads/` outside Gas Town. Closed 2026-09-18 as superseded by #6043, which keys the gate on the marker itself. |
-| [#7565](https://github.com/gastownhall/beads/pull/7565) | branch `fix/verify-project-identity-read-error-fc` on `mine` (no fork-side PR; filed 2026-10-15) | `verifyProjectIdentity` fails closed on a metadata READ error — the `err != nil || dbID == ""` conflation silently granted the connection in the restart window where the port frees and reads fail together. Empty `_project_id` still skips; the refusal fires on what survives `withReadTx`'s bounded retry. Shaped to #2446 (refusal, not recovery) and #6118 (prove ownership). CHANGES_REQUESTED 2026-10-15: the new test file is missing from `internal/storage/dolt/BUILD.bazel` (Bazel ran none of it), and the refusal should carry remedy advice. Fork `main` still has the conflation, as does `verifyGlobalProjectIdentity`. |
+| [#7565](https://github.com/gastownhall/beads/pull/7565) | branch `fix/verify-project-identity-read-error-fc` on `mine` (no fork-side PR; filed 2026-10-15) | `verifyProjectIdentity` fails closed on a metadata READ error — the `err != nil || dbID == ""` conflation silently granted the connection in the restart window where the port frees and reads fail together. Empty `_project_id` still skips; the refusal fires on what survives `withReadTx`'s bounded retry. Approved 2026-11-01 after the 2026-10-15 change request, still open, and **superseded by #8088** (next row). Fork `main` still has the conflation. |
+| [#8088](https://github.com/gastownhall/beads/pull/8088) | none: upstream's re-land of #7565, with credit (opened 2026-11-03) | Approved 2026-11-03, not merged. Differs from #7565 in two ways: it keeps a soft-skip for a database with no `metadata` table (no bd schema yet, such as one created ahead of `bd init`; `dberrors.IsMissingTable`), which #7565 refused, and its refusal points at `bd dolt status` instead of #7565's destructive remedies. The fork carries neither version, so the resync after #8088 merges brings upstream's version in; take it whole and do not re-apply #7565's branch. |
+| [#8040](https://github.com/gastownhall/beads/pull/8040) | branch `test/queued-init-notice-race` on `mine` (no fork-side PR; filed 2026-11-01) | Test-only: `TestAcquireCommandWorkspaceGatesQueuesBehindWaitingInit` could build its wait notice between the gate's intent flock and its `.intent.info` sidecar write; the fix waits for the sidecar before checking the queued-init notice. Approved 2026-11-01, not merged. |
+| issue [#8044](https://github.com/gastownhall/beads/issues/8044) | none (filed 2026-11-01) | `verifyGlobalProjectIdentity` has the same read-error conflation for `beads_global`, and its mismatch error misformats. #8088 leaves the global verifier to this follow-up. Open; no PR yet (only #7565 mentions it). |
 
 **Queued, in order, each behind the one it needs** (GitHub cannot stack a PR on
 a branch in a different fork — learned on #6240 — so these wait for a merge
@@ -354,9 +358,20 @@ A new upstream job on a Blacksmith label needs the same swap.
 fails on any `runs-on` or matrix `runner` line that can name a `blacksmith-*`
 label, so a resync that brings one in goes red in CI instead of hanging. The
 manual equivalent is
-`git grep -nE "^\s*(-\s+)?(runs-on|runner):.*blacksmith-" -- .github`, which
-must print nothing. Comments and job names keep upstream's Blacksmith wording;
-an unanchored grep for `blacksmith-` always matches those.
+`grep -nE "^[[:space:]]*(-[[:space:]]+)?(runs-on|runner):.*blacksmith-" .github/workflows/*.yml`,
+which must print nothing. Use the POSIX class, not `\s`: on macOS the
+`git grep -nE "^\s*..."` form this note used to give matches nothing at
+all, and at the 2026-11-04 resync it missed main.yml's new
+`windows-make-shell-toolchains` job. Comments and job names keep
+upstream's Blacksmith wording; an unanchored grep for `blacksmith-` always
+matches those.
+
+Since upstream #8023 (2026-10-31) the rbe job's `runs-on` picks Blacksmith
+only when `github.repository_owner_id` is gastownhall's (255961667), so
+upstream's expression already resolves to `ubuntu-latest` here. The fork
+still swaps the label inside it, because the policy test reads the line,
+not its value. Upstream's `TestBazelRBERunnerOutsideGastownhall` is
+fork-adjusted to expect `ubuntu-latest` for gastownhall's events too.
 
 **Auto-start decisions are workspace-scoped (fork #56/#57).** Production code
 calls `doltserver.IsAutoStartDisabledFor(beadsDir)`, never upstream's global
@@ -720,6 +735,16 @@ None is a tree change you can prepare in advance; all are done per cycle.
    Docker is unavailable for the vendorHash fallback, CI's `Test Nix Flake`
    prints the right hash on failure ("got: sha256-..."); the go-modules hash
    depends only on module content, not on the version line.
+
+   With neither nix nor Docker, the hash can be computed locally. With
+   `proxyVendor = true` the go-modules output is the module download cache
+   minus `sumdb`. Run `go mod download` with an empty `GOMODCACHE` in a
+   directory holding only `go.mod` and `go.sum` (`GOFLAGS=-mod=mod
+   GOTOOLCHAIN=local`; `GOPROXY=file://$(go env GOMODCACHE)/cache/download`
+   avoids the network). Delete `cache/download/sumdb`, then take the SRI
+   sha256 of the directory's NAR serialization. At the 2026-11-04 resync this
+   reproduced both the fork's and upstream's committed hashes exactly before
+   it was used for the merged tree.
 
 3. **`make install` cannot succeed in this fork — use `install-force`.** The
    `check-up-to-date` target compares HEAD against `origin/main`, and here
