@@ -1128,7 +1128,26 @@ esac
 							entries[f] = "x\n"
 						}
 					}
-					out, outputs, _, err := run(t, entries, map[string]string{name: "/etc/passwd"}, listed)
+					out, outputs, dir, err := run(t, entries, map[string]string{name: "/etc/passwd"}, listed)
+					// Some hosts' unzip will not create the link at all (the
+					// GitHub macOS 26.7 image prints "symlink error:
+					// Permission denied" and leaves the entry out), so the
+					// step's own refusal never sees it. That host is safe only
+					// if the entry is really absent and the step goes on as
+					// for a missing file: no patch means found=false, and the
+					// meta file is optional to the push script (META_FILE).
+					if strings.Contains(out, "symlink error") {
+						if _, lerr := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(lerr) {
+							t.Errorf("unzip reported a symlink error but %s exists (lstat err=%v)\n%s", name, lerr, out)
+						}
+						if strings.HasSuffix(name, ".patch") && strings.Contains(outputs, "found=true") {
+							t.Errorf("found=true without the patch: outputs=%q\n%s", outputs, out)
+						}
+						if err != nil {
+							t.Errorf("err=%v outputs=%q\n%s", err, outputs, out)
+						}
+						return
+					}
 					if err == nil || strings.Contains(outputs, "found=true") || !strings.Contains(out, "is not a regular file") {
 						t.Errorf("err=%v outputs=%q\n%s", err, outputs, out)
 					}

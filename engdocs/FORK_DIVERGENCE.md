@@ -155,14 +155,18 @@ beside it on that command and advertises cardinality matching.
 Filed from `bourgois/beads-fork` with `maintainer_can_modify`. None is fork
 carry — each fixes an upstream bug the fork happened to hit.
 
-**Filed upstream, status as of 2026-10-30:**
+**Filed upstream, status as of 2026-11-04** (checked with `gh` at the
+2026-11-04 resync):
 
 | PR | From fork | What |
 | --- | --- | --- |
-| [#6125](https://github.com/gastownhall/beads/pull/6125) | #35 | machine-local config keys routed to the `config.local.yaml` sidecar (#6124 was its closed first attempt). Open; red on the embedded Dolt tier, no review since 2026-10-14. |
+| [#6125](https://github.com/gastownhall/beads/pull/6125) | #35 | machine-local config keys routed to the `config.local.yaml` sidecar (#6124 was its closed first attempt). Open, in review round 3: CHANGES_REQUESTED on 2026-11-02, after the 2026-09-29 approvals and the 2026-10-14 change request. |
 | [#6240](https://github.com/gastownhall/beads/pull/6240) | #32 | `--include-ephemeral` on `bd count` — the other half of the pair #6098 landed. Merged 2026-09-29. |
 | [#6251](https://github.com/gastownhall/beads/pull/6251) | #39 | `MIGRATION-FREEZE` findable in `.beads/` outside Gas Town. Closed 2026-09-18 as superseded by #6043, which keys the gate on the marker itself. |
-| [#7565](https://github.com/gastownhall/beads/pull/7565) | branch `fix/verify-project-identity-read-error-fc` on `mine` (no fork-side PR; filed 2026-10-15) | `verifyProjectIdentity` fails closed on a metadata READ error — the `err != nil || dbID == ""` conflation silently granted the connection in the restart window where the port frees and reads fail together. Empty `_project_id` still skips; the refusal fires on what survives `withReadTx`'s bounded retry. Shaped to #2446 (refusal, not recovery) and #6118 (prove ownership). CHANGES_REQUESTED 2026-10-15: the new test file is missing from `internal/storage/dolt/BUILD.bazel` (Bazel ran none of it), and the refusal should carry remedy advice. Fork `main` still has the conflation, as does `verifyGlobalProjectIdentity`. |
+| [#7565](https://github.com/gastownhall/beads/pull/7565) | branch `fix/verify-project-identity-read-error-fc` on `mine` (no fork-side PR; filed 2026-10-15) | `verifyProjectIdentity` fails closed on a metadata READ error — the `err != nil || dbID == ""` conflation silently granted the connection in the restart window where the port frees and reads fail together. Empty `_project_id` still skips; the refusal fires on what survives `withReadTx`'s bounded retry. Approved 2026-11-01 after the 2026-10-15 change request, still open, and **superseded by #8088** (next row). Fork `main` still has the conflation. |
+| [#8088](https://github.com/gastownhall/beads/pull/8088) | none: upstream's re-land of #7565, with credit (opened 2026-11-03) | Approved 2026-11-03, not merged. Differs from #7565 in two ways: it keeps a soft-skip for a database with no `metadata` table (no bd schema yet, such as one created ahead of `bd init`; `dberrors.IsMissingTable`), which #7565 refused, and its refusal points at `bd dolt status` instead of #7565's destructive remedies. The fork carries neither version, so the resync after #8088 merges brings upstream's version in; take it whole and do not re-apply #7565's branch. |
+| [#8040](https://github.com/gastownhall/beads/pull/8040) | branch `test/queued-init-notice-race` on `mine` (no fork-side PR; filed 2026-11-01) | Test-only: `TestAcquireCommandWorkspaceGatesQueuesBehindWaitingInit` could build its wait notice between the gate's intent flock and its `.intent.info` sidecar write; the fix waits for the sidecar before checking the queued-init notice. Approved 2026-11-01, not merged. |
+| issue [#8044](https://github.com/gastownhall/beads/issues/8044) | none (filed 2026-11-01) | `verifyGlobalProjectIdentity` has the same read-error conflation for `beads_global`, and its mismatch error misformats. #8088 leaves the global verifier to this follow-up. Open; no PR yet (only #7565 mentions it). |
 
 **Queued, in order, each behind the one it needs** (GitHub cannot stack a PR on
 a branch in a different fork — learned on #6240 — so these wait for a merge
@@ -354,9 +358,22 @@ A new upstream job on a Blacksmith label needs the same swap.
 fails on any `runs-on` or matrix `runner` line that can name a `blacksmith-*`
 label, so a resync that brings one in goes red in CI instead of hanging. The
 manual equivalent is
-`git grep -nE "^\s*(-\s+)?(runs-on|runner):.*blacksmith-" -- .github`, which
-must print nothing. Comments and job names keep upstream's Blacksmith wording;
-an unanchored grep for `blacksmith-` always matches those.
+`grep -nE "^[[:space:]]*(-[[:space:]]+)?(runs-on|runner):.*blacksmith-" .github/workflows/*.yml`,
+which must print nothing. Use the POSIX class, not `\s`: on macOS the
+`git grep -nE "^\s*..."` form this note used to give matches nothing at
+all, and at the 2026-11-04 resync it missed main.yml's new
+`windows-make-shell-toolchains` job. Comments and job names keep
+upstream's Blacksmith wording; an unanchored grep for `blacksmith-` always
+matches those.
+
+Since upstream #8023 (2026-10-31) the rbe job's `runs-on` picks Blacksmith
+only when `github.repository_owner_id` is gastownhall's (255961667), so
+upstream's expression already resolves to `ubuntu-latest` here. The fork
+still swaps the label inside it, because the policy test reads the line,
+not its value. Upstream's `TestBazelRBERunnerOutsideGastownhall` is
+fork-adjusted to expect `ubuntu-latest` for gastownhall's events too. It is
+kept for line shape only: `TestForkWorkflowsUseNoBlacksmithRunner` is the
+real guard against a Blacksmith label.
 
 **Auto-start decisions are workspace-scoped (fork #56/#57).** Production code
 calls `doltserver.IsAutoStartDisabledFor(beadsDir)`, never upstream's global
@@ -633,7 +650,7 @@ Recurring conflicts, roughly in descending pain:
    hand-merge them. Take upstream's file, then re-place the fork-only tests
    with `scripts/ci/gen_*_shard_manifest.py <N> --weights=duration --write`
    (N is in the file header). There were 7 fork-only tests at the 2026-10-14
-   resync.
+   resync, and 5 at the 2026-11-04 resync.
 
 Verify a resync's embedded zones with `BEADS_TEST_EMBEDDED_DOLT=1` and `-v`.
 Without that variable every `TestEmbedded*` test SKIPs, and `go test` still
@@ -720,6 +737,16 @@ None is a tree change you can prepare in advance; all are done per cycle.
    Docker is unavailable for the vendorHash fallback, CI's `Test Nix Flake`
    prints the right hash on failure ("got: sha256-..."); the go-modules hash
    depends only on module content, not on the version line.
+
+   With neither nix nor Docker, the hash can be computed locally. With
+   `proxyVendor = true` the go-modules output is the module download cache
+   minus `sumdb`. Run `go mod download` with an empty `GOMODCACHE` in a
+   directory holding only `go.mod` and `go.sum` (`GOFLAGS=-mod=mod
+   GOTOOLCHAIN=local`; `GOPROXY=file://$(go env GOMODCACHE)/cache/download`
+   avoids the network). Delete `cache/download/sumdb`, then take the SRI
+   sha256 of the directory's NAR serialization. At the 2026-11-04 resync this
+   reproduced both the fork's and upstream's committed hashes exactly before
+   it was used for the merged tree.
 
 3. **`make install` cannot succeed in this fork — use `install-force`.** The
    `check-up-to-date` target compares HEAD against `origin/main`, and here
@@ -813,6 +840,59 @@ The order that works:
 
 Anything else still running an old `bd` against the shared server will break the
 moment its database migrates. Check other machines before deploying.
+
+### The release after the 2026-11-04 resync: schema 0072 -> 0074
+
+The 2026-11-04 resync (Voxist/beads#78) brings two main-schema migrations,
+`0073_add_arrival_seq` and `0074_create_id_tombstones` (upstream 5011528b3,
+93531223b, 7ac98ae6d, 9311c2463), and moves the ignored plane from 0028 to
+0031 (`0029_add_wisps_arrival_seq`, `0030_create_wisp_id_tombstones`,
+`0031_restore_preflip_events`). That release is NOT a binary swap. Fork
+`main` keeps reporting 1.95.0 until the follow-up release PR bumps the
+version and writes its `info.go` entry. Do not deploy `main` before that
+PR lands.
+
+Deploy it in the same order as the 1.95.0 window (gascity ga-s69mk.18):
+
+1. **Check the gascity native store first.** gascity links the beads library
+   pinned at 1.95.0 (`43f41374a`, schema 0072). That library's server-mode
+   open runs `schema.CheckForwardDrift`, which refuses a database ahead of
+   its own latest migration, and gc unsets `BD_IGNORE_SCHEMA_SKEW` for the
+   open (`bdRemoteMigrateOpenEnvKeys`). From the code, expect it to refuse a
+   0074 database. Confirm that against a migrated copy before the window.
+2. **If it refuses, bump gascity's beads pin first**, to the release that
+   carries 0074, and deploy gc.
+3. **Then swap `bd` and run `bd migrate` per database** in a window, with the
+   backup and rehearsal steps above.
+
+Once one database is migrated to 0074, every host still on 1.95.0 refuses
+it (schema skew). Roll back by restoring the pre-migration backup, not by
+copying the old binary back.
+
+Two upstream 1.3.3 behavior changes arrive with this release:
+
+- **`.beads/.env` is filtered (#7879).** `loadBeadsEnvFile`
+  (`cmd/bd/main.go`) imports only keys that `creds.AllowedProjectEnvKey`
+  (`internal/creds/command.go`) admits: `BEADS_*`, `BD_*`, `GT_ROOT` (#8117)
+  and the Dolt remote credential pair `DOLT_REMOTE_USER` /
+  `DOLT_REMOTE_PASSWORD`. Any other key is dropped with
+  `beads: ignoring <KEY> from .beads/.env (<reason>)` on stderr. Command
+  keys (`BEADS_DOLT_CREDENTIAL_COMMAND`, `BEADS_HTTP_TOKEN_COMMAND`,
+  `BD_MAIL_DELEGATE`, `BD_PAGER`, `BEADS_DOLT_BIN`, ...) and credential
+  redirect keys (`BEADS_DOLT_SERVER_HOST`, `BEADS_CREDENTIALS_FILE`,
+  `BEADS_CENTRAL_CONFIG`, `BEADS_HTTP_CA_FILE`) are dropped even though they
+  carry a `BEADS_`/`BD_` prefix. At the 2026-11-04 resync every rig
+  `.beads/.env` held only `GT_ROOT`, which is admitted.
+- **The Dolt endpoint is pinned on first use (#7887).** When
+  `BEADS_DOLT_PASSWORD` is set, `resolveDoltServerConnection`
+  (`cmd/bd/main.go`) calls `CheckServerEndpointTrust` before it sends the
+  password. Loopback endpoints and hosts set from a private source (the
+  process environment, not `.beads/.env`, or user config) are trusted and
+  pinned per workspace in `~/.config/beads/trusted-endpoints.json`. A
+  non-loopback host that only committed config names is refused until a
+  private source confirms it, and a later change of a pinned endpoint is
+  refused the same way. gc passes `BEADS_DOLT_SERVER_HOST` in the process
+  environment, so the fleet's endpoints count as private.
 
 ## Local conventions
 

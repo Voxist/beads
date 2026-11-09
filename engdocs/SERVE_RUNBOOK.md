@@ -1,22 +1,25 @@
 # `bd serve` operator runbook
 
-Last reviewed: 2026-08-10
+Last reviewed: 2026-11-09
 
 Freshness source: `internal/httpapi/server.go`,
 `internal/httpapi/events_watch.go`, `cmd/bd/serve.go` and
 `internal/httpapi/auth.go` — the operating-envelope constants, the fields their
 `event` emitters write, and the flag, posture and token-file rules.
 
-Every flag, error string, event name and reason value quoted below was checked
-against a build of those files, not read off the source.
+Every flag and startup refusal quoted below was checked against a build of
+those files, not read off the source; event names, fields and reason values
+were checked against their emitters.
 
 Running the v0 HTTP surface. For the contract it serves — the operations, the
 error vocabulary, the cursor, the loopback posture — see
 [design/bd-serve-v0.md](design/bd-serve-v0.md).
 
-Every number below is a constant in `internal/httpapi/server.go` unless stated
-otherwise. They are not flags yet; when they become flags the wire contract does
-not change.
+Every number below is a constant in `internal/httpapi/server.go` (stream
+numbers in `events_watch.go`, token-file numbers in `auth.go`) unless stated
+otherwise. Only `--large-apply-ceiling` is a flag; when the others become flags
+the wire contract does not change. The `event=limits` startup line prints the
+envelope a running build compiled in.
 
 ## Deployment
 
@@ -150,18 +153,25 @@ bd serve: WARNING: 0.0.0.0:7777 is bound beyond loopback with bearer authenticat
 body travel in plaintext, so a deployment beyond loopback has to supply
 confidentiality itself — a service mesh, or a trusted network boundary. An
 authenticating reverse proxy in front is still a reasonable shape; the token
-file is what stops the origin being open if it is bypassed.
+file is what stops the origin being open if it is bypassed. Every response
+carries `Cache-Control: no-store`, so a proxy must not cache answers about live
+work.
 
 **The Host allowlist is what a service deployment trips over first.** The
-DNS-rebinding check answers only to loopback spellings and the bind address, so
-a client dialing a service DNS name gets a `400` on every request. Enumerate
-the names it dials with `--allowed-host` (repeatable, matched exactly, no
-wildcards). The `event=startup` line prints the effective allowlist.
+DNS-rebinding check answers only to loopback spellings (`127.0.0.1`, `::1`,
+`localhost`) and the bind address, so a client dialing a service DNS name gets
+a `400` on every request. A wildcard bind (`0.0.0.0`, `::`) also answers any
+numeric IP literal, but still no name. Enumerate the names clients dial with
+`--allowed-host` (repeatable, matched exactly after the request's port is
+stripped, case-insensitive, no wildcards; an entry carrying a port is refused at
+startup, since it could never match). The `event=startup` line prints the
+effective allowlist as `host_allowlist`.
 
 One behavioral difference follows `--allow-non-loopback`: `limit=0` (unlimited)
-is refused on both list operations with 400 `invalid_argument` /
-`reason: "invalid_value"`, whether or not a token is configured. Clients must
-page.
+is refused on all three paged reads (`GET /v0/beads/ready`,
+`GET /v0/beads/issues`, `GET /v0/beads/issues:query`) with 400
+`invalid_argument` / `reason: "invalid_value"`, whether or not a token is
+configured. Clients must page.
 
 The blocked listing (`GET /v0/beads/blocked`, behind `blocked.list`) is the
 exception, on every bind: like `bd blocked`, it takes no `limit` and no cursor,
@@ -251,9 +261,12 @@ The shape behind those numbers:
 
 So `max_connections` on a shared server must cover roughly `22 × (number of bd
 serve processes)` plus every other `bd` process pointed at the same server,
-each of which claims its own. Idle connections are reclaimed after 5 minutes and
-recycled after an hour, so a bursty deployment settles below the worst case —
-but size for the worst case.
+each of which claims its own. Idle connections are reclaimed after 20 seconds
+(kept under the 30s Dolt `wait_timeout` bd supports, so the pool never hands a
+request a connection the server already reaped) and recycled after an hour, so
+a bursty deployment settles below the worst case — but size for the worst case.
+The `event=limits` line prints these as `pool_max_open`, `pool_max_idle`,
+`pool_idle_time` and `pool_lifetime`.
 
 Those pool limits are applied only if the unit-of-work provider exposes the
 knob. If it does not, `bd serve` says so at startup with
@@ -299,8 +312,8 @@ A stream has no read deadline (SSE clients legitimately send nothing for hours,
 so one would kill healthy streams), which raises the question of what reaps a
 consumer that vanishes without a FIN or RST — a yanked cable, a killed VM.
 **TCP keepalive already does**, and is on by default: Go's listener enables
-`SO_KEEPALIVE` on every accepted connection and overrides the system idle and
-interval with its own 15s, leaving the probe count at the system's. Measured on
+`SO_KEEPALIVE` on every accepted connection and sets its own idle (15s),
+interval (15s) and probe count (9) over the system's. Measured on
 this fleet (2026-08-09): `SO_KEEPALIVE=1`, `TCP_KEEPIDLE=15`, `TCP_KEEPINTVL=15`,
 `TCP_KEEPCNT=9` — a **~150 second** reap for a connection that is idle, against
 the ~2h11m the bare system defaults (7200/75/9) would have given. A stream that
@@ -317,7 +330,24 @@ whole-request deadline for the same reason, and each read is bounded by its own
 15s deadline instead — short because it also bounds how long a stream can go
 without a heartbeat and how long it can ignore a shutdown, not because a page of
 1000 journal rows should ever take that long. Tell accumulating consumers to
-poll `GET /v0/beads/events`, which is never refused for capacity.
+poll `GET /v0/beads/events`, which is never refused for capacity. A refused
+stream's `503 events_watch_saturated` carries `Retry-After: 30`.
+
+A caught-up stream polls about once a second (jittered by up to ±10% so
+reconnected streams do not read in lockstep) and writes a `heartbeat` comment
+after 20 seconds of silence. **Any proxy or load balancer in front must have an
+idle timeout above 20 seconds**, or it cuts healthy streams, and must not buffer
+the response (the stream sends `X-Accel-Buffering: no`; other proxies need
+buffering turned off for the route). The stream's first line tells clients to
+reconnect after 3 seconds.
+
+When the workspace journals with auto-prune on, `bd serve` runs journal
+retention itself on a 5-minute ticker
+(`eventsjournal.DefaultAutoPruneTickInterval`, started from
+`cmd/bd/serve.go`), sharing the persisted schedule the CLI uses. A
+consumer whose checkpoint falls behind the prune floor gets `410
+events_journal_truncated` (or a `truncated` event mid-stream) and must
+re-baseline. Prune results are logged only under bd's debug logging.
 
 ## Shutdown, and the ambiguous claim
 
@@ -336,6 +366,11 @@ instead of the ordinary 20 seconds — the in-flight write is waited out, not
 killed mid-commit. A large apply still *queued* for the one-wide large-apply
 semaphore when shutdown begins is refused with `503` immediately rather than
 being admitted or extending the drain further.
+
+Large applies are serialized outside shutdown too: one runs, at most one more
+waits up to 10 seconds for the slot, and any other arriving meanwhile is refused
+at once with `503 busy`. Once admitted, a large apply runs to its ceiling even if
+its client hangs up.
 
 **The orchestrator's stop grace (e.g. a Kubernetes `terminationGracePeriodSeconds`)
 must be at least `--large-apply-ceiling` plus 5 seconds.** The drain logic above
@@ -427,11 +462,12 @@ Other events on the same stream:
 
 | Event | When |
 |---|---|
-| `startup` | Bound address, mode, workspace, database, host allowlist, capabilities, and `auth` — `none`, or `bearer (<token file path>)`. Check `auth` after a deploy rather than inferring it from a process listing. |
+| `startup` | `addr`, `mode`, `db` (`provider` or `roles`), `workspace`, `beads_dir`, `database`, `host_allowlist`, `capabilities`, and `auth` — `none`, or `bearer (<token file path>)`. Check `auth` after a deploy rather than inferring it from a process listing. |
 | `auth_refused` | A `401`. Carries `request_id`, `op`, `remote_addr` and `reason` (`missing`, `malformed`, `unknown_token`). A burst of `unknown_token` from one peer is a client left on a rotated-out token; `missing` is a client that was never configured with one. |
 | `auth_reload_error` | The token file could not be re-read. **Not** a refusal — the last-good set stays in force — but the file an operator is rotating is unreadable and nothing else says so. |
-| `limits` | The operating envelope this build compiled in. Log it, then compare against this page. |
+| `limits` | The operating envelope this build compiled in: `max_inflight`, `max_conns`, `sem_wait`, `deadline`, the effective `large_apply_ceiling`, and on the provider source the `pool_*` limits. Log it, then compare against this page. |
 | `request_error` | Accompanies a ≥500, carrying the real error the body withholds. Join on `request_id`. Not emitted when the client hung up (see above). |
+| `request_refused` | A 4xx from a write operation (create, update, batch create, close or apply, claim-next, release, heartbeat, dependency edit, metadata CAS) whose response rewords the storage refusal: carries the original `error`. Join on `request_id` when a client's 400 or 409 needs explaining. |
 | `pool_limits_unavailable` | The unit-of-work provider does not expose the pool knob, so the limits below are *not* applied and the pool is unbounded. Worth alerting on; it changes the connection budget. |
 | `panic` | A panicking handler: the value, the stack, and the same `request_id`. |
 | `semaphore_saturated`, `semaphore_timeout`, `conn_cap_saturated` | See [Detecting a wedge](#detecting-a-wedge). |
@@ -450,19 +486,25 @@ gives the shape, the `request_error` line gives the cause.
 
 | Message | Cause |
 |---|---|
-| `bd serve requires a Dolt SQL server; this workspace uses embedded Dolt` | Permanent. The embedded backend commits outside the SQL transaction on a separate connection, so this server's per-request atomicity would be a lie there. Refused by `serveDatabaseSource`, which is the only thing refusing it — see "Workspace modes" in the design doc. |
+| `operation "serve" not supported by the embedded-dolt backend: bd serve requires a Dolt SQL server; this workspace uses embedded Dolt` | Permanent. The embedded backend commits outside the SQL transaction on a separate connection, so this server's per-request atomicity would be a lie there. Refused by `serveDatabaseSource`, which is the only thing refusing it — see "Workspace modes" in the design doc. |
 | `bd serve is unavailable under strict readonly` | `--readonly`, or `readonly` in config. Every server this command binds publishes the issue-claim operation and the advertised capability set is a property of the build, not of the flags on the process that started it — so the alternatives were a server advertising a claim it always fails (the store source, where the read-only open reaches the claimer) or a `--readonly` that quietly bought nothing (the provider source, which builds its own writable connection). Drop the flag to serve. |
 | `--addr "localhost:7777": host must be a numeric IP literal, not a name — use 127.0.0.1 rather than localhost` | `--addr` was given a DNS name. |
+| `--addr "7777" must be HOST:PORT with a numeric IP literal host (unix sockets are not supported): …` | `--addr` is not `host:port`; a bare port or a socket path is refused. |
 | `--addr "0.0.0.0:7777" binds beyond loopback, which requires --allow-non-loopback (and, with it, --auth-token-file)` | A non-loopback `--addr` without the flag. |
 | `--allow-non-loopback requires --auth-token-file (or the explicit --insecure-no-auth): every peer that can reach the address gets full read and claim access` | Binding beyond loopback with no credential and no waiver. |
 | `--insecure-no-auth applies only to a bind beyond loopback; on loopback there is nothing to waive, so pass --allow-non-loopback or drop the flag` | The waiver without the bind it waives. |
 | `--insecure-no-auth contradicts --auth-token-file; pass one or the other` | Both spellings of the auth decision at once. |
 | `--auth-token-file: token file <path>: open <path>: no such file or directory` | The token file is unreadable. Also `is a directory`, `contains no tokens`, and `is larger than 1048576 bytes; that is a mis-pointed path, not a token file`. All four are refusals at startup, never a server that binds anyway. |
-| `address already in use` | The fixed-port mutual exclusion working as intended: a second server is already on that port. |
+| `--allowed-host "bd.internal.example:7777" carries a port; the port is stripped from a request's Host before matching, so an entry with one could never match` | An allowlist entry with a port. An empty entry, one with whitespace, and one that looks like a URL are refused the same way. |
+| `--large-apply-ceiling must be positive, got 0s` | A zero or negative ceiling. |
+| `bind <addr>: … address already in use` | The fixed-port mutual exclusion working as intended: a second server is already on that port. |
 
-The five auth and bind refusals above are raised by `resolveServeConfig` before
-serve opens its database source or listener, independent of the workspace, so
-they read the same in every workspace mode. (The root command's
+The flag refusals above (everything but the embedded, readonly and bind rows)
+are raised by `resolveServeConfig` before serve opens its database source or
+listener, independent of the workspace, so they read the same in every
+workspace mode. The readonly refusal follows them, still ahead of the
+workspace; in proxied-server mode the root command refuses `--readonly` first,
+with `proxy.readonly.unsupported`. (The root command's
 `PersistentPreRunE` still resolves the workspace first, so a directory with no
 beads database answers `no beads database found` ahead of any of them.) And
 `httpapi.Listen` re-checks the same rules, so a second caller of the package
