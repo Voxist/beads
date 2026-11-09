@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Telemetry no longer exports the raw command line.** With telemetry on
+  (`BD_OTEL_ENABLED=true`), the OTel resource attached to every exported
+  metric and span carried `process.command_args`, the unscrubbed `os.Args`,
+  so a `--password=...` flag, search text or an issue title reached the
+  metrics receiver even though the `bd.args` span attribute is scrubbed. The
+  resource also carried `process.executable.path` and `process.owner` (the OS
+  user name). bd now builds the resource from explicit detectors and keeps
+  only `host.name`, `process.pid`, `process.executable.name` and the Go
+  runtime attributes.
+
 - **Shared workspace configuration can no longer redirect your private
   credentials to an attacker's endpoint (GH#7886, #7560).** A committed
   `.beads/config.yaml` / `.beads/config.local.yaml` / `.beads/.env`, a

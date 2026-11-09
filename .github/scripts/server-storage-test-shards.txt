@@ -17,6 +17,18 @@
 # would hash into shard 6, which already takes about the whole 15m test timeout
 # under load (907s on rbe-west on 2026-10-28), so it is pinned to shard 16, the
 # lightest (250-420s in the same run).
+# Shard 13 hashes in the heaviest serial test of the package,
+# TestCreateBatchFastPathsMatchPerRow_Dolt (about 196s on GitHub's
+# ubuntu-latest runner, run in turn before the parallel tests). It was already
+# the slowest shard (600-705s on 2026-10-30/11-01), and the 2026-11-04 resync
+# added its "retired" scenario (#7931, about 43s), which put the shard at the
+# 15m test timeout (886s, then 907s, timed out, in the same runs where the
+# next-heaviest shard took 520s). It and the next heaviest tests that hash
+# there are pinned to light shards: TestCreateBatchFastPathsMatchPerRow_Dolt to
+# 14, TestDeleterContract (about 76s, parallel) to 8,
+# TestDoltNew_WispRowLockSelfHeal_RealDolt (about 41s, serial) to 16, and
+# TestDoltNew_SmartRemoteMigrateGate_BelowLatestDegrades_RealDolt (about 40s,
+# serial) to 7.
 # Every other discovered test (the bulk of the 1126) is not listed here and
 # falls through to server-storage-test-shard.sh's hash(name) % total
 # fallback, the same mechanism the embedded manifest uses for its unlisted
@@ -41,3 +53,7 @@
 16 15 TestSerializationConflictRetry
 16 16 TestConcurrentCommentAndCloseWithoutCallerRetry
 16 16 TestIDRetentionContractRaces
+16 14 TestCreateBatchFastPathsMatchPerRow_Dolt
+16 8 TestDeleterContract
+16 16 TestDoltNew_WispRowLockSelfHeal_RealDolt
+16 7 TestDoltNew_SmartRemoteMigrateGate_BelowLatestDegrades_RealDolt
