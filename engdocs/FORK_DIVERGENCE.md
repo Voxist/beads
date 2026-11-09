@@ -676,6 +676,12 @@ resync treats them as landed: upstream #8222 (3a068dbef, ee3fc4e5d) and
 #8221 (bc07541c6, 318da2de0, which also re-added 7 fork naming-table rows to
 `engdocs/design/otel/otel-data-model.md`).
 
+Also carried, and NOT merged upstream yet: #8232 (61364d9e2 -> f56cb9456,
+`cherry-pick -x`, test-only), which fixes the second-boundary race in
+`TestEmbeddedCompactAbortsDivergentReplay`'s `setupStraddledCutoff` fixture in
+`cmd/bd/compact_embedded_test.go`. When #8232 lands upstream, take upstream's
+version of that file and drop ours.
+
 Verify a resync's embedded zones with `BEADS_TEST_EMBEDDED_DOLT=1` and `-v`.
 Without that variable every `TestEmbedded*` test SKIPs, and `go test` still
 prints `ok`.
