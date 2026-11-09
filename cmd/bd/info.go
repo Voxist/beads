@@ -228,6 +228,17 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.96.0",
+		Date:    "2026-11-09",
+		Changes: []string{
+			"FORK RELEASE: Voxist/beads main after the 2026-11-09 resync with upstream main at 3c205e0a4 (Voxist/beads#78). That is a superset of upstream 1.3.3 and includes #7887 and #8047, so the 1.3.3 entry's 'NOT in 1.3.3 / do not run bd compact' caveat does not apply to this binary.",
+			"SCHEMA: 0072 -> 0074 (main: 0073_add_arrival_seq, 0074_create_id_tombstones), ignored 0028 -> 0031. This is a schema migration, NOT a binary swap: run 'bd migrate schema' per database. bd 1.95.0 refuses a migrated database, so roll back with down-SQL or a filesystem restore, not by copying the old binary back.",
+			"DEPLOY: link gc at a matching beads library first, then migrate each database with the new bd.",
+			"SECURITY: from upstream 1.3.3, .beads/.env imports only an allowlist of keys and ignores the rest with 'beads: ignoring <KEY> from .beads/.env' (#7879); GT_ROOT is allowed (#8117). Move any other key to the shell environment or ~/.config/bd/config.yaml.",
+			"CHANGE: when BEADS_DOLT_PASSWORD is set, the Dolt endpoint is pinned and a workspace config cannot redirect the credential to another host (#7887).",
+		},
+	},
+	{
 		Version: "1.3.3",
 		Date:    "2026-11-03",
 		Changes: []string{
