@@ -855,15 +855,32 @@ PR lands.
 Deploy it in the same order as the 1.95.0 window (gascity ga-s69mk.18):
 
 1. **Check the gascity native store first.** gascity links the beads library
-   pinned at 1.95.0 (`43f41374a`, schema 0072). That library's server-mode
+   pinned at upstream `43f41374a`, the base of 1.95.0 (schema 0072); the
+   linked library carries none of the fork's carries. That library's server-mode
    open runs `schema.CheckForwardDrift`, which refuses a database ahead of
    its own latest migration, and gc unsets `BD_IGNORE_SCHEMA_SKEW` for the
    open (`bdRemoteMigrateOpenEnvKeys`). From the code, expect it to refuse a
    0074 database. Confirm that against a migrated copy before the window.
-2. **If it refuses, bump gascity's beads pin first**, to the release that
-   carries 0074, and deploy gc.
+2. **If it refuses, bump gascity's beads pin first**, and deploy gc. No
+   upstream beads release carries 0074 (v1.3.3 and v1.3.4 = `7ef2fd05e` are
+   at schema 0066, and `3c205e0a4` is not an ancestor of v1.3.4). gascity
+   pins an upstream-main pseudo-version (today
+   `v1.3.1-0.20261027095128-43f41374a34d`), so bump it to the pseudo-version
+   for `3c205e0a41e42c01be5dd2c1df6bf870b6104482` or later. Hazard: upstream
+   gascity (gastownhall/gascity main `79855f5f1`) now pins beads v1.3.4
+   (schema 0066). A Voxist gascity resync that takes upstream's `go.mod`
+   would drop the linked library to 0066, and the native store would then
+   refuse every fleet DB at 0072/0074.
 3. **Then swap `bd` and run `bd migrate` per database** in a window, with the
    backup and rehearsal steps above.
+
+Two rehearsal facts:
+
+- A filesystem copy of a city DB dir inherits its Dolt backup targets (OWC,
+  AWS offsite, `.dolt-backup`, `dolt-backups`, `voxist-recovery`), so strip
+  them from any staging or rehearsal copy before a private server touches it.
+- Before migrating, the new bd refuses `bd sql` too (the #4259 remote gate),
+  so prove the target port by connection, not with `bd sql`.
 
 Once one database is migrated to 0074, every host still on 1.95.0 refuses
 it (schema skew). Roll back by restoring the pre-migration backup, not by
@@ -890,8 +907,8 @@ Two upstream 1.3.3 behavior changes arrive with this release:
   process environment, not `.beads/.env`, or user config) are trusted and
   pinned per workspace in `~/.config/beads/trusted-endpoints.json`. A
   non-loopback host that only committed config names is refused until a
-  private source confirms it, and a later change of a pinned endpoint is
-  refused the same way. gc passes `BEADS_DOLT_SERVER_HOST` in the process
+  private source confirms it, and a later change to a pinned shared endpoint
+  is refused the same way. gc passes `BEADS_DOLT_SERVER_HOST` in the process
   environment, so the fleet's endpoints count as private.
 
 ## Local conventions
