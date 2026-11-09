@@ -646,11 +646,35 @@ Recurring conflicts, roughly in descending pain:
    the freeze lookup, so drop upstream's later copy and carry over any new
    `schema.Set*` line it adds.
 6. **CI shard manifests** — `.github/scripts/{embedded-cmd,embedded-storage,
-   proxied-cmd}-test-shards.txt`. Upstream re-shards them wholesale, so never
+   proxied-cmd,server-storage}-test-shards.txt`. Upstream re-shards them wholesale, so never
    hand-merge them. Take upstream's file, then re-place the fork-only tests
    with `scripts/ci/gen_*_shard_manifest.py <N> --weights=duration --write`
    (N is in the file header). There were 7 fork-only tests at the 2026-10-14
    resync, and 5 at the 2026-11-04 resync.
+
+   `server-storage-test-shards.txt` carries four fork-only pins (9edf62cbc):
+   `TestCreateBatchFastPathsMatchPerRow_Dolt` to shard 14, `TestDeleterContract`
+   to 8, `TestDoltNew_WispRowLockSelfHeal_RealDolt` to 16 and
+   `TestDoltNew_SmartRemoteMigrateGate_BelowLatestDegrades_RealDolt` to 7.
+   Shard 13 hit the 15m timeout after upstream #7931 lengthened the first one.
+   On a resync keep these pins unless upstream re-shards; if it does, re-derive
+   them with the shard script.
+7. `engdocs/SERVE_RUNBOOK.md` — the fork re-reviewed this upstream doc
+   (7778764e4) for doc freshness, so it conflicts when upstream re-reviews it.
+   Take upstream's version, then re-apply any fork-specific correction that is
+   still valid.
+8. `scripts/bazel_autofix_push_test.go` — `TestAutofixWorkflowDownloadStep` is
+   relaxed fork-only (f227a4821). The GitHub `macos-latest` image 20261102
+   (macOS 26.7.2) has an unzip that refuses to create the symlink entry;
+   upstream runs macOS on Blacksmith (26.3), where the strict branch still
+   runs. Linux (`ubuntu-latest`, where the workflow actually runs) still takes
+   the strict branch. Keep the relaxation until the fork's macOS runner image
+   unzips symlinks again.
+
+Cherry-picks already present after the 2026-11-09 resync (#78), so the next
+resync treats them as landed: upstream #8222 (3a068dbef, ee3fc4e5d) and
+#8221 (bc07541c6, 318da2de0, which also re-added 7 fork naming-table rows to
+`engdocs/design/otel/otel-data-model.md`).
 
 Verify a resync's embedded zones with `BEADS_TEST_EMBEDDED_DOLT=1` and `-v`.
 Without that variable every `TestEmbedded*` test SKIPs, and `go test` still
