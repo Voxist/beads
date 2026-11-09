@@ -371,7 +371,9 @@ only when `github.repository_owner_id` is gastownhall's (255961667), so
 upstream's expression already resolves to `ubuntu-latest` here. The fork
 still swaps the label inside it, because the policy test reads the line,
 not its value. Upstream's `TestBazelRBERunnerOutsideGastownhall` is
-fork-adjusted to expect `ubuntu-latest` for gastownhall's events too.
+fork-adjusted to expect `ubuntu-latest` for gastownhall's events too. It is
+kept for line shape only: `TestForkWorkflowsUseNoBlacksmithRunner` is the
+real guard against a Blacksmith label.
 
 **Auto-start decisions are workspace-scoped (fork #56/#57).** Production code
 calls `doltserver.IsAutoStartDisabledFor(beadsDir)`, never upstream's global
@@ -648,7 +650,7 @@ Recurring conflicts, roughly in descending pain:
    hand-merge them. Take upstream's file, then re-place the fork-only tests
    with `scripts/ci/gen_*_shard_manifest.py <N> --weights=duration --write`
    (N is in the file header). There were 7 fork-only tests at the 2026-10-14
-   resync.
+   resync, and 5 at the 2026-11-04 resync.
 
 Verify a resync's embedded zones with `BEADS_TEST_EMBEDDED_DOLT=1` and `-v`.
 Without that variable every `TestEmbedded*` test SKIPs, and `go test` still
@@ -838,6 +840,59 @@ The order that works:
 
 Anything else still running an old `bd` against the shared server will break the
 moment its database migrates. Check other machines before deploying.
+
+### The release after the 2026-11-04 resync: schema 0072 -> 0074
+
+The 2026-11-04 resync (Voxist/beads#78) brings two main-schema migrations,
+`0073_add_arrival_seq` and `0074_create_id_tombstones` (upstream 5011528b3,
+93531223b, 7ac98ae6d, 9311c2463), and moves the ignored plane from 0028 to
+0031 (`0029_add_wisps_arrival_seq`, `0030_create_wisp_id_tombstones`,
+`0031_restore_preflip_events`). That release is NOT a binary swap. Fork
+`main` keeps reporting 1.95.0 until the follow-up release PR bumps the
+version and writes its `info.go` entry. Do not deploy `main` before that
+PR lands.
+
+Deploy it in the same order as the 1.95.0 window (gascity ga-s69mk.18):
+
+1. **Check the gascity native store first.** gascity links the beads library
+   pinned at 1.95.0 (`43f41374a`, schema 0072). That library's server-mode
+   open runs `schema.CheckForwardDrift`, which refuses a database ahead of
+   its own latest migration, and gc unsets `BD_IGNORE_SCHEMA_SKEW` for the
+   open (`bdRemoteMigrateOpenEnvKeys`). From the code, expect it to refuse a
+   0074 database. Confirm that against a migrated copy before the window.
+2. **If it refuses, bump gascity's beads pin first**, to the release that
+   carries 0074, and deploy gc.
+3. **Then swap `bd` and run `bd migrate` per database** in a window, with the
+   backup and rehearsal steps above.
+
+Once one database is migrated to 0074, every host still on 1.95.0 refuses
+it (schema skew). Roll back by restoring the pre-migration backup, not by
+copying the old binary back.
+
+Two upstream 1.3.3 behavior changes arrive with this release:
+
+- **`.beads/.env` is filtered (#7879).** `loadBeadsEnvFile`
+  (`cmd/bd/main.go`) imports only keys that `creds.AllowedProjectEnvKey`
+  (`internal/creds/command.go`) admits: `BEADS_*`, `BD_*`, `GT_ROOT` (#8117)
+  and the Dolt remote credential pair `DOLT_REMOTE_USER` /
+  `DOLT_REMOTE_PASSWORD`. Any other key is dropped with
+  `beads: ignoring <KEY> from .beads/.env (<reason>)` on stderr. Command
+  keys (`BEADS_DOLT_CREDENTIAL_COMMAND`, `BEADS_HTTP_TOKEN_COMMAND`,
+  `BD_MAIL_DELEGATE`, `BD_PAGER`, `BEADS_DOLT_BIN`, ...) and credential
+  redirect keys (`BEADS_DOLT_SERVER_HOST`, `BEADS_CREDENTIALS_FILE`,
+  `BEADS_CENTRAL_CONFIG`, `BEADS_HTTP_CA_FILE`) are dropped even though they
+  carry a `BEADS_`/`BD_` prefix. At the 2026-11-04 resync every rig
+  `.beads/.env` held only `GT_ROOT`, which is admitted.
+- **The Dolt endpoint is pinned on first use (#7887).** When
+  `BEADS_DOLT_PASSWORD` is set, `resolveDoltServerConnection`
+  (`cmd/bd/main.go`) calls `CheckServerEndpointTrust` before it sends the
+  password. Loopback endpoints and hosts set from a private source (the
+  process environment, not `.beads/.env`, or user config) are trusted and
+  pinned per workspace in `~/.config/beads/trusted-endpoints.json`. A
+  non-loopback host that only committed config names is refused until a
+  private source confirms it, and a later change of a pinned endpoint is
+  refused the same way. gc passes `BEADS_DOLT_SERVER_HOST` in the process
+  environment, so the fleet's endpoints count as private.
 
 ## Local conventions
 
