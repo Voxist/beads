@@ -913,8 +913,27 @@ Two rehearsal facts:
   so prove the target port by connection, not with `bd sql`.
 
 Once one database is migrated to 0074, every host still on 1.95.0 refuses
-it (schema skew). Roll back by restoring the pre-migration backup, not by
-copying the old binary back.
+it (schema skew), so copying the old binary back is never a rollback. There
+are two rollbacks for this release:
+
+- **In place (main plane only, rehearsed on a copy of `vl` on 2026-11-09).**
+  Per database, through a server connection (`dolt sql` against the server,
+  not `dolt sql -f` on a Dolt older than 2.3, which silently skips the
+  `ALTER`s):
+  1. Apply `0074_create_id_tombstones.down.sql`, then
+     `0073_add_arrival_seq.down.sql`.
+  2. Reset both version cursors, which the down files do not touch:
+     `DELETE FROM schema_migrations WHERE version IN (73,74)` and
+     `DELETE FROM ignored_schema_migrations WHERE version >= 29` (ignored
+     0029-0031 have no down files).
+  3. `CALL DOLT_COMMIT('-Am','rollback 0073/0074')`.
+
+  The database is then back at 72/28, and bd 1.95.0 reads and writes it.
+  Events rows restored by ignored 0031 stay; they are harmless.
+- **Full restore**: the fsck'd filesystem snapshot taken in the window,
+  restored with the server stopped by the supervisor. DOLT_BACKUP artifacts
+  are not enough for this release: they omit the dolt-ignored plane, which
+  0029-0031 change.
 
 Two upstream 1.3.3 behavior changes arrive with this release:
 
