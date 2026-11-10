@@ -646,11 +646,41 @@ Recurring conflicts, roughly in descending pain:
    the freeze lookup, so drop upstream's later copy and carry over any new
    `schema.Set*` line it adds.
 6. **CI shard manifests** — `.github/scripts/{embedded-cmd,embedded-storage,
-   proxied-cmd}-test-shards.txt`. Upstream re-shards them wholesale, so never
+   proxied-cmd,server-storage}-test-shards.txt`. Upstream re-shards them wholesale, so never
    hand-merge them. Take upstream's file, then re-place the fork-only tests
    with `scripts/ci/gen_*_shard_manifest.py <N> --weights=duration --write`
    (N is in the file header). There were 7 fork-only tests at the 2026-10-14
    resync, and 5 at the 2026-11-04 resync.
+
+   `server-storage-test-shards.txt` carries four fork-only pins (9edf62cbc):
+   `TestCreateBatchFastPathsMatchPerRow_Dolt` to shard 14, `TestDeleterContract`
+   to 8, `TestDoltNew_WispRowLockSelfHeal_RealDolt` to 16 and
+   `TestDoltNew_SmartRemoteMigrateGate_BelowLatestDegrades_RealDolt` to 7.
+   Shard 13 hit the 15m timeout after upstream #7931 lengthened the first one.
+   On a resync keep these pins unless upstream re-shards; if it does, re-derive
+   them with the shard script.
+7. `engdocs/SERVE_RUNBOOK.md` — the fork re-reviewed this upstream doc
+   (7778764e4) for doc freshness, so it conflicts when upstream re-reviews it.
+   Take upstream's version, then re-apply any fork-specific correction that is
+   still valid.
+8. `scripts/bazel_autofix_push_test.go` — `TestAutofixWorkflowDownloadStep` is
+   relaxed fork-only (f227a4821). The GitHub `macos-latest` image 20261102
+   (macOS 26.7.2) has an unzip that refuses to create the symlink entry;
+   upstream runs macOS on Blacksmith (26.3), where the strict branch still
+   runs. Linux (`ubuntu-latest`, where the workflow actually runs) still takes
+   the strict branch. Keep the relaxation until the fork's macOS runner image
+   unzips symlinks again.
+
+Cherry-picks already present after the 2026-11-09 resync (#78), so the next
+resync treats them as landed: upstream #8222 (3a068dbef, ee3fc4e5d) and
+#8221 (bc07541c6, 318da2de0, which also re-added 7 fork naming-table rows to
+`engdocs/design/otel/otel-data-model.md`).
+
+Also carried, and NOT merged upstream yet: #8232 (61364d9e2 -> f56cb9456,
+`cherry-pick -x`, test-only), which fixes the second-boundary race in
+`TestEmbeddedCompactAbortsDivergentReplay`'s `setupStraddledCutoff` fixture in
+`cmd/bd/compact_embedded_test.go`. When #8232 lands upstream, take upstream's
+version of that file and drop ours.
 
 Verify a resync's embedded zones with `BEADS_TEST_EMBEDDED_DOLT=1` and `-v`.
 Without that variable every `TestEmbedded*` test SKIPs, and `go test` still
@@ -855,19 +885,55 @@ PR lands.
 Deploy it in the same order as the 1.95.0 window (gascity ga-s69mk.18):
 
 1. **Check the gascity native store first.** gascity links the beads library
-   pinned at 1.95.0 (`43f41374a`, schema 0072). That library's server-mode
+   pinned at upstream `43f41374a`, the base of 1.95.0 (schema 0072); the
+   linked library carries none of the fork's carries. That library's server-mode
    open runs `schema.CheckForwardDrift`, which refuses a database ahead of
    its own latest migration, and gc unsets `BD_IGNORE_SCHEMA_SKEW` for the
    open (`bdRemoteMigrateOpenEnvKeys`). From the code, expect it to refuse a
    0074 database. Confirm that against a migrated copy before the window.
-2. **If it refuses, bump gascity's beads pin first**, to the release that
-   carries 0074, and deploy gc.
+2. **If it refuses, bump gascity's beads pin first**, and deploy gc. No
+   upstream beads release carries 0074 (v1.3.3 and v1.3.4 = `7ef2fd05e` are
+   at schema 0066, and `3c205e0a4` is not an ancestor of v1.3.4). gascity
+   pins an upstream-main pseudo-version (today
+   `v1.3.1-0.20261027095128-43f41374a34d`), so bump it to the pseudo-version
+   for `3c205e0a41e42c01be5dd2c1df6bf870b6104482` or later. Hazard: upstream
+   gascity (gastownhall/gascity main `79855f5f1`) now pins beads v1.3.4
+   (schema 0066). A Voxist gascity resync that takes upstream's `go.mod`
+   would drop the linked library to 0066, and the native store would then
+   refuse every fleet DB at 0072/0074.
 3. **Then swap `bd` and run `bd migrate` per database** in a window, with the
    backup and rehearsal steps above.
 
+Two rehearsal facts:
+
+- A filesystem copy of a city DB dir inherits its Dolt backup targets (OWC,
+  AWS offsite, `.dolt-backup`, `dolt-backups`, `voxist-recovery`), so strip
+  them from any staging or rehearsal copy before a private server touches it.
+- Before migrating, the new bd refuses `bd sql` too (the #4259 remote gate),
+  so prove the target port by connection, not with `bd sql`.
+
 Once one database is migrated to 0074, every host still on 1.95.0 refuses
-it (schema skew). Roll back by restoring the pre-migration backup, not by
-copying the old binary back.
+it (schema skew), so copying the old binary back is never a rollback. There
+are two rollbacks for this release:
+
+- **In place (main plane only, rehearsed on a copy of `vl` on 2026-11-09).**
+  Per database, through a server connection (`dolt sql` against the server,
+  not `dolt sql -f` on a Dolt older than 2.3, which silently skips the
+  `ALTER`s):
+  1. Apply `0074_create_id_tombstones.down.sql`, then
+     `0073_add_arrival_seq.down.sql`.
+  2. Reset both version cursors, which the down files do not touch:
+     `DELETE FROM schema_migrations WHERE version IN (73,74)` and
+     `DELETE FROM ignored_schema_migrations WHERE version >= 29` (ignored
+     0029-0031 have no down files).
+  3. `CALL DOLT_COMMIT('-Am','rollback 0073/0074')`.
+
+  The database is then back at 72/28, and bd 1.95.0 reads and writes it.
+  Events rows restored by ignored 0031 stay; they are harmless.
+- **Full restore**: the fsck'd filesystem snapshot taken in the window,
+  restored with the server stopped by the supervisor. DOLT_BACKUP artifacts
+  are not enough for this release: they omit the dolt-ignored plane, which
+  0029-0031 change.
 
 Two upstream 1.3.3 behavior changes arrive with this release:
 
@@ -890,8 +956,8 @@ Two upstream 1.3.3 behavior changes arrive with this release:
   process environment, not `.beads/.env`, or user config) are trusted and
   pinned per workspace in `~/.config/beads/trusted-endpoints.json`. A
   non-loopback host that only committed config names is refused until a
-  private source confirms it, and a later change of a pinned endpoint is
-  refused the same way. gc passes `BEADS_DOLT_SERVER_HOST` in the process
+  private source confirms it, and a later change to a pinned shared endpoint
+  is refused the same way. gc passes `BEADS_DOLT_SERVER_HOST` in the process
   environment, so the fleet's endpoints count as private.
 
 ## Local conventions
