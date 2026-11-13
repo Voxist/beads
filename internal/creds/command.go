@@ -40,6 +40,13 @@ var CredentialRedirectEnvKeys = []string{
 	// .beads/.env that pointed it at a committed cert would let a
 	// network-positioned attacker present a MITM certificate bd accepts.
 	"BEADS_HTTP_CA_FILE",
+	// BEADS_DOLT_SERVER_PROXY_ROOT names the db-proxy root whose secret
+	// bd's server-mode open presents to the data port. The token is bound
+	// to the port, not the host, so a .beads/.env that named another
+	// workspace's root while the clone named a listener at that proxy's
+	// port on another loopback address would hand that listener a token
+	// the real proxy accepts.
+	"BEADS_DOLT_SERVER_PROXY_ROOT",
 }
 
 // AllowedDoltEnvKeys names the only bare DOLT_* variables a project

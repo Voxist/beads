@@ -68,6 +68,7 @@ func TestLoadBeadsEnvFileRejectsCommands(t *testing.T) {
 		{"BD_PAGER", "command settings must come from your shell environment or user config"},
 		{"PAGER", "command settings must come from your shell environment or user config"},
 		{"BEADS_DOLT_BIN", "command settings must come from your shell environment or user config"},
+		{"BEADS_DOLT_SERVER_PROXY_ROOT", "credential target settings must come from your shell environment or user config"},
 		{"BEADS_DOLT_SERVER_HOST", "credential target settings must come from your shell environment or user config"},
 		{"BEADS_CREDENTIALS_FILE", "credential target settings must come from your shell environment or user config"},
 		{"BEADS_CENTRAL_CONFIG", "credential target settings must come from your shell environment or user config"},
