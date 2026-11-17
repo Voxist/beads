@@ -1,7 +1,15 @@
 package db
 
 import (
+	"database/sql/driver"
+	"fmt"
+	"strings"
+	"testing"
+
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
+
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -20,6 +28,7 @@ func (s *testSuite) TestIssueSearchAcrossIssuesAndWispsWithCounts() {
 	s.Run("PredicateFormIDPrefixMatchesIDList", s.searchCountsPredicateIDFilterParity)
 	s.Run("PredicateFormIDPrefixMatchesIDListOnWispPlane", s.searchCountsWispPredicateIDFilterParity)
 	s.Run("ByIDsFormMatchesPredicateForm", s.searchCountsByIDsFormMatchesPredicateForm)
+	s.Run("TwoPhaseMatchesSingleStatement", s.searchCountsTwoPhaseMatchesSingleStatement)
 }
 
 func (s *testSuite) searchCountsDepAndRDep() {
@@ -439,4 +448,260 @@ func iwcIDs(page domain.SearchCountsPage) []string {
 		out = append(out, iwc.Issue.ID)
 	}
 	return out
+}
+
+// searchCountsTwoPhaseMatchesSingleStatement is the vp-6y90n contract for the
+// domain/db stack: runSearchQuery, which now selects the matching ids first
+// and hydrates them through the by-IDs form, returns exactly the rows (ids,
+// order, counts, parent, labels, deps JSON) the single-statement predicate
+// form returned. It drives runSearchQuery directly so it can cover what the
+// public dispatch fixes for it: both table families, includeWispReverseDeps on
+// and off, every hydration opt-out, ORDER BY + LIMIT, an empty match and a
+// match on either side of sqlbuild.SearchByIDsMaxRows. Every statement the
+// two-phase side runs for a by-IDs-sized match is recorded, and none may be a
+// counts query with an aggregate that is not id-constrained.
+func (s *testSuite) searchCountsTwoPhaseMatchesSingleStatement() {
+	r := s.issueRepo()
+	dep := s.depRepo()
+	labels := NewLabelSQLRepository(s.Runner())
+	uc := s.labelUseCase()
+
+	for i, p := range []int{2, 0, 1, 3} {
+		in := newTestIssue(fmt.Sprintf("bd-tp-i%d", i), fmt.Sprintf("issue %c", 'd'-rune(i)))
+		in.Priority = p
+		if i == 1 {
+			in.Metadata = []byte(`{"session_name":"mayor"}`)
+		}
+		s.Require().NoError(r.Insert(s.Ctx(), in, "tester", domain.InsertIssueOpts{}))
+	}
+	for i, sess := range []string{"mayor", "deacon", "mayor", "witness"} {
+		w := newTestIssue(fmt.Sprintf("bd-tp-w%d", i), fmt.Sprintf("wisp %c", 'a'+rune(i)))
+		w.Ephemeral = true
+		w.Priority = i % 3
+		w.Metadata = []byte(fmt.Sprintf(`{"session_name":%q}`, sess))
+		s.Require().NoError(r.Insert(s.Ctx(), w, "tester", domain.InsertIssueOpts{UseWispsTable: true}))
+	}
+	s.Require().NoError(labels.Insert(s.Ctx(), "bd-tp-i0", "alpha", "tester", domain.LabelOpts{}))
+	s.Require().NoError(labels.Insert(s.Ctx(), "bd-tp-i1", "alpha", "tester", domain.LabelOpts{}))
+	s.Require().NoError(uc.AddWispLabel(s.Ctx(), "bd-tp-w0", "hot", "tester"))
+	s.Require().NoError(uc.AddWispLabel(s.Ctx(), "bd-tp-w2", "hot", "tester"))
+	s.Require().NoError(dep.Insert(s.Ctx(), newDep("bd-tp-i1", "bd-tp-i0", types.DepBlocks), "tester", domain.DepInsertOpts{}))
+	s.Require().NoError(dep.Insert(s.Ctx(), newDep("bd-tp-i2", "bd-tp-i3", types.DepParentChild), "tester", domain.DepInsertOpts{}))
+	s.Require().NoError(dep.Insert(s.Ctx(), newDep("bd-tp-w1", "bd-tp-w0", types.DepBlocks), "tester", domain.DepInsertOpts{UseWispsTable: true}))
+	// A wisp blocking on a durable issue: counted in that issue's rdep_count
+	// only when includeWispReverseDeps unions wisp_dependencies in.
+	s.Require().NoError(dep.Insert(s.Ctx(), newDep("bd-tp-w2", "bd-tp-i0", types.DepBlocks), "tester", domain.DepInsertOpts{UseWispsTable: true}))
+	_, err := s.Runner().ExecContext(s.Ctx(),
+		"INSERT INTO comments (id, issue_id, author, text) VALUES (UUID(), ?, ?, ?)", "bd-tp-i0", "tester", "c")
+	s.Require().NoError(err)
+	_, err = s.Runner().ExecContext(s.Ctx(),
+		"INSERT INTO wisp_comments (id, issue_id, author, text) VALUES (UUID(), ?, ?, ?)", "bd-tp-w0", "tester", "c")
+	s.Require().NoError(err)
+
+	// Enough labelled rows per plane to pass SearchByIDsMaxRows, so the
+	// single-statement side of the size rule is compared too.
+	for i := 0; i < sqlbuild.SearchByIDsMaxRows+5; i++ {
+		_, err := s.Runner().ExecContext(s.Ctx(),
+			"INSERT INTO issues (id, title, status, priority, issue_type, description, design, acceptance_criteria, notes) VALUES (?, ?, 'open', ?, 'task', '', '', '', '')",
+			fmt.Sprintf("bd-tpbulk-i%03d", i), fmt.Sprintf("bulk %03d", (i*37)%101), i%4)
+		s.Require().NoError(err)
+		_, err = s.Runner().ExecContext(s.Ctx(),
+			"INSERT INTO wisps (id, title, status, priority, issue_type, ephemeral) VALUES (?, ?, 'open', ?, 'task', 1)",
+			fmt.Sprintf("bd-tpbulk-w%03d", i), fmt.Sprintf("bulk %03d", (i*37)%101), i%4)
+		s.Require().NoError(err)
+	}
+
+	type plane struct {
+		name   string
+		tables filterTables
+	}
+	planes := []plane{{"issues", issuesFilterTables}, {"wisps", wispsFilterTables}}
+	cases := []struct {
+		name   string
+		filter types.IssueFilter
+		limit  string
+		empty  bool
+	}{
+		{name: "prefix", filter: types.IssueFilter{IDPrefix: "bd-tp-"}},
+		{name: "prefix order created limit 2", filter: types.IssueFilter{IDPrefix: "bd-tp-", SortBy: "created"}, limit: "LIMIT 2"},
+		{name: "prefix order title desc limit 3", filter: types.IssueFilter{IDPrefix: "bd-tp-", SortBy: "title", SortDesc: true}, limit: "LIMIT 3"},
+		{name: "prefix default order limit 1", filter: types.IssueFilter{IDPrefix: "bd-tp-"}, limit: "LIMIT 1"},
+		{name: "skip labels", filter: types.IssueFilter{IDPrefix: "bd-tp-", SkipLabels: true}},
+		{name: "skip counts", filter: types.IssueFilter{IDPrefix: "bd-tp-", SkipCounts: true}},
+		{name: "lite", filter: types.IssueFilter{IDPrefix: "bd-tp-", Lite: true}},
+		{name: "session_name", filter: types.IssueFilter{MetadataFields: map[string]string{"session_name": "mayor"}}},
+		{name: "empty match", filter: types.IssueFilter{MetadataFields: map[string]string{"session_name": "nobody"}}, empty: true},
+		{name: "past the bound", filter: types.IssueFilter{IDPrefix: "bd-tpbulk-"}},
+		{name: "past the bound order title limit", filter: types.IssueFilter{IDPrefix: "bd-tpbulk-", SortBy: "title"}, limit: fmt.Sprintf("LIMIT %d", sqlbuild.SearchByIDsMaxRows+3)},
+		{name: "at the bound order title limit", filter: types.IssueFilter{IDPrefix: "bd-tpbulk-", SortBy: "title"}, limit: fmt.Sprintf("LIMIT %d", sqlbuild.SearchByIDsMaxRows)},
+	}
+
+	flatten := func(items []*types.IssueWithCounts) []string {
+		out := make([]string, 0, len(items))
+		for _, iwc := range items {
+			parent := ""
+			if iwc.Parent != nil {
+				parent = *iwc.Parent
+			}
+			deps := make([]string, 0, len(iwc.Issue.Dependencies))
+			for _, d := range iwc.Issue.Dependencies {
+				deps = append(deps, string(d.Type)+":"+d.DependsOnID)
+			}
+			out = append(out, fmt.Sprintf("%s dep=%d rdep=%d cmt=%d parent=%s labels=%s deps=%s lite=%v title=%q",
+				iwc.Issue.ID, iwc.DependencyCount, iwc.DependentCount, iwc.CommentCount, parent,
+				strings.Join(iwc.Issue.Labels, ","), strings.Join(deps, "|"), iwc.Issue.IsLitePartial, iwc.Issue.Title))
+		}
+		return out
+	}
+
+	rec := &recordingRunner{Runner: s.Runner()}
+	twoPhase := &issueSQLRepositoryImpl{runner: rec}
+	single := r.(*issueSQLRepositoryImpl)
+	sawRows, sawWispRdep := false, map[bool]bool{}
+	for _, pl := range planes {
+		for _, wispDeps := range []bool{true, false} {
+			for _, tc := range cases {
+				name := fmt.Sprintf("%s/wispDeps=%v/%s", pl.name, wispDeps, tc.name)
+				where, args, err := buildIssueFilterClauses("", tc.filter, pl.tables)
+				s.Require().NoError(err, name)
+				s.Require().NotEmpty(where, name)
+				whereSQL := "WHERE " + strings.Join(where, " AND ")
+				order := orderBySQL(tc.filter.SortBy, tc.filter.SortDesc, "i")
+				hyd := hydrationFor(tc.filter)
+
+				oldSQL, _ := sqlbuild.SearchCountsSQL(pl.tables, nil, whereSQL, order, tc.limit, wispDeps, hyd)
+				want, err := single.scanCountsQuery(s.Ctx(), pl.tables, oldSQL, args, hyd)
+				s.Require().NoError(err, name)
+
+				rec.reset()
+				got, err := twoPhase.runSearchQuery(s.Ctx(), pl.tables, whereSQL, order, tc.limit, args, wispDeps, hyd)
+				s.Require().NoError(err, name)
+
+				calls := rec.reset()
+				if tc.empty {
+					s.Require().Empty(want, "%s: empty-match premise", name)
+					s.Require().Len(calls, 1, "%s: an empty match must not issue a hydration statement", name)
+				} else {
+					s.Require().NotEmpty(want, "%s: fixture must give the reference side rows", name)
+					sawRows = true
+				}
+				s.Require().Equal(flatten(want), flatten(got), name)
+				for _, iwc := range got {
+					if iwc.Issue.ID == "bd-tp-i0" && iwc.DependentCount > 1 {
+						sawWispRdep[wispDeps] = true
+					}
+				}
+				for _, c := range calls {
+					if len(want) <= sqlbuild.SearchByIDsMaxRows && strings.Contains(c.query, "AS comment_count") {
+						s.Require().Empty(unconstrainedCountsAggregates(c.query), "%s: aggregate subquery without id constraint", name)
+					}
+				}
+			}
+		}
+	}
+	s.Require().True(sawRows, "fixture premise: some case must match rows")
+	s.Require().True(sawWispRdep[true], "fixture premise: a wisp blocker must reach a durable rdep_count with wispDeps on")
+	s.Require().False(sawWispRdep[false], "wispDeps off must leave wisp blockers out of rdep_count")
+}
+
+// unconstrainedCountsAggregates returns each labels/dependencies/comments
+// subquery of a rendered counts query that carries no IN (...) constraint (the
+// FROM clause up to the end of its WHERE). Each one aggregates a whole table.
+func unconstrainedCountsAggregates(sqlText string) []string {
+	side := map[string]bool{}
+	for _, ft := range []filterTables{issuesFilterTables, wispsFilterTables} {
+		side[ft.Labels], side[ft.Dependencies], side[ft.Comments] = true, true, true
+	}
+	var bad []string
+	for _, part := range strings.Split(sqlText, "FROM ")[1:] {
+		fields := strings.Fields(part)
+		if len(fields) == 0 || !side[fields[0]] {
+			continue
+		}
+		end := len(part)
+		for _, stop := range []string{"GROUP BY", "UNION ALL", ") all_blockers"} {
+			if i := strings.Index(part, stop); i >= 0 && i < end {
+				end = i
+			}
+		}
+		if !strings.Contains(part[:end], " IN (") {
+			bad = append(bad, "FROM "+strings.TrimSpace(part[:end]))
+		}
+	}
+	return bad
+}
+
+// TestRunSearchQueryHydratesFilteredSearchByID pins the statements the
+// domain/db counts search issues for a filter (vp-6y90n): phase one selects
+// only the matching ids, phase two is exactly the by-IDs form for them, and
+// an empty match issues no second statement (sqlmock fails any query without
+// an expectation), and a match past sqlbuild.SearchByIDsMaxRows runs the
+// single-statement predicate form instead.
+func TestRunSearchQueryHydratesFilteredSearchByID(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := &issueSQLRepositoryImpl{runner: db}
+
+	where := "WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata, ?)) = ?"
+	order := orderBySQL("", false, "i")
+	hyd := sqlbuild.CountsHydration{}
+
+	mock.ExpectQuery(sqlbuild.SearchIDsSQL(wispsFilterTables, where, order, "LIMIT 2")).
+		WithArgs("$.session_name", "mayor").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("w-2").AddRow("w-1"))
+	hydrateSQL, hydrateArgs := sqlbuild.SearchCountsSQL(wispsFilterTables, []string{"w-2", "w-1"}, "", "", "", true, hyd)
+	if bad := unconstrainedCountsAggregates(hydrateSQL); len(bad) > 0 {
+		t.Fatalf("phase two has unconstrained aggregates: %v", bad)
+	}
+	argValues := make([]driver.Value, len(hydrateArgs))
+	for i, a := range hydrateArgs {
+		argValues[i] = a
+	}
+	mock.ExpectQuery(hydrateSQL).WithArgs(argValues...).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	got, err := repo.runSearchQuery(t.Context(), wispsFilterTables, where, order, "LIMIT 2", []any{"$.session_name", "mayor"}, true, hyd)
+	if err != nil {
+		t.Fatalf("runSearchQuery: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d rows, want none (both rows vanished between phases)", len(got))
+	}
+
+	mock.ExpectQuery(sqlbuild.SearchIDsSQL(issuesFilterTables, where, order, "")).
+		WithArgs("$.session_name", "nobody").WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	if _, err := repo.runSearchQuery(t.Context(), issuesFilterTables, where, order, "", []any{"$.session_name", "nobody"}, false, hyd); err != nil {
+		t.Fatalf("runSearchQuery (empty match): %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+
+	// Past SearchByIDsMaxRows the match runs as the single-statement predicate
+	// form with the caller's ORDER BY and LIMIT, not a by-IDs hydration.
+	many := sqlmock.NewRows([]string{"id"})
+	for i := 0; i <= sqlbuild.SearchByIDsMaxRows; i++ {
+		many.AddRow(fmt.Sprintf("bd-%03d", i))
+	}
+	mock.ExpectQuery(sqlbuild.SearchIDsSQL(issuesFilterTables, where, order, "")).
+		WithArgs("$.session_name", "everyone").WillReturnRows(many)
+	single, _ := sqlbuild.SearchCountsSQL(issuesFilterTables, nil, where, order, "", true, hyd)
+	mock.ExpectQuery(single).WithArgs("$.session_name", "everyone").WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	if _, err := repo.runSearchQuery(t.Context(), issuesFilterTables, where, order, "", []any{"$.session_name", "everyone"}, true, hyd); err != nil {
+		t.Fatalf("runSearchQuery (past the bound): %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations (past the bound): %v", err)
+	}
+
+	// The checker must flag the predicate form, or the assertions above and
+	// in the suite test would hold vacuously.
+	pred, _ := sqlbuild.SearchCountsSQL(wispsFilterTables, nil, where, order, "", true, hyd)
+	if len(unconstrainedCountsAggregates(pred)) == 0 {
+		t.Fatal("unconstrainedCountsAggregates found nothing in the predicate form; the checker is vacuous")
+	}
 }

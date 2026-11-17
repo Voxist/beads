@@ -63,6 +63,52 @@ func (h CountsHydration) IssueColumns() string {
 	return ReadyWorkIssueColumns
 }
 
+// SearchIDsSQL renders phase one of a filtered counts search: the ids of the
+// main-table rows that whereSQL admits, in orderBySQL order, cut by limitSQL.
+// Phase two hydrates exactly those ids through the by-IDs form of
+// SearchCountsSQL, whose aggregate subqueries are all id-constrained — when
+// there are at most SearchByIDsMaxRows of them.
+//
+// It replaces running the predicate form with a filter, which narrows only the
+// driver: that form's labels, dep_count, rdep_count and comment_count
+// subqueries aggregate their whole side tables on every call, so a lookup that
+// matches one row (a session bead found by metadata.session_name) still paid
+// for every label, dependency and comment in the store (vp-6y90n).
+//
+// The clauses are rendered against the same "i" alias the predicate form's
+// derived driver uses, so whereSQL and orderBySQL bind identically in both,
+// and their placeholders keep the predicate form's order (WHERE, then ORDER
+// BY): a caller passes the args it would have passed to the predicate form.
+// ORDER BY and LIMIT may reference only main-table columns, which is all
+// OrderBy ever produces; the predicate form's LEFT JOINs preserve exactly one
+// row per main row (leases is keyed by issue_id), so ordering and cutting
+// before them selects the same rows.
+//
+// An empty limitSQL is replaced by LIMIT SearchByIDsMaxRows+1: phase one only
+// needs to learn whether the match fits the by-IDs hydration, and more than
+// SearchByIDsMaxRows ids are never hydrated by id (see there), so reading
+// further would ship ids the caller then discards.
+func SearchIDsSQL(tables FilterTables, whereSQL, orderBySQL, limitSQL string) string {
+	if limitSQL == "" {
+		limitSQL = fmt.Sprintf("LIMIT %d", SearchByIDsMaxRows+1)
+	}
+	return fmt.Sprintf("SELECT i.id FROM %s i %s %s %s", tables.Main, whereSQL, orderBySQL, limitSQL)
+}
+
+// SearchByIDsMaxRows is the largest match a filtered counts search hydrates by
+// id. Above it, the executor runs the single-statement predicate form instead,
+// with the caller's own ORDER BY and LIMIT.
+//
+// The by-IDs form costs per id (roughly 6 ms + 0.23 ms per id on a 6k-wisp,
+// 14k-label store), while the predicate form pays a fixed cost to aggregate
+// the whole side tables (roughly 60 ms on the same store) plus very little per
+// row. They cross at around 200-250 ids there; 100 keeps the by-IDs path on
+// the clearly cheaper side while covering the lookups that dominate (one
+// session bead, a handful of labelled beads, any page of 100 or fewer). A
+// broad match pays one extra id-only statement (about 17 ms for 6k rows) and
+// then exactly the old query.
+const SearchByIDsMaxRows = 100
+
 // SearchCountsSQL renders the counts mega-query: issue rows aliased "i" plus
 // labels JSON, dep/rdep/comment counts, parent ID, and dependency JSON, for one
 // table family. The scan side is issueops.ScanReadyWorkRowWithCounts, which
@@ -77,7 +123,11 @@ func (h CountsHydration) IssueColumns() string {
 //     subquery BEFORE the aggregate LEFT JOINs (see below); orderBySQL and
 //     limitSQL stay at the outer level, after the joins. Each count subquery
 //     aggregates its whole side table. The caller supplies its own args; the
-//     returned args slice is nil.
+//     returned args slice is nil. A filtered counts SEARCH renders it only
+//     when SearchIDsSQL found more than SearchByIDsMaxRows matches; a smaller
+//     match is hydrated through the by-IDs form, so its aggregates see only
+//     the matching rows (vp-6y90n). Unfiltered searches and unbounded ready
+//     work use it as before.
 //
 //   - By-IDs form (ids non-empty): whereSQL/orderBySQL/limitSQL are ignored and
 //     the driver AND every count subquery are constrained to ids. This keeps
