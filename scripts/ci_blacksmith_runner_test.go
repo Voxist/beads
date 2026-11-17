@@ -97,6 +97,20 @@ func isBazelRRCCacheReader(name string) bool {
 	return slices.Contains(bazelRRCReadLanes, name) && !bazelRemoteOnlyJobs[name] && name != bazelDoltRaceJobName && name != bazelDoltIntJobName
 }
 
+// bazelCgoLanesPinned2404: the lanes that also fall back to ubuntu-24.04,
+// for a reason of their own. On the ubuntu-26.04 image ubuntu-latest moved to,
+// the hermetic LLVM's ld.lld cannot load libxml2.so.2, so their cgo packages
+// (gozstd, go-sqlite3) fail to compile. Installing libxml2 on 26.04 is the
+// alternative. Remove an entry, with its runs-on pin in bazel.yml, once the
+// image or the toolchain no longer needs it.
+var bazelCgoLanesPinned2404 = map[string]bool{bazelEmbedJobName: true, bazelProxiedJobName: true, bazelServerJobName: true}
+
+// bazelFallsBackTo2404: a lane whose GitHub-hosted fallback is ubuntu-24.04
+// (bazelRRCCacheReaderRunsOn) rather than ubuntu-latest.
+func bazelFallsBackTo2404(name string) bool {
+	return isBazelRRCCacheReader(name) || bazelCgoLanesPinned2404[name]
+}
+
 // The default lane size: every action executes on rbe-west, but the
 // client's loading and analysis is CPU-bound and gates every action
 // (ga-vnycm2.8: 17-38 s on 2 vCPU, 12-26 s on 4), so 4 vCPU.
@@ -689,7 +703,7 @@ func TestBlacksmithBazelRunnerSizes(t *testing.T) {
 				continue // rrc jobs: push/schedule only, never a fork (literal label)
 			}
 			want := "ubuntu-latest"
-			if isBazelRRCCacheReader(name) {
+			if bazelFallsBackTo2404(name) {
 				want = "ubuntu-24.04"
 			}
 			if bazelBlacksmithModes[mode] {

@@ -375,6 +375,17 @@ fork-adjusted to expect `ubuntu-latest` for gastownhall's events too. It is
 kept for line shape only: `TestForkWorkflowsUseNoBlacksmithRunner` is the
 real guard against a Blacksmith label.
 
+**The cgo Bazel tiers fall back to `ubuntu-24.04`, not `ubuntu-latest`
+(fork, 2026-11-17, temporary).** On the `ubuntu-26.04` image `ubuntu-latest`
+moved to, the hermetic LLVM's `ld.lld` cannot load `libxml2.so.2`, so every
+cgo package (`gozstd`, `go-sqlite3`) fails to compile. `bazel-embedded`,
+`bazel-proxied` and `bazel-server-storage` run their local-mode fallback on
+the GitHub-hosted runner here, so their `runs-on` fallback is pinned to
+`ubuntu-24.04`, like the lanes that already read the remote repo contents
+cache. `bazelCgoLanesPinned2404` in `scripts/ci_blacksmith_runner_test.go`
+lists them. Installing `libxml2` on 26.04 is the alternative. Remove the pin
+and that set together once the image or the toolchain no longer needs it.
+
 **Auto-start decisions are workspace-scoped (fork #56/#57).** Production code
 calls `doltserver.IsAutoStartDisabledFor(beadsDir)`, never upstream's global
 `IsAutoStartDisabled()`, which misses a workspace's own

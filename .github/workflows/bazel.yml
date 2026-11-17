@@ -1516,7 +1516,14 @@ jobs:
     # The runs-on expression is the shared one: Blacksmith in modes remote
     # and cache, GitHub-hosted in the fork modes (a client only).
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
+    # ubuntu-24.04, not ubuntu-latest, as the GitHub-hosted fallback: on the
+    # ubuntu-26.04 image ubuntu-latest moved to, the hermetic LLVM's ld.lld
+    # cannot load libxml2.so.2, so every cgo package (gozstd, go-sqlite3)
+    # fails to compile and this tier cannot build. Installing libxml2 on
+    # 26.04 is the alternative. Drop this pin (back to ubuntu-latest, and
+    # bazelCgoLanesPinned2404 in scripts/ci_blacksmith_runner_test.go) once
+    # the image or the toolchain no longer needs it.
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-24.04' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
     timeout-minutes: 120
@@ -2076,7 +2083,14 @@ jobs:
     # This lane is the tier's only PR run (pr-risk.yml's legacy jobs are
     # retired) and pr.yml's gate requires it to have run here and passed.
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
+    # ubuntu-24.04, not ubuntu-latest, as the GitHub-hosted fallback: on the
+    # ubuntu-26.04 image ubuntu-latest moved to, the hermetic LLVM's ld.lld
+    # cannot load libxml2.so.2, so every cgo package (gozstd, go-sqlite3)
+    # fails to compile and this tier cannot build. Installing libxml2 on
+    # 26.04 is the alternative. Drop this pin (back to ubuntu-latest, and
+    # bazelCgoLanesPinned2404 in scripts/ci_blacksmith_runner_test.go) once
+    # the image or the toolchain no longer needs it.
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-24.04' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && needs.rbe.outputs.mode != 'remote' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
     timeout-minutes: 135
@@ -2472,7 +2486,14 @@ jobs:
     # This lane is the tier's only PR run (pr-risk.yml's legacy jobs are
     # retired) and pr.yml's gate requires it to have run here and passed.
     needs: rbe
-    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-latest' }}
+    # ubuntu-24.04, not ubuntu-latest, as the GitHub-hosted fallback: on the
+    # ubuntu-26.04 image ubuntu-latest moved to, the hermetic LLVM's ld.lld
+    # cannot load libxml2.so.2, so every cgo package (gozstd, go-sqlite3)
+    # fails to compile and this tier cannot build. Installing libxml2 on
+    # 26.04 is the alternative. Drop this pin (back to ubuntu-latest, and
+    # bazelCgoLanesPinned2404 in scripts/ci_blacksmith_runner_test.go) once
+    # the image or the toolchain no longer needs it.
+    runs-on: ${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && 'ubuntu-latest' || 'ubuntu-24.04' }}
     if: ${{ needs.rbe.outputs.enabled == 'true' && needs.rbe.outputs.mode != 'remote' && inputs.integration != 'off' && inputs.dolt-tiers != 'off' }}
     # FORK (Voxist/beads): sized for mode local, the fork CI's only mode (a GitHub-hosted runner, no rbe); see FORK_DIVERGENCE.md.
     timeout-minutes: 120
