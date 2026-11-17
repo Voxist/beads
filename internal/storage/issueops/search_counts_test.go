@@ -114,7 +114,7 @@ func TestSearchIssuesWithCountsHydratesFilteredSearchByID(t *testing.T) {
 // hydrated by id in one statement, and a larger one runs exactly the old
 // single-statement predicate form, with the caller's ORDER BY and LIMIT — not
 // a by-IDs hydration of hundreds of ids, which costs more than aggregating the
-// side tables once. Both honour includeWispReverseDeps=false.
+// side tables once. Both honor includeWispReverseDeps=false.
 func TestSearchCountsByIDsInTxMatchSizeChoosesTheForm(t *testing.T) {
 	t.Parallel()
 

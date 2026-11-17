@@ -104,7 +104,7 @@ func SearchIDsSQL(tables FilterTables, whereSQL, orderBySQL, limitSQL string) st
 // the whole side tables (roughly 60 ms on the same store) plus very little per
 // row. They cross at around 200-250 ids there; 100 keeps the by-IDs path on
 // the clearly cheaper side while covering the lookups that dominate (one
-// session bead, a handful of labelled beads, any page of 100 or fewer). A
+// session bead, a handful of labeled beads, any page of 100 or fewer). A
 // broad match pays one extra id-only statement (about 17 ms for 6k rows) and
 // then exactly the old query.
 const SearchByIDsMaxRows = 100

@@ -113,7 +113,7 @@ func TestSearchCountsTwoPhaseParity(t *testing.T) {
 	seedSearchCountsFixture(ctx, t, store)
 	seedTwoPhaseWispFixture(ctx, t, store)
 	// A match larger than SearchByIDsMaxRows takes the single statement; seed
-	// enough labelled wisps to reach it on purpose.
+	// enough labeled wisps to reach it on purpose.
 	bulk := sqlbuild.SearchByIDsMaxRows + 10
 	for i := 0; i < bulk; i++ {
 		id := fmt.Sprintf("tp-bulk-%03d", i)

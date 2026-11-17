@@ -498,7 +498,7 @@ func (s *testSuite) searchCountsTwoPhaseMatchesSingleStatement() {
 		"INSERT INTO wisp_comments (id, issue_id, author, text) VALUES (UUID(), ?, ?, ?)", "bd-tp-w0", "tester", "c")
 	s.Require().NoError(err)
 
-	// Enough labelled rows per plane to pass SearchByIDsMaxRows, so the
+	// Enough labeled rows per plane to pass SearchByIDsMaxRows, so the
 	// single-statement side of the size rule is compared too.
 	for i := 0; i < sqlbuild.SearchByIDsMaxRows+5; i++ {
 		_, err := s.Runner().ExecContext(s.Ctx(),
