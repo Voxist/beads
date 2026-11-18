@@ -228,6 +228,15 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.96.1",
+		Date:    "2026-11-17",
+		Changes: []string{
+			"FORK RELEASE: Voxist/beads 1.96.0 plus Voxist/beads#80 only, a security dependency fix and nothing else.",
+			"SECURITY: github.com/klauspost/compress v1.18.7 -> v1.20.2 (upstream #8349). Fixes GO-2026-6865, a zstd decoder panic on a crafted frame that bd can reach. No other code change.",
+			"UPGRADE: no schema change (still 0074, ignored 0031). From 1.96.0 this is a binary swap, and copying 1.96.0 back is a valid rollback. From 1.95.0 or earlier, the 1.96.0 entry below applies in full: upgrading still runs the 0072 -> 0074 migration (ignored 0028 -> 0031), bd 1.95.0 refuses a migrated database, and the rollback is the 1.96.0 one (the fsck'd pre-migration filesystem snapshot, or the in-place procedure in engdocs/FORK_DIVERGENCE.md), not copying the old binary back.",
+		},
+	},
+	{
 		Version: "1.96.0",
 		Date:    "2026-11-09",
 		Changes: []string{

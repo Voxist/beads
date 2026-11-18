@@ -676,6 +676,13 @@ resync treats them as landed: upstream #8222 (3a068dbef, ee3fc4e5d) and
 #8221 (bc07541c6, 318da2de0, which also re-added 7 fork naming-table rows to
 `engdocs/design/otel/otel-data-model.md`).
 
+Cherry-picked after that resync and since merged upstream, so the next
+resync also treats it as landed: #8349 (upstream 9d4ebf42f, fork e153be1cf
+via Voxist/beads#80), the `klauspost/compress` v1.20.2 bump. Its
+`default.nix` `vendorHash` differs from upstream's because the fork's
+`go.mod` has more direct dependencies; on a resync keep the hash Nix
+computes for the merged `go.mod`, not either side's.
+
 Also carried, and NOT merged upstream yet: #8232 (61364d9e2 -> f56cb9456,
 `cherry-pick -x`, test-only), which fixes the second-boundary race in
 `TestEmbeddedCompactAbortsDivergentReplay`'s `setupStraddledCutoff` fixture in
@@ -877,10 +884,16 @@ The 2026-11-04 resync (Voxist/beads#78) brings two main-schema migrations,
 `0073_add_arrival_seq` and `0074_create_id_tombstones` (upstream 5011528b3,
 93531223b, 7ac98ae6d, 9311c2463), and moves the ignored plane from 0028 to
 0031 (`0029_add_wisps_arrival_seq`, `0030_create_wisp_id_tombstones`,
-`0031_restore_preflip_events`). That release is NOT a binary swap. Fork
-`main` keeps reporting 1.95.0 until the follow-up release PR bumps the
-version and writes its `info.go` entry. Do not deploy `main` before that
-PR lands.
+`0031_restore_preflip_events`). That release is NOT a binary swap. It
+shipped as 1.96.0 (Voxist/beads#79, tag `v1.96.0`).
+
+1.96.1 (tag `v1.96.1`) is 1.96.0 plus Voxist/beads#80 only: the
+`klauspost/compress` v1.18.7 -> v1.20.2 bump for GO-2026-6865 (upstream
+#8349). It has no schema change, so a host already on 1.96.0 takes it as a
+binary swap, and copying 1.96.0 back is a valid rollback. A host on 1.95.0
+still goes through everything below: the 0072 -> 0074 migration, the deploy
+order, and the 1.96.0 rollbacks. Ship 1.96.1, not 1.96.0, to a host that
+has not migrated yet.
 
 Deploy it in the same order as the 1.95.0 window (gascity ga-s69mk.18):
 
