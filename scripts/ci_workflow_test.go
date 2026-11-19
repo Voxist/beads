@@ -2135,7 +2135,7 @@ func TestBazelWorkflowJobsAndExecutionMode(t *testing.T) {
 			wantJobSetupEnv = copyMap(wantSetupEnv)
 			wantJobSetupEnv["BAZEL_RRC_READ"] = "true"
 		}
-		if isBazelRRCCacheReader(name) {
+		if bazelFallsBackTo2404(name) {
 			wantJobRunsOn = bazelRRCCacheReaderRunsOn("ubuntu-latest")
 			if name == bazelJobName {
 				wantJobRunsOn = bazelRRCCacheReaderRunsOn("ubuntu-latest")
