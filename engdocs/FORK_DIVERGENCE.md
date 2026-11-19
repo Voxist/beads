@@ -898,10 +898,13 @@ The 2026-11-04 resync (Voxist/beads#78) brings two main-schema migrations,
 `0031_restore_preflip_events`). That release is NOT a binary swap. It
 shipped as 1.96.0 (Voxist/beads#79, tag `v1.96.0`).
 
-1.96.1 (tag `v1.96.1`) is 1.96.0 plus Voxist/beads#80 only: the
-`klauspost/compress` v1.18.7 -> v1.20.2 bump for GO-2026-6865 (upstream
-#8349). It has no schema change, so a host already on 1.96.0 takes it as a
-binary swap, and copying 1.96.0 back is a valid rollback. A host on 1.95.0
+1.96.1 (tag `v1.96.1`) is 1.96.0 plus Voxist/beads#80, its only
+shipped-code change: the `klauspost/compress` v1.18.7 -> v1.20.2 bump for
+GO-2026-6865 (upstream #8349). It also carries the CI-only
+Voxist/beads#82 (the cgo lanes' `ubuntu-24.04` pin, under "Fork-local, no
+upstream path yet"). It has no schema change, so a host already on 1.96.0
+takes it as a binary swap, and copying 1.96.0 back is a valid rollback. A
+host on 1.95.0
 still goes through everything below: the 0072 -> 0074 migration, the deploy
 order, and the 1.96.0 rollbacks. Ship 1.96.1, not 1.96.0, to a host that
 has not migrated yet.
