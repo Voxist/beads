@@ -638,6 +638,88 @@ func TestSearchCountsSQLShape(t *testing.T) {
 	}
 }
 
+// TestSearchIDsSQLShape pins phase one of a filtered counts search: a bare id
+// projection over the "i"-aliased main table, carrying the caller's WHERE,
+// ORDER BY and LIMIT in placeholder order, and none of the aggregate joins
+// whose whole-table scans the two-phase search exists to avoid (vp-6y90n).
+func TestSearchIDsSQLShape(t *testing.T) {
+	t.Parallel()
+
+	got := SearchIDsSQL(WispsFilterTables, "WHERE i.status = ?", "ORDER BY CASE WHEN i.id = ? THEN 0 ELSE 1 END, i.id ASC", "LIMIT 5")
+	want := "SELECT i.id FROM wisps i WHERE i.status = ? ORDER BY CASE WHEN i.id = ? THEN 0 ELSE 1 END, i.id ASC LIMIT 5"
+	if got != want {
+		t.Fatalf("SearchIDsSQL:\n got  %q\n want %q", got, want)
+	}
+	for _, gone := range []string{"JOIN", "JSON_ARRAYAGG", "COUNT(", "wisp_labels", "wisp_dependencies", "wisp_comments", "leases"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("phase-one SQL must not touch %q:\n%s", gone, got)
+		}
+	}
+	// No caller limit: phase one reads one id past SearchByIDsMaxRows, enough
+	// to tell a by-IDs match from one that takes the single statement.
+	if got, want := SearchIDsSQL(IssuesFilterTables, "WHERE x = ?", "", ""), fmt.Sprintf("SELECT i.id FROM issues i WHERE x = ?  LIMIT %d", SearchByIDsMaxRows+1); got != want {
+		t.Errorf("unbounded phase one:\n got  %q\n want %q", got, want)
+	}
+}
+
+// TestSearchCountsByIDsFormConstrainsEveryAggregate is the renderer half of
+// the vp-6y90n guarantee: in the by-IDs form that a filtered search now
+// hydrates through, every aggregate subquery carries the id constraint, under
+// every hydration and both reverse-dep settings. A subquery that lost its
+// constraint would silently go back to aggregating its whole side table.
+func TestSearchCountsByIDsFormConstrainsEveryAggregate(t *testing.T) {
+	t.Parallel()
+
+	for _, tables := range []FilterTables{IssuesFilterTables, WispsFilterTables} {
+		for _, wispDeps := range []bool{false, true} {
+			for _, hyd := range []CountsHydration{{}, {SkipLabels: true}, {SkipCounts: true}, {Lite: true}} {
+				sqlText, args := SearchCountsSQL(tables, []string{"a", "b"}, "", "", "", wispDeps, hyd)
+				for _, offender := range unconstrainedAggregates(sqlText) {
+					t.Errorf("%s wispDeps=%v hyd=%+v: aggregate subquery without id constraint:\n%s", tables.Main, wispDeps, hyd, offender)
+				}
+				if want := strings.Count(sqlText, "?"); len(args) != want {
+					t.Errorf("%s wispDeps=%v hyd=%+v: args=%d placeholders=%d", tables.Main, wispDeps, hyd, len(args), want)
+				}
+			}
+		}
+	}
+
+	// The checker must actually catch the predicate form, or the assertions
+	// above (and the executor tests that reuse it) prove nothing.
+	pred, _ := SearchCountsSQL(WispsFilterTables, nil, "WHERE i.status = ?", "", "", true, CountsHydration{})
+	if len(unconstrainedAggregates(pred)) == 0 {
+		t.Fatal("UnconstrainedAggregates found nothing in the predicate form; the checker is vacuous")
+	}
+}
+
+// unconstrainedAggregates returns each side-table subquery of a rendered counts
+// query that carries no IN (...) constraint: the FROM clause of every labels,
+// dependencies, wisp_dependencies or comments read, up to the end of its
+// WHERE. A subquery listed here aggregates its whole table.
+func unconstrainedAggregates(sqlText string) []string {
+	side := map[string]bool{}
+	for _, ft := range []FilterTables{IssuesFilterTables, WispsFilterTables} {
+		side[ft.Labels], side[ft.Dependencies], side[ft.Comments] = true, true, true
+	}
+	var bad []string
+	for _, part := range strings.Split(sqlText, "FROM ")[1:] {
+		fields := strings.Fields(part)
+		if len(fields) == 0 || !side[fields[0]] {
+			continue
+		}
+		end := len(part)
+		for _, stop := range []string{"GROUP BY", "UNION ALL", ") all_blockers"} {
+			if i := strings.Index(part, stop); i >= 0 && i < end {
+				end = i
+			}
+		}
+		if !strings.Contains(part[:end], " IN (") {
+			bad = append(bad, "FROM "+strings.TrimSpace(part[:end]))
+		}
+	}
+	return bad
+}
+
 func TestBuildReadyWorkWhereStatusFilter(t *testing.T) {
 	t.Parallel()
 
