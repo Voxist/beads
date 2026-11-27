@@ -130,7 +130,14 @@ func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, fil
 		limitSQL = fmt.Sprintf("LIMIT %d", eff)
 	}
 	orderBy := sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, "i")
-	out, err := runSearchQueryInTx(ctx, tx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, hydrationFor(filter))
+	// A filtered search selects its ids first and hydrates only those; an
+	// unfiltered one has every row as a candidate, so the single-statement
+	// predicate form, which aggregates the whole side tables once, stays.
+	run := searchCountsByIDsInTx
+	if whereSQL == "" {
+		run = runSearchQueryInTx
+	}
+	out, err := run(ctx, tx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, hydrationFor(filter))
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +152,58 @@ func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, fil
 func runSearchQueryInTx(ctx context.Context, tx DBTX, tables FilterTables, whereSQL, orderBySQL, limitSQL string, args []interface{}, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
 	searchSQL, _ := sqlbuild.SearchCountsSQL(tables, nil, whereSQL, orderBySQL, limitSQL, includeWispReverseDeps, hyd)
 	return scanCountsRowsInTx(ctx, tx, tables.Main, searchSQL, args, hyd)
+}
+
+// searchCountsByIDsInTx runs a filtered counts search over one table family in
+// two phases: sqlbuild.SearchIDsSQL selects the matching ids under the
+// caller's ORDER BY and LIMIT, then hydrateCountsByIDsInTx hydrates exactly
+// those ids through the by-IDs form, whose aggregate subqueries are all
+// id-constrained, and returns them in phase-one order. An empty match returns
+// without a second statement. Running the predicate form with the filter
+// aggregates every label, dependency and comment in the store per call, which
+// made a metadata.session_name lookup cost ~170 ms of server CPU on a
+// 6k-wisp store (vp-6y90n). A match of more than sqlbuild.SearchByIDsMaxRows
+// ids is cheaper as that single statement, so it runs exactly that, with the
+// caller's ORDER BY and LIMIT. whereSQL must be non-empty.
+func searchCountsByIDsInTx(ctx context.Context, tx DBTX, tables FilterTables, whereSQL, orderBySQL, limitSQL string, args []interface{}, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
+	ids, err := queryIDs(ctx, tx, sqlbuild.SearchIDsSQL(tables, whereSQL, orderBySQL, limitSQL), args...)
+	if err != nil {
+		return nil, fmt.Errorf("search count %s: %w", tables.Main, err)
+	}
+	if len(ids) > sqlbuild.SearchByIDsMaxRows {
+		return runSearchQueryInTx(ctx, tx, tables, whereSQL, orderBySQL, limitSQL, args, includeWispReverseDeps, hyd)
+	}
+	return hydrateCountsByIDsInTx(ctx, tx, tables, ids, includeWispReverseDeps, hyd)
+}
+
+// hydrateCountsByIDsInTx hydrates the counts rows for ids through the by-IDs
+// form of the counts mega-query, chunking the IN-list, and returns them in the
+// order of ids. The ids must be distinct (an id query over one table yields
+// them so), so a per-chunk scan needs no cross-chunk dedup. An id whose row
+// is gone by the time it is hydrated is dropped. No ids means no statement.
+func hydrateCountsByIDsInTx(ctx context.Context, tx DBTX, tables FilterTables, ids []string, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	byID := make(map[string]*types.IssueWithCounts, len(ids))
+	for start := 0; start < len(ids); start += sqlbuild.QueryBatchSize {
+		end := min(start+sqlbuild.QueryBatchSize, len(ids))
+		countsSQL, idArgs := sqlbuild.SearchCountsSQL(tables, ids[start:end], "", "", "", includeWispReverseDeps, hyd)
+		rows, err := scanCountsRowsInTx(ctx, tx, tables.Main, countsSQL, idArgs, hyd)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			byID[r.Issue.ID] = r
+		}
+	}
+	ordered := make([]*types.IssueWithCounts, 0, len(ids))
+	for _, id := range ids {
+		if r, ok := byID[id]; ok {
+			ordered = append(ordered, r)
+		}
+	}
+	return ordered, nil
 }
 
 // scanCountsRowsInTx runs a prebuilt counts mega-query and hydrates each row

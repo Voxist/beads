@@ -169,10 +169,64 @@ func (r *issueSQLRepositoryImpl) runFilterSearchQuery(ctx context.Context, query
 	return r.runSearchQuery(ctx, tables, whereSQL, orderBy, searchWindowForFilter(filter).sql, args, includeWispReverseDeps, hydrationFor(filter))
 }
 
+// runSearchQuery runs a counts search over one table family, mirroring the
+// issueops store path (searchCountsByIDsInTx): with a filter it selects the
+// matching ids under the caller's ORDER BY and LIMIT (sqlbuild.SearchIDsSQL),
+// then hydrates exactly those ids through fetchCountsByIDs, whose by-IDs form
+// id-constrains every aggregate subquery, and returns them in id-query order.
+// An empty match returns without a second statement. The single-statement
+// predicate form is kept for an unfiltered search, where every row is a
+// candidate anyway, and for a match of more than sqlbuild.SearchByIDsMaxRows
+// ids, where it is the cheaper of the two (vp-6y90n).
+//
 //nolint:gosec // G201: SQL fragments are built from hardcoded table names and parameterized filters.
 func (r *issueSQLRepositoryImpl) runSearchQuery(ctx context.Context, tables filterTables, whereSQL, orderBySQL, limitSQL string, args []any, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
-	searchSQL, _ := sqlbuild.SearchCountsSQL(tables, nil, whereSQL, orderBySQL, limitSQL, includeWispReverseDeps, hyd)
-	return r.scanCountsQuery(ctx, tables, searchSQL, args, hyd)
+	singleStatement := func() ([]*types.IssueWithCounts, error) {
+		searchSQL, _ := sqlbuild.SearchCountsSQL(tables, nil, whereSQL, orderBySQL, limitSQL, includeWispReverseDeps, hyd)
+		return r.scanCountsQuery(ctx, tables, searchSQL, args, hyd)
+	}
+	if whereSQL == "" {
+		return singleStatement()
+	}
+	ids, err := r.searchIDs(ctx, sqlbuild.SearchIDsSQL(tables, whereSQL, orderBySQL, limitSQL), args)
+	if err != nil {
+		return nil, fmt.Errorf("search count %s: %w", tables.Main, err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(ids) > sqlbuild.SearchByIDsMaxRows {
+		return singleStatement()
+	}
+	byID, err := r.fetchCountsByIDs(ctx, ids, tables, includeWispReverseDeps, hyd)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*types.IssueWithCounts, 0, len(ids))
+	for _, id := range ids {
+		if iwc, ok := byID[id]; ok {
+			out = append(out, iwc)
+		}
+	}
+	return out, nil
+}
+
+// searchIDs runs a phase-one id query and returns the ids in row order.
+func (r *issueSQLRepositoryImpl) searchIDs(ctx context.Context, query string, args []any) ([]string, error) {
+	rows, err := r.runner.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // scanCountsQuery runs a prebuilt counts mega-query and hydrates each row,
